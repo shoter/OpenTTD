@@ -54,7 +54,7 @@ extern byte _support8bpp;
 extern CursorVars _cursor;
 extern bool _ctrl_pressed;   ///< Is Ctrl pressed?
 extern bool _shift_pressed;  ///< Is Shift pressed?
-extern byte _fast_forward;
+extern uint16 _game_speed;
 
 extern bool _left_button_down;
 extern bool _left_button_clicked;
@@ -73,10 +73,12 @@ void HandleTextInput(const char *str, bool marked = false, const char *caret = n
 void HandleCtrlChanged();
 void HandleMouseEvents();
 void UpdateWindows();
+void ChangeGameSpeed(bool enable_fast_forward);
 
 void DrawMouseCursor();
 void ScreenSizeChanged();
 void GameSizeChanged();
+void UpdateGUIZoom();
 void UndrawMouseCursor();
 
 /** Size of the buffer used for drawing strings. */
@@ -89,30 +91,14 @@ Dimension GetSpriteSize(SpriteID sprid, Point *offset = nullptr, ZoomLevel zoom 
 void DrawSpriteViewport(SpriteID img, PaletteID pal, int x, int y, const SubSprite *sub = nullptr);
 void DrawSprite(SpriteID img, PaletteID pal, int x, int y, const SubSprite *sub = nullptr, ZoomLevel zoom = ZOOM_LVL_GUI);
 
-/** How to align the to-be drawn text. */
-enum StringAlignment {
-	SA_LEFT        = 0 << 0, ///< Left align the text.
-	SA_HOR_CENTER  = 1 << 0, ///< Horizontally center the text.
-	SA_RIGHT       = 2 << 0, ///< Right align the text (must be a single bit).
-	SA_HOR_MASK    = 3 << 0, ///< Mask for horizontal alignment.
-
-	SA_TOP         = 0 << 2, ///< Top align the text.
-	SA_VERT_CENTER = 1 << 2, ///< Vertically center the text.
-	SA_BOTTOM      = 2 << 2, ///< Bottom align the text.
-	SA_VERT_MASK   = 3 << 2, ///< Mask for vertical alignment.
-
-	SA_CENTER      = SA_HOR_CENTER | SA_VERT_CENTER, ///< Center both horizontally and vertically.
-
-	SA_FORCE       = 1 << 4, ///< Force the alignment, i.e. don't swap for RTL languages.
-};
-DECLARE_ENUM_AS_BIT_SET(StringAlignment)
-
 int DrawString(int left, int right, int top, const char *str, TextColour colour = TC_FROMSTRING, StringAlignment align = SA_LEFT, bool underline = false, FontSize fontsize = FS_NORMAL);
+int DrawString(int left, int right, int top, const std::string &str, TextColour colour = TC_FROMSTRING, StringAlignment align = SA_LEFT, bool underline = false, FontSize fontsize = FS_NORMAL);
 int DrawString(int left, int right, int top, StringID str, TextColour colour = TC_FROMSTRING, StringAlignment align = SA_LEFT, bool underline = false, FontSize fontsize = FS_NORMAL);
 int DrawStringMultiLine(int left, int right, int top, int bottom, const char *str, TextColour colour = TC_FROMSTRING, StringAlignment align = (SA_TOP | SA_LEFT), bool underline = false, FontSize fontsize = FS_NORMAL);
+int DrawStringMultiLine(int left, int right, int top, int bottom, const std::string &str, TextColour colour = TC_FROMSTRING, StringAlignment align = (SA_TOP | SA_LEFT), bool underline = false, FontSize fontsize = FS_NORMAL);
 int DrawStringMultiLine(int left, int right, int top, int bottom, StringID str, TextColour colour = TC_FROMSTRING, StringAlignment align = (SA_TOP | SA_LEFT), bool underline = false, FontSize fontsize = FS_NORMAL);
 
-void DrawCharCentered(WChar c, int x, int y, TextColour colour);
+void DrawCharCentered(WChar c, const Rect &r, TextColour colour);
 
 void GfxFillRect(int left, int top, int right, int bottom, int colour, FillRectMode mode = FILLRECT_OPAQUE);
 void GfxFillPolygon(const std::vector<Point> &shape, int colour, FillRectMode mode = FILLRECT_OPAQUE);
@@ -120,6 +106,7 @@ void GfxDrawLine(int left, int top, int right, int bottom, int colour, int width
 void DrawBox(int x, int y, int dx1, int dy1, int dx2, int dy2, int dx3, int dy3);
 
 Dimension GetStringBoundingBox(const char *str, FontSize start_fontsize = FS_NORMAL);
+Dimension GetStringBoundingBox(const std::string &str, FontSize start_fontsize = FS_NORMAL);
 Dimension GetStringBoundingBox(StringID strid);
 int GetStringHeight(const char *str, int maxw, FontSize fontsize = FS_NORMAL);
 int GetStringHeight(StringID str, int maxw);
@@ -134,6 +121,7 @@ void DrawDirtyBlocks();
 void AddDirtyBlock(int left, int top, int right, int bottom);
 void MarkWholeScreenDirty();
 
+bool CopyPalette(Palette &local_palette, bool force_copy = false);
 void GfxInitPalettes();
 void CheckBlitter();
 
@@ -192,8 +180,6 @@ TextColour GetContrastColour(uint8 background, uint8 threshold = 128);
  */
 extern byte _colour_gradient[COLOUR_END][8];
 
-extern bool _palette_remap_grf[];
-
 /**
  * Return the colour for a particular greyscale level.
  * @param level Intensity, 0 = black, 15 = white
@@ -227,6 +213,7 @@ static const uint8 PC_LIGHT_BLUE         = 0x98;           ///< Light blue palet
 static const uint8 PC_ROUGH_LAND         = 0x52;           ///< Dark green palette colour for rough land.
 static const uint8 PC_GRASS_LAND         = 0x54;           ///< Dark green palette colour for grass land.
 static const uint8 PC_BARE_LAND          = 0x37;           ///< Brown palette colour for bare land.
+static const uint8 PC_RAINFOREST         = 0x5C;           ///< Pale green palette colour for rainforest.
 static const uint8 PC_FIELDS             = 0x25;           ///< Light brown palette colour for fields.
 static const uint8 PC_TREES              = 0x57;           ///< Green palette colour for trees.
 static const uint8 PC_WATER              = 0xC9;           ///< Dark blue palette colour for water.

@@ -19,8 +19,8 @@
 
 #include "safeguards.h"
 
-#ifdef _SQ64
-	assert_compile((sizeof(ParentSpriteToDraw) % 16) == 0);
+#ifdef POINTER_IS_64BIT
+	static_assert((sizeof(ParentSpriteToDraw) % 16) == 0);
 #	define LOAD_128 _mm_load_si128
 #else
 #	define LOAD_128 _mm_loadu_si128
@@ -55,7 +55,7 @@ void ViewportSortParentSpritesSSE41(ParentSpriteToSortVector *psdv)
 
 	sprite_list.sort();
 
-	std::vector<ParentSpriteToDraw*> preceding;  // Temporarily stores sprites that precede current and their position in the list
+	std::vector<ParentSpriteToDraw *> preceding;  // Temporarily stores sprites that precede current and their position in the list
 	auto preceding_prev = sprite_list.begin(); // Store iterator in case we need to delete a single preciding sprite
 	auto out = psdv->begin();  // Iterator to output sorted sprites
 
@@ -84,7 +84,7 @@ void ViewportSortParentSpritesSSE41(ParentSpriteToSortVector *psdv)
 		 * Also min coordinates can be > max so using max(xmin, xmax) + max(ymin, ymax)
 		 * to ensure that we iterate the current sprite as we need to remove it from the list.
 		 */
-		auto ssum = max(s->xmax, s->xmin) + max(s->ymax, s->ymin);
+		auto ssum = std::max(s->xmax, s->xmin) + std::max(s->ymax, s->ymin);
 		auto prev = sprite_list.before_begin();
 		auto x = sprite_list.begin();
 		while (x != sprite_list.end() && ((*x).first <= ssum)) {
@@ -151,7 +151,7 @@ void ViewportSortParentSpritesSSE41(ParentSpriteToSortVector *psdv)
 
 		/* Sort all preceding sprites by order and assign new orders in reverse (as original sorter did). */
 		std::sort(preceding.begin(), preceding.end(), [](const ParentSpriteToDraw *a, const ParentSpriteToDraw *b) {
-			return a->order >  b->order;
+			return a->order > b->order;
 		});
 
 		s->order = ORDER_COMPARED;

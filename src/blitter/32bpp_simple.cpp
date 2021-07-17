@@ -106,7 +106,7 @@ void Blitter_32bppSimple::DrawColourMappingRect(void *dst, int width, int height
 		return;
 	}
 
-	DEBUG(misc, 0, "32bpp blitter doesn't know how to draw this colour table ('%d')", pal);
+	Debug(misc, 0, "32bpp blitter doesn't know how to draw this colour table ('{}')", pal);
 }
 
 Sprite *Blitter_32bppSimple::Encode(const SpriteLoader::Sprite *sprite, AllocatorProc *allocator)
@@ -132,7 +132,7 @@ Sprite *Blitter_32bppSimple::Encode(const SpriteLoader::Sprite *sprite, Allocato
 			dst[i].v = 0;
 		} else {
 			/* Get brightest value */
-			uint8 rgb_max = max(src->r, max(src->g, src->b));
+			uint8 rgb_max = std::max({src->r, src->g, src->b});
 
 			/* Black pixel (8bpp or old 32bpp image), so use default value */
 			if (rgb_max == 0) rgb_max = DEFAULT_BRIGHTNESS;

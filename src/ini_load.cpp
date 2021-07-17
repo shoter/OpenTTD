@@ -22,7 +22,7 @@
  */
 IniItem::IniItem(IniGroup *parent, const std::string &name) : next(nullptr)
 {
-	this->name = str_validate(name);
+	this->name = StrMakeValid(name);
 
 	*parent->last_item = this;
 	parent->last_item = &this->next;
@@ -38,13 +38,9 @@ IniItem::~IniItem()
  * Replace the current value with another value.
  * @param value the value to replace with.
  */
-void IniItem::SetValue(const char *value)
+void IniItem::SetValue(const std::string_view value)
 {
-	if (value == nullptr) {
-		this->value.reset();
-	} else {
-		this->value.emplace(value);
-	}
+	this->value.emplace(value);
 }
 
 /**
@@ -54,7 +50,7 @@ void IniItem::SetValue(const char *value)
  */
 IniGroup::IniGroup(IniLoadFile *parent, const std::string &name) : next(nullptr), type(IGT_VARIABLES), item(nullptr)
 {
-	this->name = str_validate(name);
+	this->name = StrMakeValid(name);
 
 	this->last_item = &this->item;
 	*parent->last_group = this;
@@ -102,6 +98,30 @@ IniItem *IniGroup::GetItem(const std::string &name, bool create)
 
 	/* otherwise make a new one */
 	return new IniItem(this, name);
+}
+
+/**
+ * Remove the item with the given name.
+ * @param name Name of the item to remove.
+ */
+void IniGroup::RemoveItem(const std::string &name)
+{
+	IniItem **prev = &this->item;
+
+	for (IniItem *item = this->item; item != nullptr; prev = &item->next, item = item->next) {
+		if (item->name != name) continue;
+
+		*prev = item->next;
+		/* "last_item" is a pointer to the "real-last-item"->next. */
+		if (this->last_item == &item->next) {
+			this->last_item = prev;
+		}
+
+		item->next = nullptr;
+		delete item;
+
+		return;
+	}
 }
 
 /**
@@ -192,7 +212,7 @@ void IniLoadFile::RemoveGroup(const char *name)
  * @param subdir the sub directory to load the file from.
  * @pre nothing has been loaded yet.
  */
-void IniLoadFile::LoadFromDisk(const char *filename, Subdirectory subdir)
+void IniLoadFile::LoadFromDisk(const std::string &filename, Subdirectory subdir)
 {
 	assert(this->last_group == &this->group);
 
@@ -226,7 +246,7 @@ void IniLoadFile::LoadFromDisk(const char *filename, Subdirectory subdir)
 			uint a = comment_alloc;
 			/* add to comment */
 			if (ns > a) {
-				a = max(a, 128U);
+				a = std::max(a, 128U);
 				do a *= 2; while (a < ns);
 				comment = ReallocT(comment, comment_alloc = a);
 			}
@@ -292,7 +312,7 @@ void IniLoadFile::LoadFromDisk(const char *filename, Subdirectory subdir)
 			if (!quoted && e == t) {
 				item->value.reset();
 			} else {
-				item->value = str_validate(std::string(t));
+				item->value = StrMakeValid(std::string(t));
 			}
 		} else {
 			/* it's an orphan item */

@@ -18,10 +18,10 @@
 #include "../../safeguards.h"
 
 /* Make sure that these enums match. */
-assert_compile((int)CRR_MANUAL    == (int)ADMIN_CRR_MANUAL);
-assert_compile((int)CRR_AUTOCLEAN == (int)ADMIN_CRR_AUTOCLEAN);
-assert_compile((int)CRR_BANKRUPT  == (int)ADMIN_CRR_BANKRUPT);
-assert_compile((int)CRR_END       == (int)ADMIN_CRR_END);
+static_assert((int)CRR_MANUAL    == (int)ADMIN_CRR_MANUAL);
+static_assert((int)CRR_AUTOCLEAN == (int)ADMIN_CRR_AUTOCLEAN);
+static_assert((int)CRR_BANKRUPT  == (int)ADMIN_CRR_BANKRUPT);
+static_assert((int)CRR_END       == (int)ADMIN_CRR_END);
 
 /**
  * Create the admin handler for the given socket.
@@ -30,18 +30,12 @@ assert_compile((int)CRR_END       == (int)ADMIN_CRR_END);
 NetworkAdminSocketHandler::NetworkAdminSocketHandler(SOCKET s) : status(ADMIN_STATUS_INACTIVE)
 {
 	this->sock = s;
-	this->admin_name[0] = '\0';
-	this->admin_version[0] = '\0';
-}
-
-NetworkAdminSocketHandler::~NetworkAdminSocketHandler()
-{
 }
 
 NetworkRecvStatus NetworkAdminSocketHandler::CloseConnection(bool error)
 {
 	delete this;
-	return NETWORK_RECV_STATUS_CONN_LOST;
+	return NETWORK_RECV_STATUS_CLIENT_QUIT;
 }
 
 /**
@@ -93,9 +87,9 @@ NetworkRecvStatus NetworkAdminSocketHandler::HandlePacket(Packet *p)
 
 		default:
 			if (this->HasClientQuit()) {
-				DEBUG(net, 0, "[tcp/admin] received invalid packet type %d from '%s' (%s)", type, this->admin_name, this->admin_version);
+				Debug(net, 0, "[tcp/admin] Received invalid packet type {} from '{}' ({})", type, this->admin_name, this->admin_version);
 			} else {
-				DEBUG(net, 0, "[tcp/admin] received illegal packet from '%s' (%s)", this->admin_name, this->admin_version);
+				Debug(net, 0, "[tcp/admin] Received illegal packet from '{}' ({})", this->admin_name, this->admin_version);
 			}
 
 			this->CloseConnection();
@@ -129,7 +123,7 @@ NetworkRecvStatus NetworkAdminSocketHandler::ReceivePackets()
  */
 NetworkRecvStatus NetworkAdminSocketHandler::ReceiveInvalidPacket(PacketAdminType type)
 {
-	DEBUG(net, 0, "[tcp/admin] received illegal packet type %d from admin %s (%s)", type, this->admin_name, this->admin_version);
+	Debug(net, 0, "[tcp/admin] Received illegal packet type {} from admin {} ({})", type, this->admin_name, this->admin_version);
 	return NETWORK_RECV_STATUS_MALFORMED_PACKET;
 }
 

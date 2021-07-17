@@ -25,7 +25,7 @@ static const uint SIG_TBD_SIZE    = 256; ///< number of intersections - open nod
 static const uint SIG_GLOB_SIZE   = 128; ///< number of open blocks (block can be opened more times until detected)
 static const uint SIG_GLOB_UPDATE =  64; ///< how many items need to be in _globset to force update
 
-assert_compile(SIG_GLOB_UPDATE <= SIG_GLOB_SIZE);
+static_assert(SIG_GLOB_UPDATE <= SIG_GLOB_SIZE);
 
 /** incidating trackbits with given enterdir */
 static const TrackBits _enterdir_to_trackbits[DIAGDIR_END] = {
@@ -153,7 +153,7 @@ public:
 	{
 		if (this->IsFull()) {
 			overflowed = true;
-			DEBUG(misc, 0, "SignalSegment too complex. Set %s is full (maximum %d)", name, items);
+			Debug(misc, 0, "SignalSegment too complex. Set {} is full (maximum {})", name, items);
 			return false; // set is full
 		}
 
@@ -216,9 +216,7 @@ static inline bool CheckAddToTodoSet(TileIndex t1, DiagDirection d1, TileIndex t
 
 	assert(!_tbdset.IsIn(t1, d1)); // it really shouldn't be there already
 
-	if (_tbdset.Remove(t2, d2)) return false;
-
-	return true;
+	return !_tbdset.Remove(t2, d2);
 }
 
 

@@ -1,4 +1,9 @@
+set(MASTER_LANG_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/english.txt
+)
+
 set(LANG_SOURCE_FILES
+        ${MASTER_LANG_FILE}
         ${CMAKE_CURRENT_SOURCE_DIR}/afrikaans.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/arabic_egypt.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/basque.txt
@@ -6,11 +11,11 @@ set(LANG_SOURCE_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/brazilian_portuguese.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/bulgarian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/catalan.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/chuvash.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/croatian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/czech.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/danish.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/dutch.txt
-        ${CMAKE_CURRENT_SOURCE_DIR}/english.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/english_AU.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/english_US.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/esperanto.txt
@@ -18,13 +23,16 @@ set(LANG_SOURCE_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/faroese.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/finnish.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/french.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/frisian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/gaelic.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/galician.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/german.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/greek.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/hebrew.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/hindi.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/hungarian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/icelandic.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/ido.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/indonesian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/irish.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/italian.txt
@@ -34,9 +42,13 @@ set(LANG_SOURCE_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/latvian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/lithuanian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/luxembourgish.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/macedonian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/malay.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/maltese.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/marathi.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/norwegian_bokmal.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/norwegian_nynorsk.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/persian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/polish.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/portuguese.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/romanian.txt
@@ -52,6 +64,7 @@ set(LANG_SOURCE_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/thai.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/traditional_chinese.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/turkish.txt
+        ${CMAKE_CURRENT_SOURCE_DIR}/urdu.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/ukrainian.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/vietnamese.txt
         ${CMAKE_CURRENT_SOURCE_DIR}/welsh.txt
@@ -75,7 +88,7 @@ foreach(LANG_SOURCE_FILE IN LISTS LANG_SOURCE_FILES)
                     -s ${CMAKE_CURRENT_SOURCE_DIR}
                     -d ${LANG_BINARY_DIR}
                     ${LANG_SOURCE_FILE}
-            DEPENDS strgen
+            DEPENDS strgen ${MASTER_LANG_FILE}
             MAIN_DEPENDENCY ${LANG_SOURCE_FILE}
             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
             COMMENT "Compiling language ${LANG_SOURCE_FILE_NAME_WE}"
@@ -103,7 +116,7 @@ add_custom_command_timestamp(OUTPUT ${TABLE_BINARY_DIR}/strings.h
         COMMAND strgen
                 -s ${CMAKE_CURRENT_SOURCE_DIR}
                 -d ${TABLE_BINARY_DIR}
-        DEPENDS strgen ${LANG_SOURCE_FILES}
+        DEPENDS strgen ${MASTER_LANG_FILE}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         COMMENT "Generating table/strings.h"
 )

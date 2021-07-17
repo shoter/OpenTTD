@@ -32,8 +32,7 @@
 #include "game/game_info.hpp"
 #include "company_base.h"
 #include "company_func.h"
-
-#include <time.h>
+#include "walltime_func.h"
 
 #ifdef WITH_ALLEGRO
 #	include <allegro.h>
@@ -127,7 +126,7 @@ char *CrashLog::LogOpenTTDVersion(char *buffer, const char *last) const
 			_openttd_revision,
 			_openttd_revision_modified,
 			_openttd_newgrf_version,
-#ifdef _SQ64
+#ifdef POINTER_IS_64BIT
 			64,
 #else
 			32,
@@ -333,9 +332,8 @@ char *CrashLog::LogRecentNews(char *buffer, const char *last) const
  */
 char *CrashLog::FillCrashLog(char *buffer, const char *last) const
 {
-	time_t cur_time = time(nullptr);
 	buffer += seprintf(buffer, last, "*** OpenTTD Crash Report ***\n\n");
-	buffer += seprintf(buffer, last, "Crash at: %s", asctime(gmtime(&cur_time)));
+	buffer += UTCTime::Format(buffer, last, "Crash at: %Y-%m-%d %H:%M:%S (UTC)\n");
 
 	YearMonthDay ymd;
 	ConvertDateToYMD(_date, &ymd);
@@ -368,7 +366,7 @@ char *CrashLog::FillCrashLog(char *buffer, const char *last) const
  */
 bool CrashLog::WriteCrashLog(const char *buffer, char *filename, const char *filename_last) const
 {
-	seprintf(filename, filename_last, "%scrash.log", _personal_dir);
+	seprintf(filename, filename_last, "%scrash.log", _personal_dir.c_str());
 
 	FILE *file = FioFOpenFile(filename, "w", NO_DIRECTORY);
 	if (file == nullptr) return false;
@@ -403,7 +401,7 @@ bool CrashLog::WriteSavegame(char *filename, const char *filename_last) const
 	try {
 		GamelogEmergency();
 
-		seprintf(filename, filename_last, "%scrash.sav", _personal_dir);
+		seprintf(filename, filename_last, "%scrash.sav", _personal_dir.c_str());
 
 		/* Don't do a threaded saveload. */
 		return SaveOrLoad(filename, SLO_SAVE, DFT_GAME_FILE, NO_DIRECTORY, false) == SL_OK;

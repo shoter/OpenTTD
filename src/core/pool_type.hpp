@@ -80,9 +80,9 @@ private:
 template <class Titem, typename Tindex, size_t Tgrowth_step, size_t Tmax_size, PoolType Tpool_type = PT_NORMAL, bool Tcache = false, bool Tzero = true>
 struct Pool : PoolBase {
 	/* Ensure Tmax_size is within the bounds of Tindex. */
-	assert_compile((uint64)(Tmax_size - 1) >> 8 * sizeof(Tindex) == 0);
+	static_assert((uint64)(Tmax_size - 1) >> 8 * sizeof(Tindex) == 0);
 
-	static const size_t MAX_SIZE = Tmax_size; ///< Make template parameter accessible from outside
+	static constexpr size_t MAX_SIZE = Tmax_size; ///< Make template parameter accessible from outside
 
 	const char * const name; ///< Name of this pool
 
@@ -90,9 +90,9 @@ struct Pool : PoolBase {
 	size_t first_free;   ///< No item with index lower than this is free (doesn't say anything about this one!)
 	size_t first_unused; ///< This and all higher indexes are free (doesn't say anything about first_unused-1 !)
 	size_t items;        ///< Number of used indexes (non-nullptr)
-#ifdef OTTD_ASSERT
+#ifdef WITH_ASSERT
 	size_t checked;      ///< Number of items we checked for
-#endif /* OTTD_ASSERT */
+#endif /* WITH_ASSERT */
 	bool cleaning;       ///< True if cleaning pool (deleting all items)
 
 	Titem **data;        ///< Pointer to array of pointers to Titem
@@ -130,9 +130,9 @@ struct Pool : PoolBase {
 	inline bool CanAllocate(size_t n = 1)
 	{
 		bool ret = this->items <= Tmax_size - n;
-#ifdef OTTD_ASSERT
+#ifdef WITH_ASSERT
 		this->checked = ret ? n : 0;
-#endif /* OTTD_ASSERT */
+#endif /* WITH_ASSERT */
 		return ret;
 	}
 

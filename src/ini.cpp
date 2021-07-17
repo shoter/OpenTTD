@@ -43,7 +43,7 @@ IniFile::IniFile(const char * const *list_group_names) : IniLoadFile(list_group_
  * @param filename the file to save to.
  * @return true if saving succeeded.
  */
-bool IniFile::SaveToDisk(const char *filename)
+bool IniFile::SaveToDisk(const std::string &filename)
 {
 	/*
 	 * First write the configuration to a (temporary) file and then rename
@@ -53,7 +53,7 @@ bool IniFile::SaveToDisk(const char *filename)
 	std::string file_new{ filename };
 	file_new.append(".new");
 
-	std::ofstream os(OTTD2FS(file_new.c_str()));
+	std::ofstream os(OTTD2FS(file_new).c_str());
 	if (os.fail()) return false;
 
 	for (const IniGroup *group = this->group; group != nullptr; group = group->next) {
@@ -92,17 +92,15 @@ bool IniFile::SaveToDisk(const char *filename)
 #endif
 
 #if defined(_WIN32)
-	/* _tcsncpy = strcpy is TCHAR is char, but isn't when TCHAR is wchar. */
-#	undef strncpy
 	/* Allocate space for one more \0 character. */
-	TCHAR tfilename[MAX_PATH + 1], tfile_new[MAX_PATH + 1];
-	_tcsncpy(tfilename, OTTD2FS(filename), MAX_PATH);
-	_tcsncpy(tfile_new, OTTD2FS(file_new.c_str()), MAX_PATH);
+	wchar_t tfilename[MAX_PATH + 1], tfile_new[MAX_PATH + 1];
+	wcsncpy(tfilename, OTTD2FS(filename).c_str(), MAX_PATH);
+	wcsncpy(tfile_new, OTTD2FS(file_new).c_str(), MAX_PATH);
 	/* SHFileOperation wants a double '\0' terminated string. */
 	tfilename[MAX_PATH - 1] = '\0';
 	tfile_new[MAX_PATH - 1] = '\0';
-	tfilename[_tcslen(tfilename) + 1] = '\0';
-	tfile_new[_tcslen(tfile_new) + 1] = '\0';
+	tfilename[wcslen(tfilename) + 1] = '\0';
+	tfile_new[wcslen(tfile_new) + 1] = '\0';
 
 	/* Rename file without any user confirmation. */
 	SHFILEOPSTRUCT shfopt;
@@ -113,8 +111,8 @@ bool IniFile::SaveToDisk(const char *filename)
 	shfopt.pTo    = tfilename;
 	SHFileOperation(&shfopt);
 #else
-	if (rename(file_new.c_str(), filename) < 0) {
-		DEBUG(misc, 0, "Renaming %s to %s failed; configuration not saved", file_new.c_str(), filename);
+	if (rename(file_new.c_str(), filename.c_str()) < 0) {
+		Debug(misc, 0, "Renaming {} to {} failed; configuration not saved", file_new, filename);
 	}
 #endif
 
@@ -125,7 +123,7 @@ bool IniFile::SaveToDisk(const char *filename)
 	return true;
 }
 
-/* virtual */ FILE *IniFile::OpenFile(const char *filename, Subdirectory subdir, size_t *size)
+/* virtual */ FILE *IniFile::OpenFile(const std::string &filename, Subdirectory subdir, size_t *size)
 {
 	/* Open the text file in binary mode to prevent end-of-line translations
 	 * done by ftell() and friends, as defined by K&R. */

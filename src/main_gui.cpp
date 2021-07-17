@@ -48,45 +48,6 @@
 
 #include "safeguards.h"
 
-static int _rename_id = 1;
-static int _rename_what = -1;
-
-void CcGiveMoney(const CommandCost &result, TileIndex tile, uint32 p1, uint32 p2, uint32 cmd)
-{
-	if (result.Failed() || !_settings_game.economy.give_money) return;
-
-	/* Inform the company of the action of one of its clients (controllers). */
-	char msg[64];
-	SetDParam(0, p2);
-	GetString(msg, STR_COMPANY_NAME, lastof(msg));
-
-	if (!_network_server) {
-		NetworkClientSendChat(NETWORK_ACTION_GIVE_MONEY, DESTTYPE_TEAM, p2, msg, p1);
-	} else {
-		NetworkServerSendChat(NETWORK_ACTION_GIVE_MONEY, DESTTYPE_TEAM, p2, msg, CLIENT_ID_SERVER, p1);
-	}
-}
-
-void HandleOnEditText(const char *str)
-{
-	switch (_rename_what) {
-		case 3: { // Give money, you can only give money in excess of loan
-			const Company *c = Company::GetIfValid(_local_company);
-			if (c == nullptr) break;
-			Money money = min(c->money - c->current_loan, (Money)(atoi(str) / _currency->rate));
-
-			uint32 money_c = Clamp(ClampToI32(money), 0, 20000000); // Clamp between 20 million and 0
-
-			/* Give 'id' the money, and subtract it from ourself */
-			DoCommandP(0, money_c, _rename_id, CMD_GIVE_MONEY | CMD_MSG(STR_ERROR_INSUFFICIENT_FUNDS), CcGiveMoney, str);
-			break;
-		}
-		default: NOT_REACHED();
-	}
-
-	_rename_id = _rename_what = -1;
-}
-
 /**
  * This code is shared for the majority of the pushbuttons.
  * Handles e.g. the pressing of a button (to build things), playing of click sound and sets certain parameters
@@ -119,14 +80,6 @@ void CcPlaySound_EXPLOSION(const CommandCost &result, TileIndex tile, uint32 p1,
 {
 	if (result.Succeeded() && _settings_client.sound.confirm) SndPlayTileFx(SND_12_EXPLOSION, tile);
 }
-
-void ShowNetworkGiveMoneyWindow(CompanyID company)
-{
-	_rename_id = company;
-	_rename_what = 3;
-	ShowQueryString(STR_EMPTY, STR_NETWORK_GIVE_MONEY_CAPTION, 30, nullptr, CS_NUMERAL, QSF_NONE);
-}
-
 
 /**
  * Zooms a viewport in a window in or out.
@@ -350,17 +303,17 @@ struct MainWindow : Window
 			}
 
 			case GHK_RESET_OBJECT_TO_PLACE: ResetObjectToPlace(); break;
-			case GHK_DELETE_WINDOWS: DeleteNonVitalWindows(); break;
-			case GHK_DELETE_NONVITAL_WINDOWS: DeleteAllNonVitalWindows(); break;
+			case GHK_DELETE_WINDOWS: CloseNonVitalWindows(); break;
+			case GHK_DELETE_NONVITAL_WINDOWS: CloseAllNonVitalWindows(); break;
 			case GHK_DELETE_ALL_MESSAGES: DeleteAllMessages(); break;
 			case GHK_REFRESH_SCREEN: MarkWholeScreenDirty(); break;
 
 			case GHK_CRASH: // Crash the game
-				*(volatile byte *)0 = 0;
+				*(volatile byte *)nullptr = 0;
 				break;
 
 			case GHK_MONEY: // Gimme money
-				/* You can only cheat for money in single player. */
+				/* You can only cheat for money in singleplayer mode. */
 				if (!_networking) DoCommandP(0, 10000000, 0, CMD_MONEY_CHEAT);
 				break;
 

@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.5)
 
+if(NOT REV_MAJOR)
+    set(REV_MAJOR 0)
+endif()
+if(NOT REV_MINOR)
+    set(REV_MINOR 0)
+endif()
+if(NOT REV_BUILD)
+    set(REV_BUILD 0)
+endif()
+
 #
 # Finds the current version of the current folder.
 #
@@ -83,7 +93,7 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
         set(REV_ISTAG 1)
 
         string(REGEX REPLACE "^[0-9.]+$" "" STABLETAG "${TAG}")
-        if(NOT STABLETAG STREQUAL "")
+        if(STABLETAG STREQUAL "")
             set(REV_ISSTABLETAG 1)
         else()
             set(REV_ISSTABLETAG 0)
@@ -128,7 +138,7 @@ else()
     configure_file("${CMAKE_SOURCE_DIR}/src/rev.cpp.in"
             "${FIND_VERSION_BINARY_DIR}/rev.cpp")
 
-    if(WIN32)
+    if(WINDOWS)
         message(STATUS "Generating ottdres.rc")
         configure_file("${CMAKE_SOURCE_DIR}/src/os/windows/ottdres.rc.in"
                 "${FIND_VERSION_BINARY_DIR}/ottdres.rc")
