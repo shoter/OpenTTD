@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file ship_gui.cpp GUI for ships. */
@@ -14,7 +14,6 @@
 #include "vehicle_gui.h"
 #include "strings_func.h"
 #include "vehicle_func.h"
-#include "spritecache.h"
 #include "zoom_func.h"
 
 #include "table/strings.h"
@@ -24,32 +23,34 @@
 /**
  * Draws an image of a ship
  * @param v         Front vehicle
- * @param left      The minimum horizontal position
- * @param right     The maximum horizontal position
- * @param y         Vertical position to draw at
+ * @param r         Rect to draw at
  * @param selection Selected vehicle to draw a frame around
+ * @param image_type Context where the image is being drawn.
  */
-void DrawShipImage(const Vehicle *v, int left, int right, int y, VehicleID selection, EngineImageType image_type)
+void DrawShipImage(const Vehicle *v, const Rect &r, VehicleID selection, EngineImageType image_type)
 {
 	bool rtl = _current_text_dir == TD_RTL;
 
 	VehicleSpriteSeq seq;
-	v->GetImage(rtl ? DIR_E : DIR_W, image_type, &seq);
+	v->GetImage(rtl ? Direction::E : Direction::W, image_type, &seq);
 
 	Rect rect;
 	seq.GetBounds(&rect);
 
-	int width = UnScaleGUI(rect.right - rect.left + 1);
+	int width = UnScaleGUI(rect.Width());
 	int x_offs = UnScaleGUI(rect.left);
-	int x = rtl ? right - width - x_offs : left - x_offs;
+	int x = rtl ? r.right - width - x_offs : r.left - x_offs;
+	/* This magic -1 offset is related to the sprite_y_offsets in build_vehicle_gui.cpp */
+	int y = ScaleSpriteTrad(-1) + CentreBounds(r.top, r.bottom, 0);
 
-	y += ScaleGUITrad(10);
 	seq.Draw(x, y, GetVehiclePalette(v), false);
+	if (v->cargo_cap > 0) DrawCargoIconOverlay(x, y, v->cargo_type);
 
 	if (v->index == selection) {
 		x += x_offs;
 		y += UnScaleGUI(rect.top);
-		DrawFrameRect(x - 1, y - 1, x + width + 1, y + UnScaleGUI(rect.bottom - rect.top + 1) + 1, COLOUR_WHITE, FR_BORDERONLY);
+		Rect hr = {x, y, x + width - 1, y + UnScaleGUI(rect.Height()) - 1};
+		DrawFrameRect(hr.Expand(WidgetDimensions::scaled.bevel), Colours::White, FrameFlag::BorderOnly);
 	}
 }
 
@@ -57,32 +58,25 @@ void DrawShipImage(const Vehicle *v, int left, int right, int y, VehicleID selec
  * Draw the details for the given vehicle at the given position
  *
  * @param v     current vehicle
- * @param left  The left most coordinate to draw
- * @param right The right most coordinate to draw
- * @param y     The y coordinate
+ * @param r     the Rect to draw within
  */
-void DrawShipDetails(const Vehicle *v, int left, int right, int y)
+void DrawShipDetails(const Vehicle *v, const Rect &r)
 {
-	SetDParam(0, v->engine_type);
-	SetDParam(1, v->build_year);
-	SetDParam(2, v->value);
-	DrawString(left, right, y, STR_VEHICLE_INFO_BUILT_VALUE);
+	int y = r.top;
 
-	SetDParam(0, v->cargo_type);
-	SetDParam(1, v->cargo_cap);
-	SetDParam(4, GetCargoSubtypeText(v));
-	DrawString(left, right, y + FONT_HEIGHT_NORMAL, STR_VEHICLE_INFO_CAPACITY);
+	DrawString(r.left, r.right, y, GetString(STR_VEHICLE_INFO_BUILT_VALUE, PackEngineNameDParam(v->engine_type, EngineNameContext::VehicleDetails), v->build_year, v->value));
+	y += GetCharacterHeight(FontSize::Normal);
 
-	StringID str = STR_VEHICLE_DETAILS_CARGO_EMPTY;
+	DrawString(r.left, r.right, y, GetString(STR_VEHICLE_INFO_CAPACITY, v->cargo_type, v->cargo_cap, GetCargoSubtypeText(v)));
+	y += GetCharacterHeight(FontSize::Normal) + WidgetDimensions::scaled.vsep_normal;
+
 	if (v->cargo.StoredCount() > 0) {
-		SetDParam(0, v->cargo_type);
-		SetDParam(1, v->cargo.StoredCount());
-		SetDParam(2, v->cargo.Source());
-		str = STR_VEHICLE_DETAILS_CARGO_FROM;
+		DrawString(r.left, r.right, y, GetString(STR_VEHICLE_DETAILS_CARGO_FROM, v->cargo_type, v->cargo.StoredCount(), v->cargo.GetFirstStation()));
+	} else {
+		DrawString(r.left, r.right, y, STR_VEHICLE_DETAILS_CARGO_EMPTY);
 	}
-	DrawString(left, right, y + 2 * FONT_HEIGHT_NORMAL + 1, str);
+	y += GetCharacterHeight(FontSize::Normal) + WidgetDimensions::scaled.vsep_normal;
 
 	/* Draw Transfer credits text */
-	SetDParam(0, v->cargo.FeederShare());
-	DrawString(left, right, y + 3 * FONT_HEIGHT_NORMAL + 3, STR_VEHICLE_INFO_FEEDER_CARGO_VALUE);
+	DrawString(r.left, r.right, y, GetString(STR_VEHICLE_INFO_FEEDER_CARGO_VALUE, v->cargo.GetFeederShare()));
 }

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file smallmap_widget.h Types related to the smallmap widgets. */
@@ -11,7 +11,7 @@
 #define WIDGETS_SMALLMAP_WIDGET_H
 
 /** Widgets of the #SmallMapWindow class. */
-enum SmallMapWidgets {
+enum SmallMapWidgets : WidgetID {
 	WID_SM_CAPTION,        ///< Caption of the window.
 	WID_SM_MAP_BORDER,     ///< Border around the smallmap.
 	WID_SM_MAP,            ///< Panel containing the smallmap.
@@ -32,6 +32,8 @@ enum SmallMapWidgets {
 	WID_SM_ENABLE_ALL,     ///< Button to enable display of all legend entries.
 	WID_SM_DISABLE_ALL,    ///< Button to disable display of all legend entries.
 	WID_SM_SHOW_HEIGHT,    ///< Show heightmap toggle button.
+	WID_SM_SHOW_IND_NAMES, ///< Show industry names toggle button.
+	WID_SM_SHOW_IND_NAMES_SEL, ///< Container for the 'show industry names' button, which can be hidden.
 };
 
 #endif /* WIDGETS_SMALLMAP_WIDGET_H */

@@ -2,22 +2,24 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file story_sl.cpp Code handling saving and loading of story pages */
+/** @file story_sl.cpp Code handling saving and loading of story pages. */
 
 #include "../stdafx.h"
-#include "../story_base.h"
 
 #include "saveload.h"
+#include "compat/story_sl_compat.h"
+
+#include "../story_base.h"
 
 #include "../safeguards.h"
 
 /** Called after load to trash broken pages. */
 void AfterLoadStoryBook()
 {
-	if (IsSavegameVersionBefore(SLV_185)) {
+	if (IsSavegameVersionBefore(SaveLoadVersion::Storybooks)) {
 		/* Trash all story pages and page elements because
 		 * they were saved with wrong data types.
 		 */
@@ -27,77 +29,95 @@ void AfterLoadStoryBook()
 }
 
 static const SaveLoad _story_page_elements_desc[] = {
-	SLE_CONDVAR(StoryPageElement, sort_value,    SLE_FILE_U16 | SLE_VAR_U32, SL_MIN_VERSION,   SLV_185),
-	SLE_CONDVAR(StoryPageElement, sort_value,    SLE_UINT32,                 SLV_185, SL_MAX_VERSION),
-	    SLE_VAR(StoryPageElement, page,          SLE_UINT16),
-	SLE_CONDVAR(StoryPageElement, type,          SLE_FILE_U16 | SLE_VAR_U8,  SL_MIN_VERSION,   SLV_185),
-	SLE_CONDVAR(StoryPageElement, type,          SLE_UINT8,                  SLV_185, SL_MAX_VERSION),
-	    SLE_VAR(StoryPageElement, referenced_id, SLE_UINT32),
-	    SLE_STR(StoryPageElement, text,          SLE_STR | SLF_ALLOW_CONTROL, 0),
-	    SLE_END()
+	SaveLoad::Variable<VarFileType::U16>("sort_value", SLE_OBJECT_ADDRESS(StoryPageElement, sort_value), SaveLoadVersion::MinVersion, SaveLoadVersion::Storybooks),
+	SaveLoad::Variable<VarFileType::U32>("sort_value", SLE_OBJECT_ADDRESS(StoryPageElement, sort_value), SaveLoadVersion::Storybooks),
+	SaveLoad::Variable<VarFileType::U16>("page", SLE_OBJECT_ADDRESS(StoryPageElement, page)),
+	SaveLoad::Variable<VarFileType::U16>("type", SLE_OBJECT_ADDRESS(StoryPageElement, type), SaveLoadVersion::MinVersion, SaveLoadVersion::Storybooks),
+	SaveLoad::Variable<VarFileType::U8>("type", SLE_OBJECT_ADDRESS(StoryPageElement, type), SaveLoadVersion::Storybooks),
+	SaveLoad::Variable<VarFileType::U32>("referenced_id", SLE_OBJECT_ADDRESS(StoryPageElement, referenced_id)),
+	SaveLoad::String("text", SLE_OBJECT_ADDRESS(StoryPageElement, text), StringValidationSetting::AllowControlCode),
 };
 
-static void Save_STORY_PAGE_ELEMENT()
-{
-	for (StoryPageElement *s : StoryPageElement::Iterate()) {
-		SlSetArrayIndex(s->index);
-		SlObject(s, _story_page_elements_desc);
-	}
-}
+struct STPEChunkHandler : ChunkHandler {
+	STPEChunkHandler() : ChunkHandler("STPE", ChunkType::Table) {}
 
-static void Load_STORY_PAGE_ELEMENT()
-{
-	int index;
-	uint32 max_sort_value = 0;
-	while ((index = SlIterateArray()) != -1) {
-		StoryPageElement *s = new (index) StoryPageElement();
-		SlObject(s, _story_page_elements_desc);
-		if (s->sort_value > max_sort_value) {
-			max_sort_value = s->sort_value;
+	void Save() const override
+	{
+		SlTableHeader(_story_page_elements_desc);
+
+		for (StoryPageElement *s : StoryPageElement::Iterate()) {
+			SlSetArrayIndex(s->index);
+			SlObject(s, _story_page_elements_desc);
 		}
 	}
-	/* Update the next sort value, so that the next
-	 * created page is shown after all existing pages.
-	 */
-	_story_page_element_next_sort_value = max_sort_value + 1;
-}
+
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_story_page_elements_desc, _story_page_elements_sl_compat);
+
+		int index;
+		uint32_t max_sort_value = 0;
+		while ((index = SlIterateArray()) != -1) {
+			StoryPageElement *s = StoryPageElement::CreateAtIndex(StoryPageElementID(index));
+			SlObject(s, slt);
+			if (s->sort_value > max_sort_value) {
+				max_sort_value = s->sort_value;
+			}
+		}
+		/* Update the next sort value, so that the next
+		 * created page is shown after all existing pages.
+		 */
+		_story_page_element_next_sort_value = max_sort_value + 1;
+	}
+};
 
 static const SaveLoad _story_pages_desc[] = {
-	SLE_CONDVAR(StoryPage, sort_value, SLE_FILE_U16 | SLE_VAR_U32, SL_MIN_VERSION,   SLV_185),
-	SLE_CONDVAR(StoryPage, sort_value, SLE_UINT32,                 SLV_185, SL_MAX_VERSION),
-	    SLE_VAR(StoryPage, date,       SLE_UINT32),
-	SLE_CONDVAR(StoryPage, company,    SLE_FILE_U16 | SLE_VAR_U8,  SL_MIN_VERSION,   SLV_185),
-	SLE_CONDVAR(StoryPage, company,    SLE_UINT8,                  SLV_185, SL_MAX_VERSION),
-	    SLE_STR(StoryPage, title,      SLE_STR | SLF_ALLOW_CONTROL, 0),
-	    SLE_END()
+	SaveLoad::Variable<VarFileType::U16>("sort_value", SLE_OBJECT_ADDRESS(StoryPage, sort_value), SaveLoadVersion::MinVersion, SaveLoadVersion::Storybooks),
+	SaveLoad::Variable<VarFileType::U32>("sort_value", SLE_OBJECT_ADDRESS(StoryPage, sort_value), SaveLoadVersion::Storybooks),
+	SaveLoad::Variable<VarFileType::U32>("date", SLE_OBJECT_ADDRESS(StoryPage, date)),
+	SaveLoad::Variable<VarFileType::U16>("company", SLE_OBJECT_ADDRESS(StoryPage, company), SaveLoadVersion::MinVersion, SaveLoadVersion::Storybooks),
+	SaveLoad::Variable<VarFileType::U8>("company", SLE_OBJECT_ADDRESS(StoryPage, company), SaveLoadVersion::Storybooks),
+	SaveLoad::String("title", SLE_OBJECT_ADDRESS(StoryPage, title), StringValidationSetting::AllowControlCode),
 };
 
-static void Save_STORY_PAGE()
-{
-	for (StoryPage *s : StoryPage::Iterate()) {
-		SlSetArrayIndex(s->index);
-		SlObject(s, _story_pages_desc);
-	}
-}
+struct STPAChunkHandler : ChunkHandler {
+	STPAChunkHandler() : ChunkHandler("STPA", ChunkType::Table) {}
 
-static void Load_STORY_PAGE()
-{
-	int index;
-	uint32 max_sort_value = 0;
-	while ((index = SlIterateArray()) != -1) {
-		StoryPage *s = new (index) StoryPage();
-		SlObject(s, _story_pages_desc);
-		if (s->sort_value > max_sort_value) {
-			max_sort_value = s->sort_value;
+	void Save() const override
+	{
+		SlTableHeader(_story_pages_desc);
+
+		for (StoryPage *s : StoryPage::Iterate()) {
+			SlSetArrayIndex(s->index);
+			SlObject(s, _story_pages_desc);
 		}
 	}
-	/* Update the next sort value, so that the next
-	 * created page is shown after all existing pages.
-	 */
-	_story_page_next_sort_value = max_sort_value + 1;
-}
 
-extern const ChunkHandler _story_page_chunk_handlers[] = {
-	{ 'STPE', Save_STORY_PAGE_ELEMENT, Load_STORY_PAGE_ELEMENT, nullptr, nullptr, CH_ARRAY},
-	{ 'STPA', Save_STORY_PAGE,         Load_STORY_PAGE,         nullptr, nullptr, CH_ARRAY | CH_LAST},
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_story_pages_desc, _story_pages_sl_compat);
+
+		int index;
+		uint32_t max_sort_value = 0;
+		while ((index = SlIterateArray()) != -1) {
+			StoryPage *s = StoryPage::CreateAtIndex(StoryPageID(index));
+			SlObject(s, slt);
+			if (s->sort_value > max_sort_value) {
+				max_sort_value = s->sort_value;
+			}
+		}
+		/* Update the next sort value, so that the next
+		 * created page is shown after all existing pages.
+		 */
+		_story_page_next_sort_value = max_sort_value + 1;
+	}
 };
+
+static const STPEChunkHandler STPE;
+static const STPAChunkHandler STPA;
+static const ChunkHandlerRef story_page_chunk_handlers[] = {
+	STPE,
+	STPA,
+};
+
+extern const ChunkHandlerTable _story_page_chunk_handlers(story_page_chunk_handlers);

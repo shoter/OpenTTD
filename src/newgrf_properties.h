@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file newgrf_properties.h Properties of NewGRF Action 0. */
@@ -15,7 +15,7 @@
  * Names are formatted as PROP_<CLASS>_<NAME>
  * @todo Currently the list only contains properties which are used more than once in the code. I.e. they are available for callback 0x36.
  */
-enum PropertyID {
+enum PropertyID : uint8_t {
 	PROP_VEHICLE_LOAD_AMOUNT                    = 0x07, ///< Loading speed
 
 	PROP_TRAIN_SPEED                            = 0x09, ///< Max. speed: 1 unit = 1/1.6 mph = 1 km-ish/h
@@ -28,6 +28,7 @@ enum PropertyID {
 	PROP_TRAIN_SHORTEN_FACTOR                   = 0x21, ///< Shorter vehicles
 	PROP_TRAIN_USER_DATA                        = 0x25, ///< User defined data for vehicle variable 0x42
 	PROP_TRAIN_CARGO_AGE_PERIOD                 = 0x2B, ///< Number of ticks before carried cargo is aged
+	PROP_TRAIN_CURVE_SPEED_MOD                  = 0x2E, ///< Modifier to maximum speed in curves
 
 	PROP_ROADVEH_RUNNING_COST_FACTOR            = 0x09, ///< Yearly runningcost
 	PROP_ROADVEH_CARGO_CAPACITY                 = 0x0F, ///< Capacity

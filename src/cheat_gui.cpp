@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file cheat_gui.cpp GUI related to cheating. */
@@ -12,11 +12,10 @@
 #include "cheat_type.h"
 #include "company_base.h"
 #include "company_func.h"
-#include "date_func.h"
-#include "saveload/saveload.h"
+#include "currency_func.h"
+#include "vehicle_base.h"
 #include "textbuf_gui.h"
 #include "window_gui.h"
-#include "string_func.h"
 #include "strings_func.h"
 #include "window_func.h"
 #include "rail_gui.h"
@@ -27,10 +26,18 @@
 #include "tile_map.h"
 #include "newgrf.h"
 #include "error.h"
+#include "misc_cmd.h"
+#include "settings_type.h"
+#include "settings_internal.h"
+#include "timer/timer.h"
+#include "timer/timer_game_calendar.h"
+#include "timer/timer_game_economy.h"
+#include "core/string_consumer.hpp"
 
 #include "widgets/cheat_widget.h"
 
 #include "table/sprites.h"
+#include "table/strings.h"
 
 #include "safeguards.h"
 
@@ -40,121 +47,134 @@
  * This variable is semantically a constant value, but because the cheat
  * code requires to be able to write to the variable it is not constified.
  */
-static int32 _money_cheat_amount = 10000000;
+static int32_t _money_cheat_amount = 10000000;
 
 /**
  * Handle cheating of money.
  * Note that the amount of money of a company must be changed through a command
  * rather than by setting a variable. Since the cheat data structure expects a
  * variable, the amount of given/taken money is used for this purpose.
- * @param p1 not used.
- * @param p2 is -1 or +1 (down/up)
+ * @param change_direction is -1 or +1 (down/up)
  * @return Amount of money cheat.
  */
-static int32 ClickMoneyCheat(int32 p1, int32 p2)
+static int32_t ClickMoneyCheat(int32_t, int32_t change_direction)
 {
-	DoCommandP(0, (uint32)(p2 * _money_cheat_amount), 0, CMD_MONEY_CHEAT);
+	Command<Commands::MoneyCheat>::Post(Money(_money_cheat_amount) * change_direction);
 	return _money_cheat_amount;
 }
 
 /**
  * Handle changing of company.
- * @param p1 company to set to
- * @param p2 is -1 or +1 (down/up)
+ * @param new_value company to set to
+ * @param change_direction is -1 or +1 (down/up)
  * @return The new company.
  */
-static int32 ClickChangeCompanyCheat(int32 p1, int32 p2)
+static int32_t ClickChangeCompanyCheat(int32_t new_value, int32_t change_direction)
 {
-	while ((uint)p1 < Company::GetPoolSize()) {
-		if (Company::IsValidID((CompanyID)p1)) {
-			SetLocalCompany((CompanyID)p1);
-			return _local_company;
+	while ((uint)new_value < Company::GetPoolSize()) {
+		if (Company::IsValidID((CompanyID)new_value)) {
+			SetLocalCompany((CompanyID)new_value);
+			return _local_company.base();
 		}
-		p1 += p2;
+		new_value += change_direction;
 	}
 
-	return _local_company;
+	return _local_company.base();
 }
 
 /**
  * Allow (or disallow) changing production of all industries.
- * @param p1 new value
- * @param p2 unused
+ * @param new_value new value
  * @return New value allowing change of industry production.
  */
-static int32 ClickSetProdCheat(int32 p1, int32 p2)
+static int32_t ClickSetProdCheat(int32_t new_value, int32_t)
 {
-	_cheats.setup_prod.value = (p1 != 0);
-	InvalidateWindowClassesData(WC_INDUSTRY_VIEW);
+	_cheats.setup_prod.value = (new_value != 0);
+	InvalidateWindowClassesData(WindowClass::IndustryView);
 	return _cheats.setup_prod.value;
 }
 
-extern void EnginesMonthlyLoop();
+extern void CalendarEnginesMonthlyLoop();
 
 /**
  * Handle changing of the current year.
- * @param p1 Unused.
- * @param p2 +1 (increase) or -1 (decrease).
+ * @param new_value The chosen year to change to.
  * @return New year.
  */
-static int32 ClickChangeDateCheat(int32 p1, int32 p2)
+static int32_t ClickChangeDateCheat(int32_t new_value, int32_t)
 {
-	YearMonthDay ymd;
-	ConvertDateToYMD(_date, &ymd);
+	/* Don't allow changing to an invalid year, or the current year. */
+	auto new_year = Clamp(TimerGameCalendar::Year(new_value), CalendarTime::MIN_YEAR, CalendarTime::MAX_YEAR);
+	if (new_year == TimerGameCalendar::year) return TimerGameCalendar::year.base();
 
-	p1 = Clamp(p1, MIN_YEAR, MAX_YEAR);
-	if (p1 == _cur_year) return _cur_year;
+	TimerGameCalendar::YearMonthDay ymd = TimerGameCalendar::ConvertDateToYMD(TimerGameCalendar::date);
+	TimerGameCalendar::Date new_calendar_date = TimerGameCalendar::ConvertYMDToDate(new_year, ymd.month, ymd.day);
 
-	Date new_date = ConvertYMDToDate(p1, ymd.month, ymd.day);
-	LinkGraphSchedule::instance.ShiftDates(new_date - _date);
-	SetDate(new_date, _date_fract);
-	EnginesMonthlyLoop();
-	SetWindowDirty(WC_STATUS_BAR, 0);
-	InvalidateWindowClassesData(WC_BUILD_STATION, 0);
-	InvalidateWindowClassesData(WC_BUILD_OBJECT, 0);
+	TimerGameCalendar::SetDate(new_calendar_date, TimerGameCalendar::date_fract);
+
+	/* If not using wallclock units, we keep economy date in sync with calendar date and must change it also. */
+	if (!TimerGameEconomy::UsingWallclockUnits()) {
+		/* Keep economy and calendar dates synced. */
+		TimerGameEconomy::Date new_economy_date{new_calendar_date.base()};
+
+		/* Shift cached dates before we change the date. */
+		for (auto v : Vehicle::Iterate()) v->ShiftDates(new_economy_date - TimerGameEconomy::date);
+		LinkGraphSchedule::instance.ShiftDates(new_economy_date - TimerGameEconomy::date);
+
+		/* Now it's safe to actually change the date. */
+		TimerGameEconomy::SetDate(new_economy_date, TimerGameEconomy::date_fract);
+	}
+
+	CalendarEnginesMonthlyLoop();
+	SetWindowDirty(WindowClass::Statusbar, 0);
+	InvalidateWindowClassesData(WindowClass::BuildStation, 0);
+	InvalidateWindowClassesData(WindowClass::BuildBusStation, 0);
+	InvalidateWindowClassesData(WindowClass::BuildTruckStation, 0);
+	InvalidateWindowClassesData(WindowClass::BuildObject, 0);
+	InvalidateWindowClassesData(WindowClass::Finances, 0);
 	ResetSignalVariant();
-	return _cur_year;
+	return TimerGameCalendar::year.base();
 }
 
 /**
  * Allow (or disallow) a change of the maximum allowed heightlevel.
- * @param p1 new value
- * @param p2 unused
+ * @param new_value new value
  * @return New value (or unchanged old value) of the maximum
  *         allowed heightlevel value.
  */
-static int32 ClickChangeMaxHlCheat(int32 p1, int32 p2)
+static int32_t ClickChangeMaxHlCheat(int32_t new_value, int32_t)
 {
-	p1 = Clamp(p1, MIN_MAX_HEIGHTLEVEL, MAX_MAX_HEIGHTLEVEL);
+	new_value = Clamp(new_value, MIN_MAP_HEIGHT_LIMIT, MAX_MAP_HEIGHT_LIMIT);
 
 	/* Check if at least one mountain on the map is higher than the new value.
 	 * If yes, disallow the change. */
-	for (TileIndex t = 0; t < MapSize(); t++) {
-		if ((int32)TileHeight(t) > p1) {
-			ShowErrorMessage(STR_CONFIG_SETTING_TOO_HIGH_MOUNTAIN, INVALID_STRING_ID, WL_ERROR);
+	for (const auto t : Map::Iterate()) {
+		if ((int32_t)TileHeight(t) > new_value) {
+			ShowErrorMessage(GetEncodedString(STR_CONFIG_SETTING_TOO_HIGH_MOUNTAIN), {}, WarningLevel::Error);
 			/* Return old, unchanged value */
-			return _settings_game.construction.max_heightlevel;
+			return _settings_game.construction.map_height_limit;
 		}
 	}
 
 	/* Execute the change and reload GRF Data */
-	_settings_game.construction.max_heightlevel = p1;
+	_settings_game.construction.map_height_limit = new_value;
 	ReloadNewGRFData();
 
 	/* The smallmap uses an index from heightlevels to colours. Trigger rebuilding it. */
-	InvalidateWindowClassesData(WC_SMALLMAP, 2);
+	InvalidateWindowClassesData(WindowClass::SmallMap, 2);
 
-	return _settings_game.construction.max_heightlevel;
+	return _settings_game.construction.map_height_limit;
 }
 
 /** Available cheats. */
-enum CheatNumbers {
+enum CheatNumbers : uint8_t {
 	CHT_MONEY,           ///< Change amount of money.
 	CHT_CHANGE_COMPANY,  ///< Switch company.
 	CHT_EXTRA_DYNAMITE,  ///< Dynamite anything.
 	CHT_CROSSINGTUNNELS, ///< Allow tunnels to cross each other.
 	CHT_NO_JETCRASH,     ///< Disable jet-airplane crashes.
 	CHT_SETUP_PROD,      ///< Allow manually editing of industry production.
+	CHT_STATION_RATING,  ///< Fix station ratings at 100%.
 	CHT_EDIT_MAX_HL,     ///< Edit maximum allowed heightlevel
 	CHT_CHANGE_DATE,     ///< Do time traveling.
 
@@ -163,14 +183,14 @@ enum CheatNumbers {
 
 /**
  * Signature of handler function when user clicks at a cheat.
- * @param p1 The new value.
- * @param p2 Change direction (+1, +1), \c 0 for boolean settings.
+ * @param new_value The new value.
+ * @param change_direction Change direction (+1, +1), \c 0 for boolean settings.
  */
-typedef int32 CheckButtonClick(int32 p1, int32 p2);
+typedef int32_t CheckButtonClick(int32_t new_value, int32_t change_direction);
 
 /** Information of a cheat. */
 struct CheatEntry {
-	VarType type;          ///< type of selector
+	VarMemType type; ///< type of selector
 	StringID str;          ///< string with descriptive text
 	void *variable;        ///< pointer to the variable
 	bool *been_used;       ///< has this cheat been used before?
@@ -182,239 +202,452 @@ struct CheatEntry {
  * Order matches with the values of #CheatNumbers
  */
 static const CheatEntry _cheats_ui[] = {
-	{SLE_INT32, STR_CHEAT_MONEY,           &_money_cheat_amount,                    &_cheats.money.been_used,            &ClickMoneyCheat         },
-	{SLE_UINT8, STR_CHEAT_CHANGE_COMPANY,  &_local_company,                         &_cheats.switch_company.been_used,   &ClickChangeCompanyCheat },
-	{SLE_BOOL,  STR_CHEAT_EXTRA_DYNAMITE,  &_cheats.magic_bulldozer.value,          &_cheats.magic_bulldozer.been_used,  nullptr                     },
-	{SLE_BOOL,  STR_CHEAT_CROSSINGTUNNELS, &_cheats.crossing_tunnels.value,         &_cheats.crossing_tunnels.been_used, nullptr                     },
-	{SLE_BOOL,  STR_CHEAT_NO_JETCRASH,     &_cheats.no_jetcrash.value,              &_cheats.no_jetcrash.been_used,      nullptr                     },
-	{SLE_BOOL,  STR_CHEAT_SETUP_PROD,      &_cheats.setup_prod.value,               &_cheats.setup_prod.been_used,       &ClickSetProdCheat       },
-	{SLE_UINT8, STR_CHEAT_EDIT_MAX_HL,     &_settings_game.construction.max_heightlevel, &_cheats.edit_max_hl.been_used, &ClickChangeMaxHlCheat   },
-	{SLE_INT32, STR_CHEAT_CHANGE_DATE,     &_cur_year,                              &_cheats.change_date.been_used,      &ClickChangeDateCheat    },
+	{ VarMemType::I32, STR_CHEAT_MONEY, &_money_cheat_amount, &_cheats.money.been_used, &ClickMoneyCheat },
+	{ VarMemType::U8, STR_CHEAT_CHANGE_COMPANY, &_local_company, &_cheats.switch_company.been_used, &ClickChangeCompanyCheat },
+	{ VarMemType::Bool, STR_CHEAT_EXTRA_DYNAMITE, &_cheats.magic_bulldozer.value, &_cheats.magic_bulldozer.been_used, nullptr },
+	{ VarMemType::Bool, STR_CHEAT_CROSSINGTUNNELS, &_cheats.crossing_tunnels.value, &_cheats.crossing_tunnels.been_used, nullptr },
+	{ VarMemType::Bool, STR_CHEAT_NO_JETCRASH, &_cheats.no_jetcrash.value, &_cheats.no_jetcrash.been_used, nullptr },
+	{ VarMemType::Bool, STR_CHEAT_SETUP_PROD, &_cheats.setup_prod.value, &_cheats.setup_prod.been_used, &ClickSetProdCheat },
+	{ VarMemType::Bool, STR_CHEAT_STATION_RATING, &_cheats.station_rating.value, &_cheats.station_rating.been_used, nullptr },
+	{ VarMemType::U8, STR_CHEAT_EDIT_MAX_HL, &_settings_game.construction.map_height_limit, &_cheats.edit_max_hl.been_used, &ClickChangeMaxHlCheat },
+	{ VarMemType::I32, STR_CHEAT_CHANGE_DATE, &TimerGameCalendar::year, &_cheats.change_date.been_used, &ClickChangeDateCheat },
 };
 
-assert_compile(CHT_NUM_CHEATS == lengthof(_cheats_ui));
+static_assert(CHT_NUM_CHEATS == lengthof(_cheats_ui));
 
 /** Widget definitions of the cheat GUI. */
-static const NWidgetPart _nested_cheat_widgets[] = {
+static constexpr std::initializer_list<NWidgetPart> _nested_cheat_widgets = {
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_CLOSEBOX, COLOUR_GREY),
-		NWidget(WWT_CAPTION, COLOUR_GREY), SetDataTip(STR_CHEATS, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
-		NWidget(WWT_SHADEBOX, COLOUR_GREY),
-		NWidget(WWT_STICKYBOX, COLOUR_GREY),
+		NWidget(WWT_CLOSEBOX, Colours::Grey),
+		NWidget(WWT_CAPTION, Colours::Grey), SetStringTip(STR_CHEATS, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, Colours::Grey),
+		NWidget(WWT_STICKYBOX, Colours::Grey),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_GREY, WID_C_PANEL), SetDataTip(0x0, STR_CHEATS_TOOLTIP), EndContainer(),
+	NWidget(WWT_PANEL, Colours::Grey),
+		NWidget(NWID_VERTICAL), SetPadding(WidgetDimensions::unscaled.framerect),
+			NWidget(WWT_EMPTY, Colours::Invalid, WID_C_PANEL),
+			NWidget(WWT_EMPTY, Colours::Invalid, WID_C_SETTINGS),
+		EndContainer(),
+	EndContainer(),
 };
 
 /** GUI for the cheats. */
 struct CheatWindow : Window {
-	int clicked;
-	int header_height;
-	int clicked_widget;
-	uint line_height;
-	int box_width;
+	int clicked = 0;
+	int clicked_cheat = 0;
+	uint line_height = 0;
+	Dimension icon{}; ///< Dimension of company icon sprite
 
-	CheatWindow(WindowDesc *desc) : Window(desc)
+	std::vector<const SettingDesc *> sandbox_settings{};
+	const SettingDesc *clicked_setting = nullptr;
+	const SettingDesc *last_clicked_setting = nullptr;
+	const SettingDesc *valuewindow_entry = nullptr;
+
+	CheatWindow(WindowDesc &desc) : Window(desc)
 	{
-		this->box_width = GetSpriteSize(SPR_BOX_EMPTY).width;
+		this->sandbox_settings = GetFilteredSettingCollection([](const SettingDesc &sd) { return sd.flags.Test(SettingFlag::Sandbox); });
 		this->InitNested();
 	}
 
-	void DrawWidget(const Rect &r, int widget) const override
+	void OnInit() override
 	{
-		if (widget != WID_C_PANEL) return;
+		this->icon = GetSpriteSize(SPR_COMPANY_ICON);
+	}
 
-		int y = r.top + WD_FRAMERECT_TOP + this->header_height;
-		DrawStringMultiLine(r.left + WD_FRAMERECT_LEFT, r.right - WD_FRAMERECT_LEFT, r.top + WD_FRAMERECT_TOP, y, STR_CHEATS_WARNING, TC_FROMSTRING, SA_CENTER);
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		switch (widget) {
+			case WID_C_PANEL: DrawCheatWidget(r); break;
+			case WID_C_SETTINGS: DrawSettingsWidget(r); break;
+		}
+	}
+
+	void DrawCheatWidget(const Rect &r) const
+	{
+		const Rect ir = r;
+		int y = ir.top;
 
 		bool rtl = _current_text_dir == TD_RTL;
-		uint box_left    = rtl ? r.right - this->box_width - 5 : r.left + 5;
-		uint button_left = rtl ? r.right - this->box_width - 10 - SETTING_BUTTON_WIDTH : r.left + this->box_width + 10;
-		uint text_left   = r.left + (rtl ? WD_FRAMERECT_LEFT : 20 + this->box_width + SETTING_BUTTON_WIDTH);
-		uint text_right  = r.right - (rtl ? 20 + this->box_width + SETTING_BUTTON_WIDTH : WD_FRAMERECT_RIGHT);
+		uint button_left = rtl ? ir.right - SETTING_BUTTON_WIDTH : ir.left;
+		uint text_left   = ir.left + (rtl ? 0 : WidgetDimensions::scaled.hsep_wide + SETTING_BUTTON_WIDTH);
+		uint text_right  = ir.right - (rtl ? WidgetDimensions::scaled.hsep_wide + SETTING_BUTTON_WIDTH : 0);
 
-		int text_y_offset = (this->line_height - FONT_HEIGHT_NORMAL) / 2;
-		int icon_y_offset = (this->line_height - SETTING_BUTTON_HEIGHT) / 2;
+		int text_y_offset = (this->line_height - GetCharacterHeight(FontSize::Normal)) / 2;
+		int button_y_offset = (this->line_height - SETTING_BUTTON_HEIGHT) / 2;
+		int icon_y_offset = (this->line_height - this->icon.height) / 2;
 
 		for (int i = 0; i != lengthof(_cheats_ui); i++) {
 			const CheatEntry *ce = &_cheats_ui[i];
 
-			DrawSprite((*ce->been_used) ? SPR_BOX_CHECKED : SPR_BOX_EMPTY, PAL_NONE, box_left, y + icon_y_offset + 2);
-
+			std::string str;
 			switch (ce->type) {
-				case SLE_BOOL: {
+				case VarMemType::Bool: {
 					bool on = (*(bool*)ce->variable);
 
-					DrawBoolButton(button_left, y + icon_y_offset, on, true);
-					SetDParam(0, on ? STR_CONFIG_SETTING_ON : STR_CONFIG_SETTING_OFF);
+					DrawBoolButton(button_left, y + button_y_offset, Colours::Yellow, Colours::Grey, on, true);
+					str = GetString(ce->str, on ? STR_CONFIG_SETTING_ON : STR_CONFIG_SETTING_OFF);
 					break;
 				}
 
 				default: {
-					int32 val = (int32)ReadValue(ce->variable, ce->type);
-					char buf[512];
+					int32_t val = static_cast<int32_t>(ReadValue(ce->variable, ce->type));
 
 					/* Draw [<][>] boxes for settings of an integer-type */
-					DrawArrowButtons(button_left, y + icon_y_offset, COLOUR_YELLOW, clicked - (i * 2), true, true);
+					DrawArrowButtons(button_left, y + button_y_offset, Colours::Yellow, clicked - (i * 2), true, true);
 
-					switch (ce->str) {
+					switch (ce->str.base()) {
 						/* Display date for change date cheat */
-						case STR_CHEAT_CHANGE_DATE: SetDParam(0, _date); break;
+						case STR_CHEAT_CHANGE_DATE.base():
+							str = GetString(ce->str, TimerGameCalendar::date);
+							break;
 
 						/* Draw coloured flag for change company cheat */
-						case STR_CHEAT_CHANGE_COMPANY: {
-							SetDParam(0, val + 1);
-							GetString(buf, STR_CHEAT_CHANGE_COMPANY, lastof(buf));
-							uint offset = 10 + GetStringBoundingBox(buf).width;
-							DrawCompanyIcon(_local_company, rtl ? text_right - offset - 10 : text_left + offset, y + icon_y_offset + 2);
+						case STR_CHEAT_CHANGE_COMPANY.base(): {
+							str = GetString(ce->str, val + 1);
+							uint offset = WidgetDimensions::scaled.hsep_indent + GetStringBoundingBox(str).width;
+							DrawCompanyIcon(_local_company, rtl ? text_right - offset - WidgetDimensions::scaled.hsep_indent : text_left + offset, y + icon_y_offset);
 							break;
 						}
 
-						default: SetDParam(0, val);
+						default:
+							str = GetString(ce->str, val);
+							break;
 					}
 					break;
 				}
 			}
 
-			DrawString(text_left, text_right, y + text_y_offset, ce->str);
+			DrawString(text_left, text_right, y + text_y_offset, str);
 
 			y += this->line_height;
 		}
 	}
 
-	void UpdateWidgetSize(int widget, Dimension *size, const Dimension &padding, Dimension *fill, Dimension *resize) override
+	void DrawSettingsWidget(const Rect &r) const
 	{
-		if (widget != WID_C_PANEL) return;
+		Rect ir = r.WithHeight(this->line_height);
 
+		for (const auto &desc : this->sandbox_settings) {
+			DrawSetting(ir, desc);
+			ir = ir.Translate(0, this->line_height);
+		}
+	}
+
+	void DrawSetting(const Rect r, const SettingDesc *desc) const
+	{
+		const IntSettingDesc *sd = desc->AsIntSetting();
+		int state = this->clicked_setting == sd ? this->clicked : 0;
+
+		bool rtl = _current_text_dir == TD_RTL;
+
+		Rect buttons = r.WithWidth(SETTING_BUTTON_WIDTH, rtl);
+		Rect text = r.Indent(SETTING_BUTTON_WIDTH + WidgetDimensions::scaled.hsep_wide, rtl);
+		buttons.top += (r.Height() - SETTING_BUTTON_HEIGHT) / 2;
+		text.top += (r.Height() - GetCharacterHeight(FontSize::Normal)) / 2;
+
+		/* We do not allow changes of some items when we are a client in a network game */
+		bool editable = sd->IsEditable();
+
+		auto [min_val, max_val] = sd->GetRange();
+		int32_t value = sd->Read(&GetGameSettings());
+		if (sd->IsBoolSetting()) {
+			/* Draw checkbox for boolean-value either on/off */
+			DrawBoolButton(buttons.left, buttons.top, Colours::Yellow, Colours::Grey, value != 0, editable);
+		} else if (sd->flags.Test(SettingFlag::GuiDropdown)) {
+			/* Draw [v] button for settings of an enum-type */
+			DrawDropDownButton(buttons.left, buttons.top, Colours::Yellow, state != 0, editable);
+		} else {
+			/* Draw [<][>] boxes for settings of an integer-type */
+			DrawArrowButtons(buttons.left, buttons.top, Colours::Yellow, state,
+					editable && value != (sd->flags.Test(SettingFlag::GuiZeroIsSpecial) ? 0 : min_val), editable && static_cast<uint32_t>(value) != max_val);
+		}
+		auto [param1, param2] = sd->GetValueParams(value);
+		DrawString(text.left, text.right, text.top, GetString(sd->GetTitle(), STR_CONFIG_SETTING_VALUE, param1, param2), TextColour::LightBlue);
+	}
+
+	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding, [[maybe_unused]] Dimension &fill, [[maybe_unused]] Dimension &resize) override
+	{
+		switch (widget) {
+			case WID_C_PANEL: UpdateCheatPanelSize(size); break;
+			case WID_C_SETTINGS: UpdateSettingsPanelSize(size); break;
+		}
+	}
+
+	void UpdateCheatPanelSize(Dimension &size)
+	{
 		uint width = 0;
-		for (int i = 0; i != lengthof(_cheats_ui); i++) {
-			const CheatEntry *ce = &_cheats_ui[i];
-			switch (ce->type) {
-				case SLE_BOOL:
-					SetDParam(0, STR_CONFIG_SETTING_ON);
-					width = max(width, GetStringBoundingBox(ce->str).width);
-					SetDParam(0, STR_CONFIG_SETTING_OFF);
-					width = max(width, GetStringBoundingBox(ce->str).width);
+		for (const auto &ce : _cheats_ui) {
+			switch (ce.type) {
+				case VarMemType::Bool:
+					width = std::max(width, GetStringBoundingBox(GetString(ce.str, STR_CONFIG_SETTING_ON)).width);
+					width = std::max(width, GetStringBoundingBox(GetString(ce.str, STR_CONFIG_SETTING_OFF)).width);
 					break;
 
 				default:
-					switch (ce->str) {
+					switch (ce.str.base()) {
 						/* Display date for change date cheat */
-						case STR_CHEAT_CHANGE_DATE:
-							SetDParam(0, ConvertYMDToDate(MAX_YEAR, 11, 31));
-							width = max(width, GetStringBoundingBox(ce->str).width);
+						case STR_CHEAT_CHANGE_DATE.base():
+							width = std::max(width, GetStringBoundingBox(GetString(ce.str, TimerGameCalendar::ConvertYMDToDate(CalendarTime::MAX_YEAR, 11, 31))).width);
 							break;
 
 						/* Draw coloured flag for change company cheat */
-						case STR_CHEAT_CHANGE_COMPANY:
-							SetDParamMaxValue(0, MAX_COMPANIES);
-							width = max(width, GetStringBoundingBox(ce->str).width + 10 + 10);
+						case STR_CHEAT_CHANGE_COMPANY.base():
+							width = std::max(width, GetStringBoundingBox(GetString(ce.str, MAX_COMPANIES)).width + WidgetDimensions::scaled.hsep_wide);
 							break;
 
 						default:
-							SetDParam(0, INT64_MAX);
-							width = max(width, GetStringBoundingBox(ce->str).width);
+							width = std::max(width, GetStringBoundingBox(GetString(ce.str, INT64_MAX)).width);
 							break;
 					}
 					break;
 			}
 		}
 
-		this->line_height = max(GetSpriteSize(SPR_BOX_CHECKED).height, GetSpriteSize(SPR_BOX_EMPTY).height);
-		this->line_height = max<uint>(this->line_height, SETTING_BUTTON_HEIGHT);
-		this->line_height = max<uint>(this->line_height, FONT_HEIGHT_NORMAL) + WD_PAR_VSEP_NORMAL;
+		this->line_height = std::max<uint>(this->icon.height, SETTING_BUTTON_HEIGHT);
+		this->line_height = std::max<uint>(this->line_height, GetCharacterHeight(FontSize::Normal)) + WidgetDimensions::scaled.framerect.Vertical();
 
-		size->width = width + 20 + this->box_width + SETTING_BUTTON_WIDTH /* stuff on the left */ + 10 /* extra spacing on right */;
-		this->header_height = GetStringHeight(STR_CHEATS_WARNING, size->width - WD_FRAMERECT_LEFT - WD_FRAMERECT_RIGHT) + WD_PAR_VSEP_WIDE;
-		size->height = this->header_height + WD_FRAMERECT_TOP + WD_PAR_VSEP_NORMAL + WD_FRAMERECT_BOTTOM + this->line_height * lengthof(_cheats_ui);
+		size.width = width + WidgetDimensions::scaled.hsep_wide * 2 + SETTING_BUTTON_WIDTH;
+		size.height = this->line_height * lengthof(_cheats_ui);
 	}
 
-	void OnClick(Point pt, int widget, int click_count) override
+	void UpdateSettingsPanelSize(Dimension &size)
 	{
-		const NWidgetBase *wid = this->GetWidget<NWidgetBase>(WID_C_PANEL);
-		uint btn = (pt.y - wid->pos_y - WD_FRAMERECT_TOP - this->header_height) / this->line_height;
-		int x = pt.x - wid->pos_x;
+		uint width = 0;
+		for (const auto &desc : this->sandbox_settings) {
+			const IntSettingDesc *sd = desc->AsIntSetting();
+
+			auto [param1, param2] = sd->GetValueParams(sd->GetDefaultValue());
+			width = std::max(width, GetStringBoundingBox(GetString(sd->GetTitle(), STR_CONFIG_SETTING_VALUE, param1, param2)).width);
+		}
+
+		size.width = width + WidgetDimensions::scaled.hsep_wide * 2 + SETTING_BUTTON_WIDTH;
+		size.height = this->line_height * static_cast<uint>(std::size(this->sandbox_settings));
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
+	{
+		switch (widget) {
+			case WID_C_PANEL: CheatPanelClick(pt); break;
+			case WID_C_SETTINGS: SettingsPanelClick(pt); break;
+		}
+	}
+
+	void CheatPanelClick(Point pt)
+	{
+		Rect r = this->GetWidget<NWidgetBase>(WID_C_PANEL)->GetCurrentRect().Shrink(WidgetDimensions::scaled.framerect);
+		uint btn = (pt.y - r.top) / this->line_height;
+		int x = pt.x - r.left;
 		bool rtl = _current_text_dir == TD_RTL;
-		if (rtl) x = wid->current_x - x;
+		if (rtl) x = r.Width() - 1 - x;
 
 		if (btn >= lengthof(_cheats_ui)) return;
 
 		const CheatEntry *ce = &_cheats_ui[btn];
-		int value = (int32)ReadValue(ce->variable, ce->type);
+		int value = static_cast<int32_t>(ReadValue(ce->variable, ce->type));
 		int oldvalue = value;
 
-		if (btn == CHT_CHANGE_DATE && x >= 20 + this->box_width + SETTING_BUTTON_WIDTH) {
+		if (btn == CHT_CHANGE_DATE && x >= SETTING_BUTTON_WIDTH) {
 			/* Click at the date text directly. */
-			clicked_widget = CHT_CHANGE_DATE;
-			SetDParam(0, value);
-			ShowQueryString(STR_JUST_INT, STR_CHEAT_CHANGE_DATE_QUERY_CAPT, 8, this, CS_NUMERAL, QSF_ACCEPT_UNCHANGED);
+			clicked_cheat = CHT_CHANGE_DATE;
+			ShowQueryString(GetString(STR_JUST_INT, value), STR_CHEAT_CHANGE_DATE_QUERY_CAPT, 8, this, CS_NUMERAL, QueryStringFlag::AcceptUnchanged);
 			return;
-		} else if (btn == CHT_EDIT_MAX_HL && x >= 20 + this->box_width + SETTING_BUTTON_WIDTH) {
-			clicked_widget = CHT_EDIT_MAX_HL;
-			SetDParam(0, value);
-			ShowQueryString(STR_JUST_INT, STR_CHEAT_EDIT_MAX_HL_QUERY_CAPT, 8, this, CS_NUMERAL, QSF_ACCEPT_UNCHANGED);
+		} else if (btn == CHT_EDIT_MAX_HL && x >= SETTING_BUTTON_WIDTH) {
+			clicked_cheat = CHT_EDIT_MAX_HL;
+			ShowQueryString(GetString(STR_JUST_INT, value), STR_CHEAT_EDIT_MAX_HL_QUERY_CAPT, 8, this, CS_NUMERAL, QueryStringFlag::AcceptUnchanged);
 			return;
 		}
 
 		/* Not clicking a button? */
-		if (!IsInsideMM(x, 10 + this->box_width, 10 + this->box_width + SETTING_BUTTON_WIDTH)) return;
+		if (!IsInsideMM(x, 0, SETTING_BUTTON_WIDTH)) return;
 
+		this->clicked_setting = nullptr;
 		*ce->been_used = true;
 
 		switch (ce->type) {
-			case SLE_BOOL:
+			case VarMemType::Bool:
 				value ^= 1;
 				if (ce->proc != nullptr) ce->proc(value, 0);
 				break;
 
 			default:
 				/* Take whatever the function returns */
-				value = ce->proc(value + ((x >= 10 + this->box_width + SETTING_BUTTON_WIDTH / 2) ? 1 : -1), (x >= 10 + this->box_width + SETTING_BUTTON_WIDTH / 2) ? 1 : -1);
+				value = ce->proc(value + ((x >= SETTING_BUTTON_WIDTH / 2) ? 1 : -1), (x >= SETTING_BUTTON_WIDTH / 2) ? 1 : -1);
 
 				/* The first cheat (money), doesn't return a different value. */
-				if (value != oldvalue || btn == CHT_MONEY) this->clicked = btn * 2 + 1 + ((x >= 10 + this->box_width + SETTING_BUTTON_WIDTH / 2) != rtl ? 1 : 0);
+				if (value != oldvalue || btn == CHT_MONEY) this->clicked = btn * 2 + 1 + ((x >= SETTING_BUTTON_WIDTH / 2) != rtl ? 1 : 0);
 				break;
 		}
 
-		if (value != oldvalue) WriteValue(ce->variable, ce->type, (int64)value);
+		if (value != oldvalue) WriteValue(ce->variable, ce->type, static_cast<int64_t>(value));
 
 		this->SetTimeout();
 
 		this->SetDirty();
 	}
 
+	void SettingsPanelClick(Point pt)
+	{
+		int row = this->GetRowFromWidget(pt.y, WID_C_SETTINGS, WidgetDimensions::scaled.framerect.top, this->line_height);
+		if (row == INT_MAX) return;
+
+		const SettingDesc *desc = this->sandbox_settings[row];
+		const IntSettingDesc *sd = desc->AsIntSetting();
+
+		if (!sd->IsEditable()) return;
+
+		Rect r = this->GetWidget<NWidgetBase>(WID_C_SETTINGS)->GetCurrentRect().Shrink(WidgetDimensions::scaled.framerect);
+		int x = pt.x - r.left;
+		bool rtl = _current_text_dir == TD_RTL;
+		if (rtl) x = r.Width() - 1 - x;
+
+		if (x < SETTING_BUTTON_WIDTH) {
+			ChangeSettingValue(sd, x);
+		} else {
+			/* Only open editbox if clicked for the second time, and only for types where it is sensible for. */
+			if (this->last_clicked_setting == sd && !sd->IsBoolSetting() && !sd->flags.Test(SettingFlag::GuiDropdown)) {
+				int64_t value64 = sd->Read(&GetGameSettings());
+
+				/* Show the correct currency-translated value */
+				if (sd->flags.Test(SettingFlag::GuiCurrency)) value64 *= GetCurrency().rate;
+
+				CharSetFilter charset_filter = CS_NUMERAL; //default, only numeric input allowed
+				if (sd->min < 0) charset_filter = CS_NUMERAL_SIGNED; // special case, also allow '-' sign for negative input
+
+				this->valuewindow_entry = sd;
+
+				/* Limit string length to 14 so that MAX_INT32 * max currency rate doesn't exceed MAX_INT64. */
+				ShowQueryString(GetString(STR_JUST_INT, value64), STR_CONFIG_SETTING_QUERY_CAPTION, 15, this, charset_filter, QueryStringFlag::EnableDefault);
+			}
+
+			this->clicked_setting = sd;
+		}
+	}
+
+	void ChangeSettingValue(const IntSettingDesc *sd, int x)
+	{
+		int32_t value = sd->Read(&GetGameSettings());
+		int32_t oldvalue = value;
+		if (sd->IsBoolSetting()) {
+			value ^= 1;
+		} else {
+			/* don't allow too fast scrolling */
+			if (this->flags.Test(WindowFlag::Timeout) && this->timeout_timer > 1) {
+				_input_clicked.Reset(ControlInput::Left);
+				return;
+			}
+
+			/* Add a dynamic step-size to the scroller. In a maximum of
+			 * 50-steps you should be able to get from min to max,
+			 * unless specified otherwise in the 'interval' variable
+			 * of the current setting. */
+			uint32_t step = (sd->interval == 0) ? ((sd->max - sd->min) / 50) : sd->interval;
+			if (step == 0) step = 1;
+
+			/* Increase or decrease the value and clamp it to extremes */
+			if (x >= SETTING_BUTTON_WIDTH / 2) {
+				value += step;
+				if (sd->min < 0) {
+					assert(static_cast<int32_t>(sd->max) >= 0);
+					if (value > static_cast<int32_t>(sd->max)) value = static_cast<int32_t>(sd->max);
+				} else {
+					if (static_cast<uint32_t>(value) > sd->max) value = static_cast<int32_t>(sd->max);
+				}
+				if (value < sd->min) value = sd->min; // skip between "disabled" and minimum
+			} else {
+				value -= step;
+				if (value < sd->min) value = sd->flags.Test(SettingFlag::GuiZeroIsSpecial) ? 0 : sd->min;
+			}
+
+			/* Set up scroller timeout for numeric values */
+			if (value != oldvalue) {
+				this->last_clicked_setting = nullptr;
+				this->clicked_setting = sd;
+				this->clicked =  (x >= SETTING_BUTTON_WIDTH / 2) != (_current_text_dir == TD_RTL) ? 2 : 1;
+				this->SetTimeout();
+				_input_clicked.Reset(ControlInput::Left);
+			}
+		}
+
+		if (value != oldvalue) {
+			SetSettingValue(sd, value);
+			this->SetDirty();
+		}
+	}
+
+	bool OnTooltip([[maybe_unused]] Point pt, WidgetID widget, TooltipCloseCondition close_cond) override
+	{
+		if (widget != WID_C_SETTINGS) return false;
+
+		int row = GetRowFromWidget(pt.y, widget, WidgetDimensions::scaled.framerect.top, this->line_height);
+		if (row == INT_MAX) return false;
+
+		const SettingDesc *desc = this->sandbox_settings[row];
+		const IntSettingDesc *sd = desc->AsIntSetting();
+		GuiShowTooltips(this, GetEncodedString(sd->GetHelp()), close_cond);
+
+		return true;
+	}
+
 	void OnTimeout() override
 	{
+		this->clicked_setting = nullptr;
 		this->clicked = 0;
 		this->SetDirty();
 	}
 
-	void OnQueryTextFinished(char *str) override
+	void OnQueryTextFinished(std::optional<std::string> str) override
 	{
 		/* Was 'cancel' pressed or nothing entered? */
-		if (str == nullptr || StrEmpty(str)) return;
+		if (!str.has_value() || str->empty()) return;
 
-		const CheatEntry *ce = &_cheats_ui[clicked_widget];
-		int oldvalue = (int32)ReadValue(ce->variable, ce->type);
-		int value = atoi(str);
-		*ce->been_used = true;
-		value = ce->proc(value, value - oldvalue);
+		if (this->valuewindow_entry != nullptr) {
+			const IntSettingDesc *sd = this->valuewindow_entry->AsIntSetting();
 
-		if (value != oldvalue) WriteValue(ce->variable, ce->type, (int64)value);
+			int32_t value;
+			if (!str->empty()) {
+				auto llvalue = ParseInteger<int64_t>(*str, 10, true);
+				if (!llvalue.has_value()) return;
+
+				/* Save the correct currency-translated value */
+				if (sd->flags.Test(SettingFlag::GuiCurrency)) llvalue = *llvalue / GetCurrency().rate;
+
+				value = ClampTo<int32_t>(*llvalue);
+			} else {
+				value = sd->GetDefaultValue();
+			}
+
+			SetSettingValue(sd, value);
+		} else {
+			const CheatEntry *ce = &_cheats_ui[clicked_cheat];
+			int oldvalue = static_cast<int32_t>(ReadValue(ce->variable, ce->type));
+			auto value = ParseInteger<int32_t>(*str, 10, true);
+			if (!value.has_value()) return;
+			*ce->been_used = true;
+			value = ce->proc(*value, *value - oldvalue);
+
+			if (*value != oldvalue) WriteValue(ce->variable, ce->type, static_cast<int64_t>(*value));
+		}
+
+		this->valuewindow_entry = nullptr;
 		this->SetDirty();
 	}
+
+	const IntervalTimer<TimerGameCalendar> daily_interval = {{TimerGameCalendar::Trigger::Month, TimerGameCalendar::Priority::None}, [this](auto) {
+		this->SetDirty();
+	}};
 };
 
 /** Window description of the cheats GUI. */
 static WindowDesc _cheats_desc(
-	WDP_AUTO, "cheats", 0, 0,
-	WC_CHEATS, WC_NONE,
-	0,
-	_nested_cheat_widgets, lengthof(_nested_cheat_widgets)
+	WindowPosition::Automatic, "cheats", 0, 0,
+	WindowClass::Cheat, WindowClass::None,
+	{},
+	_nested_cheat_widgets
 );
 
 /** Open cheat window. */
 void ShowCheatWindow()
 {
-	DeleteWindowById(WC_CHEATS, 0);
-	new CheatWindow(&_cheats_desc);
+	CloseWindowById(WindowClass::Cheat, 0);
+	new CheatWindow(_cheats_desc);
 }

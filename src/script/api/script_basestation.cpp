@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_basestation.cpp Implementation of ScriptBaseStation. */
@@ -13,36 +13,49 @@
 #include "../../station_base.h"
 #include "../../string_func.h"
 #include "../../strings_func.h"
+#include "../../station_cmd.h"
+#include "../../waypoint_cmd.h"
+
 #include "table/strings.h"
 
 #include "../../safeguards.h"
 
 /* static */ bool ScriptBaseStation::IsValidBaseStation(StationID station_id)
 {
+	EnforceDeityOrCompanyModeValid(false);
 	const BaseStation *st = ::BaseStation::GetIfValid(station_id);
-	return st != nullptr && (st->owner == ScriptObject::GetCompany() || ScriptObject::GetCompany() == OWNER_DEITY || st->owner == OWNER_NONE);
+	return st != nullptr && (st->owner == ScriptObject::GetCompany() || ScriptCompanyMode::IsDeity() || st->owner == OWNER_NONE);
 }
 
-/* static */ char *ScriptBaseStation::GetName(StationID station_id)
+/* static */ ScriptCompany::CompanyID ScriptBaseStation::GetOwner(StationID station_id)
 {
-	if (!IsValidBaseStation(station_id)) return nullptr;
+	if (!IsValidBaseStation(station_id)) return ScriptCompany::COMPANY_INVALID;
+	return ScriptCompany::ToScriptCompanyID(::BaseStation::Get(station_id)->owner);
+}
 
-	::SetDParam(0, station_id);
-	return GetString(::Station::IsValidID(station_id) ? STR_STATION_NAME : STR_WAYPOINT_NAME);
+/* static */ std::optional<std::string> ScriptBaseStation::GetName(StationID station_id)
+{
+	if (!IsValidBaseStation(station_id)) return std::nullopt;
+
+	return ::StrMakeValid(::GetString(::Station::IsValidID(station_id) ? STR_STATION_NAME : STR_WAYPOINT_NAME, station_id), {});
 }
 
 /* static */ bool ScriptBaseStation::SetName(StationID station_id, Text *name)
 {
-	CCountedPtr<Text> counter(name);
+	ScriptObjectRef counter(name);
 
-	EnforcePrecondition(false, ScriptObject::GetCompany() != OWNER_DEITY);
+	EnforceCompanyModeValid(false);
 	EnforcePrecondition(false, IsValidBaseStation(station_id));
 	EnforcePrecondition(false, name != nullptr);
-	const char *text = name->GetDecodedText();
+	const std::string &text = name->GetDecodedText();
 	EnforcePreconditionEncodedText(false, text);
 	EnforcePreconditionCustomError(false, ::Utf8StringLength(text) < MAX_LENGTH_STATION_NAME_CHARS, ScriptError::ERR_PRECONDITION_STRING_TOO_LONG);
 
-	return ScriptObject::DoCommand(0, station_id, 0, ::Station::IsValidID(station_id) ? CMD_RENAME_STATION : CMD_RENAME_WAYPOINT, text);
+	if (::Station::IsValidID(station_id)) {
+		return ScriptObject::Command<Commands::RenameStation>::Do(station_id, text);
+	} else {
+		return ScriptObject::Command<Commands::RenameWaypoint>::Do(station_id, text);
+	}
 }
 
 /* static */ TileIndex ScriptBaseStation::GetLocation(StationID station_id)
@@ -56,5 +69,5 @@
 {
 	if (!IsValidBaseStation(station_id)) return ScriptDate::DATE_INVALID;
 
-	return (ScriptDate::Date)::BaseStation::Get(station_id)->build_date;
+	return (ScriptDate::Date)::BaseStation::Get(station_id)->build_date.base();
 }

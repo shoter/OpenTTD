@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file effectvehicle.cpp Implementation of everything generic to vehicles. */
@@ -11,7 +11,6 @@
 #include "landscape.h"
 #include "core/random_func.hpp"
 #include "industry_map.h"
-#include "vehicle_func.h"
 #include "sound_func.h"
 #include "animated_tile_func.h"
 #include "effectvehicle_func.h"
@@ -28,34 +27,36 @@
  */
 static bool IncrementSprite(EffectVehicle *v, SpriteID last)
 {
-	if (v->sprite_seq.seq[0].sprite != last) {
-		v->sprite_seq.seq[0].sprite++;
+	if (v->sprite_cache.sprite_seq.seq[0].sprite != last) {
+		v->sprite_cache.sprite_seq.seq[0].sprite++;
 		return true;
 	} else {
 		return false;
 	}
 }
 
+/** Initialise the smoke of a chimney. @copydoc EffectProcs::InitProc */
 static void ChimneySmokeInit(EffectVehicle *v)
 {
-	uint32 r = Random();
-	v->sprite_seq.Set(SPR_CHIMNEY_SMOKE_0 + GB(r, 0, 3));
+	uint32_t r = Random();
+	v->sprite_cache.sprite_seq.Set(SPR_CHIMNEY_SMOKE_0 + GB(r, 0, 3));
 	v->progress = GB(r, 16, 3);
 }
 
+/** Run a single tick of the smoke of a chimney. @copydoc EffectProcs::TickProc */
 static bool ChimneySmokeTick(EffectVehicle *v)
 {
 	if (v->progress > 0) {
 		v->progress--;
 	} else {
 		TileIndex tile = TileVirtXY(v->x_pos, v->y_pos);
-		if (!IsTileType(tile, MP_INDUSTRY)) {
+		if (!IsTileType(tile, TileType::Industry)) {
 			delete v;
 			return false;
 		}
 
 		if (!IncrementSprite(v, SPR_CHIMNEY_SMOKE_7)) {
-			v->sprite_seq.Set(SPR_CHIMNEY_SMOKE_0);
+			v->sprite_cache.sprite_seq.Set(SPR_CHIMNEY_SMOKE_0);
 		}
 		v->progress = 7;
 		v->UpdatePositionAndViewport();
@@ -64,12 +65,14 @@ static bool ChimneySmokeTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise the smoke of a steam engine. @copydoc EffectProcs::InitProc */
 static void SteamSmokeInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_STEAM_SMOKE_0);
+	v->sprite_cache.sprite_seq.Set(SPR_STEAM_SMOKE_0);
 	v->progress = 12;
 }
 
+/** Run a single tick of the smoke of a steam engine. @copydoc EffectProcs::TickProc */
 static bool SteamSmokeTick(EffectVehicle *v)
 {
 	bool moved = false;
@@ -94,12 +97,14 @@ static bool SteamSmokeTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise the smoke of a diesel engine. @copydoc EffectProcs::InitProc */
 static void DieselSmokeInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_DIESEL_SMOKE_0);
+	v->sprite_cache.sprite_seq.Set(SPR_DIESEL_SMOKE_0);
 	v->progress = 0;
 }
 
+/** Run a single tick of the smoke of a diesel engine. @copydoc EffectProcs::TickProc */
 static bool DieselSmokeTick(EffectVehicle *v)
 {
 	v->progress++;
@@ -118,12 +123,14 @@ static bool DieselSmokeTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise the sparks of a train. @copydoc EffectProcs::InitProc */
 static void ElectricSparkInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_ELECTRIC_SPARK_0);
+	v->sprite_cache.sprite_seq.Set(SPR_ELECTRIC_SPARK_0);
 	v->progress = 1;
 }
 
+/** Run a single tick of the sparks of a train. @copydoc EffectProcs::TickProc */
 static bool ElectricSparkTick(EffectVehicle *v)
 {
 	if (v->progress < 2) {
@@ -141,12 +148,14 @@ static bool ElectricSparkTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise some smoke. @copydoc EffectProcs::InitProc */
 static void SmokeInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_SMOKE_0);
+	v->sprite_cache.sprite_seq.Set(SPR_SMOKE_0);
 	v->progress = 12;
 }
 
+/** Run a single tick of some smoke. @copydoc EffectProcs::TickProc */
 static bool SmokeTick(EffectVehicle *v)
 {
 	bool moved = false;
@@ -171,12 +180,14 @@ static bool SmokeTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise a large explosion. @copydoc EffectProcs::InitProc */
 static void ExplosionLargeInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_EXPLOSION_LARGE_0);
+	v->sprite_cache.sprite_seq.Set(SPR_EXPLOSION_LARGE_0);
 	v->progress = 0;
 }
 
+/** Run a single tick of a large explosion. @copydoc EffectProcs::TickProc */
 static bool ExplosionLargeTick(EffectVehicle *v)
 {
 	v->progress++;
@@ -191,18 +202,20 @@ static bool ExplosionLargeTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise the smoke of a broken down vehicle. @copydoc EffectProcs::InitProc */
 static void BreakdownSmokeInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_BREAKDOWN_SMOKE_0);
+	v->sprite_cache.sprite_seq.Set(SPR_BREAKDOWN_SMOKE_0);
 	v->progress = 0;
 }
 
+/** Run a single tick of the smoke of a broken down vehicle. @copydoc EffectProcs::TickProc */
 static bool BreakdownSmokeTick(EffectVehicle *v)
 {
 	v->progress++;
 	if ((v->progress & 7) == 0) {
 		if (!IncrementSprite(v, SPR_BREAKDOWN_SMOKE_3)) {
-			v->sprite_seq.Set(SPR_BREAKDOWN_SMOKE_0);
+			v->sprite_cache.sprite_seq.Set(SPR_BREAKDOWN_SMOKE_0);
 		}
 		v->UpdatePositionAndViewport();
 	}
@@ -216,12 +229,14 @@ static bool BreakdownSmokeTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise a small explosion. @copydoc EffectProcs::InitProc */
 static void ExplosionSmallInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_EXPLOSION_SMALL_0);
+	v->sprite_cache.sprite_seq.Set(SPR_EXPLOSION_SMALL_0);
 	v->progress = 0;
 }
 
+/** Run a single tick of a small explosion. @copydoc EffectProcs::TickProc */
 static bool ExplosionSmallTick(EffectVehicle *v)
 {
 	v->progress++;
@@ -236,18 +251,19 @@ static bool ExplosionSmallTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise the bulldozer (road works). @copydoc EffectProcs::InitProc */
 static void BulldozerInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_BULLDOZER_NE);
+	v->sprite_cache.sprite_seq.Set(SPR_BULLDOZER_NE);
 	v->progress = 0;
 	v->animation_state = 0;
 	v->animation_substate = 0;
 }
 
 struct BulldozerMovement {
-	byte direction:2;
-	byte image:2;
-	byte duration:3;
+	uint8_t direction:2;
+	uint8_t image:2;
+	uint8_t duration:3;
 };
 
 static const BulldozerMovement _bulldozer_movement[] = {
@@ -273,23 +289,21 @@ static const BulldozerMovement _bulldozer_movement[] = {
 	{ 3, 1, 7 }
 };
 
-static const struct {
-	int8 x;
-	int8 y;
-} _inc_by_dir[] = {
+static const Coord2D<int8_t> _inc_by_dir[] = {
 	{ -1,  0 },
 	{  0,  1 },
 	{  1,  0 },
 	{  0, -1 }
 };
 
+/** Run a single tick of a bulldozer (road works). @copydoc EffectProcs::TickProc */
 static bool BulldozerTick(EffectVehicle *v)
 {
 	v->progress++;
 	if ((v->progress & 7) == 0) {
 		const BulldozerMovement *b = &_bulldozer_movement[v->animation_state];
 
-		v->sprite_seq.Set(SPR_BULLDOZER_NE + b->image);
+		v->sprite_cache.sprite_seq.Set(SPR_BULLDOZER_NE + b->image);
 
 		v->x_pos += _inc_by_dir[b->direction].x;
 		v->y_pos += _inc_by_dir[b->direction].y;
@@ -309,18 +323,19 @@ static bool BulldozerTick(EffectVehicle *v)
 	return true;
 }
 
+/** Initialise the bubbles of the bubble generator industry. @copydoc EffectProcs::InitProc */
 static void BubbleInit(EffectVehicle *v)
 {
-	v->sprite_seq.Set(SPR_BUBBLE_GENERATE_0);
+	v->sprite_cache.sprite_seq.Set(SPR_BUBBLE_GENERATE_0);
 	v->spritenum = 0;
 	v->progress = 0;
 }
 
 struct BubbleMovement {
-	int8 x:4;
-	int8 y:4;
-	int8 z:4;
-	byte image:4;
+	int8_t x:4;
+	int8_t y:4;
+	int8_t z:4;
+	uint8_t image:4;
 };
 
 #define MK(x, y, z, i) { x, y, z, i }
@@ -466,6 +481,7 @@ static const BubbleMovement * const _bubble_movement[] = {
 	_bubble_absorb,
 };
 
+/** Run a single tick of bubbles of the bubble generator industry. @copydoc EffectProcs::TickProc */
 static bool BubbleTick(EffectVehicle *v)
 {
 	uint anim_state;
@@ -474,8 +490,8 @@ static bool BubbleTick(EffectVehicle *v)
 	if ((v->progress & 3) != 0) return true;
 
 	if (v->spritenum == 0) {
-		v->sprite_seq.seq[0].sprite++;
-		if (v->sprite_seq.seq[0].sprite < SPR_BUBBLE_GENERATE_3) {
+		v->sprite_cache.sprite_seq.seq[0].sprite++;
+		if (v->sprite_cache.sprite_seq.seq[0].sprite < SPR_BUBBLE_GENERATE_3) {
 			v->UpdatePositionAndViewport();
 			return true;
 		}
@@ -499,7 +515,7 @@ static bool BubbleTick(EffectVehicle *v)
 	if (b->y == 4 && b->x == 1) {
 		if (v->z_pos > 180 || Chance16I(1, 96, Random())) {
 			v->spritenum = 5;
-			if (_settings_client.sound.ambient) SndPlayVehicleFx(SND_2F_POP, v);
+			if (_settings_client.sound.ambient) SndPlayVehicleFx(SND_2F_BUBBLE_GENERATOR_FAIL, v);
 		}
 		anim_state = 0;
 	}
@@ -508,10 +524,10 @@ static bool BubbleTick(EffectVehicle *v)
 		TileIndex tile;
 
 		anim_state++;
-		if (_settings_client.sound.ambient) SndPlayVehicleFx(SND_31_EXTRACT, v);
+		if (_settings_client.sound.ambient) SndPlayVehicleFx(SND_31_BUBBLE_GENERATOR_SUCCESS, v);
 
 		tile = TileVirtXY(v->x_pos, v->y_pos);
-		if (IsTileType(tile, MP_INDUSTRY) && GetIndustryGfx(tile) == GFX_BUBBLE_CATCHER) AddAnimatedTile(tile);
+		if (IsTileType(tile, TileType::Industry) && GetIndustryGfx(tile) == GFX_BUBBLE_CATCHER) AddAnimatedTile(tile);
 	}
 
 	v->animation_state = anim_state;
@@ -520,68 +536,51 @@ static bool BubbleTick(EffectVehicle *v)
 	v->x_pos += b->x;
 	v->y_pos += b->y;
 	v->z_pos += b->z;
-	v->sprite_seq.Set(SPR_BUBBLE_0 + b->image);
+	v->sprite_cache.sprite_seq.Set(SPR_BUBBLE_0 + b->image);
 
 	v->UpdatePositionAndViewport();
 
 	return true;
 }
 
+/** Container holding functions to call for a specific effect vehicle type. */
+struct EffectProcs {
+	/**
+	 * Initialises effect vehicle for a specific type.
+	 * @param v The vehicle to initialise.
+	 */
+	using InitProc = void(EffectVehicle *v);
 
-typedef void EffectInitProc(EffectVehicle *v);
-typedef bool EffectTickProc(EffectVehicle *v);
+	/**
+	 * Run the actions/perform the behaviour of an effect vehicle for a tick.
+	 * @param v The vehicle to work with.
+	 * @return \c true iff the vehicle is still valid, i.e. has not been removed yet.
+	 */
+	using TickProc = bool(EffectVehicle *v);
 
-/** Functions to initialise an effect vehicle after construction. */
-static EffectInitProc * const _effect_init_procs[] = {
-	ChimneySmokeInit,   // EV_CHIMNEY_SMOKE
-	SteamSmokeInit,     // EV_STEAM_SMOKE
-	DieselSmokeInit,    // EV_DIESEL_SMOKE
-	ElectricSparkInit,  // EV_ELECTRIC_SPARK
-	SmokeInit,          // EV_CRASH_SMOKE
-	ExplosionLargeInit, // EV_EXPLOSION_LARGE
-	BreakdownSmokeInit, // EV_BREAKDOWN_SMOKE
-	ExplosionSmallInit, // EV_EXPLOSION_SMALL
-	BulldozerInit,      // EV_BULLDOZER
-	BubbleInit,         // EV_BUBBLE
-	SmokeInit,          // EV_BREAKDOWN_SMOKE_AIRCRAFT
-	SmokeInit,          // EV_COPPER_MINE_SMOKE
+	InitProc *init_proc; ///< Function to initialise an effect vehicle after construction.
+	TickProc *tick_proc; ///< Functions for controlling effect vehicles at each tick.
+	TransparencyOption transparency; ///< Transparency option affecting the effect.
+
+	constexpr EffectProcs(InitProc *init_proc, TickProc *tick_proc, TransparencyOption transparency)
+		: init_proc(init_proc), tick_proc(tick_proc), transparency(transparency) {}
 };
-assert_compile(lengthof(_effect_init_procs) == EV_END);
 
-/** Functions for controlling effect vehicles at each tick. */
-static EffectTickProc * const _effect_tick_procs[] = {
-	ChimneySmokeTick,   // EV_CHIMNEY_SMOKE
-	SteamSmokeTick,     // EV_STEAM_SMOKE
-	DieselSmokeTick,    // EV_DIESEL_SMOKE
-	ElectricSparkTick,  // EV_ELECTRIC_SPARK
-	SmokeTick,          // EV_CRASH_SMOKE
-	ExplosionLargeTick, // EV_EXPLOSION_LARGE
-	BreakdownSmokeTick, // EV_BREAKDOWN_SMOKE
-	ExplosionSmallTick, // EV_EXPLOSION_SMALL
-	BulldozerTick,      // EV_BULLDOZER
-	BubbleTick,         // EV_BUBBLE
-	SmokeTick,          // EV_BREAKDOWN_SMOKE_AIRCRAFT
-	SmokeTick,          // EV_COPPER_MINE_SMOKE
-};
-assert_compile(lengthof(_effect_tick_procs) == EV_END);
-
-/** Transparency options affecting the effects. */
-static const TransparencyOption _effect_transparency_options[] = {
-	TO_INDUSTRIES,      // EV_CHIMNEY_SMOKE
-	TO_INVALID,         // EV_STEAM_SMOKE
-	TO_INVALID,         // EV_DIESEL_SMOKE
-	TO_INVALID,         // EV_ELECTRIC_SPARK
-	TO_INVALID,         // EV_CRASH_SMOKE
-	TO_INVALID,         // EV_EXPLOSION_LARGE
-	TO_INVALID,         // EV_BREAKDOWN_SMOKE
-	TO_INVALID,         // EV_EXPLOSION_SMALL
-	TO_INVALID,         // EV_BULLDOZER
-	TO_INDUSTRIES,      // EV_BUBBLE
-	TO_INVALID,         // EV_BREAKDOWN_SMOKE_AIRCRAFT
-	TO_INDUSTRIES,      // EV_COPPER_MINE_SMOKE
-};
-assert_compile(lengthof(_effect_transparency_options) == EV_END);
-
+/** Per-EffectVehicleType handling. */
+static const std::array<EffectProcs, EV_END> _effect_procs = {{
+	{ ChimneySmokeInit,   ChimneySmokeTick,   TransparencyOption::Industries }, // EV_CHIMNEY_SMOKE
+	{ SteamSmokeInit,     SteamSmokeTick,     TransparencyOption::Invalid    }, // EV_STEAM_SMOKE
+	{ DieselSmokeInit,    DieselSmokeTick,    TransparencyOption::Invalid    }, // EV_DIESEL_SMOKE
+	{ ElectricSparkInit,  ElectricSparkTick,  TransparencyOption::Invalid    }, // EV_ELECTRIC_SPARK
+	{ SmokeInit,          SmokeTick,          TransparencyOption::Invalid    }, // EV_CRASH_SMOKE
+	{ ExplosionLargeInit, ExplosionLargeTick, TransparencyOption::Invalid    }, // EV_EXPLOSION_LARGE
+	{ BreakdownSmokeInit, BreakdownSmokeTick, TransparencyOption::Invalid    }, // EV_BREAKDOWN_SMOKE
+	{ ExplosionSmallInit, ExplosionSmallTick, TransparencyOption::Invalid    }, // EV_EXPLOSION_SMALL
+	{ BulldozerInit,      BulldozerTick,      TransparencyOption::Invalid    }, // EV_BULLDOZER
+	{ BubbleInit,         BubbleTick,         TransparencyOption::Industries }, // EV_BUBBLE
+	{ SmokeInit,          SmokeTick,          TransparencyOption::Invalid    }, // EV_BREAKDOWN_SMOKE_AIRCRAFT
+	{ SmokeInit,          SmokeTick,          TransparencyOption::Industries }, // EV_COPPER_MINE_SMOKE
+}};
 
 /**
  * Create an effect vehicle at a particular location.
@@ -595,16 +594,16 @@ EffectVehicle *CreateEffectVehicle(int x, int y, int z, EffectVehicleType type)
 {
 	if (!Vehicle::CanAllocateItem()) return nullptr;
 
-	EffectVehicle *v = new EffectVehicle();
+	EffectVehicle *v = EffectVehicle::Create();
 	v->subtype = type;
 	v->x_pos = x;
 	v->y_pos = y;
 	v->z_pos = z;
-	v->tile = 0;
+	v->tile = TileIndex{};
 	v->UpdateDeltaXY();
-	v->vehstatus = VS_UNCLICKABLE;
+	v->vehstatus = VehState::Unclickable;
 
-	_effect_init_procs[type](v);
+	_effect_procs[type].init_proc(v);
 
 	v->UpdatePositionAndViewport();
 
@@ -621,8 +620,8 @@ EffectVehicle *CreateEffectVehicle(int x, int y, int z, EffectVehicleType type)
  */
 EffectVehicle *CreateEffectVehicleAbove(int x, int y, int z, EffectVehicleType type)
 {
-	int safe_x = Clamp(x, 0, MapMaxX() * TILE_SIZE);
-	int safe_y = Clamp(y, 0, MapMaxY() * TILE_SIZE);
+	int safe_x = Clamp(x, 0, Map::MaxX() * TILE_SIZE);
+	int safe_y = Clamp(y, 0, Map::MaxY() * TILE_SIZE);
 	return CreateEffectVehicle(x, y, GetSlopePixelZ(safe_x, safe_y) + z, type);
 }
 
@@ -642,23 +641,19 @@ EffectVehicle *CreateEffectVehicleRel(const Vehicle *v, int x, int y, int z, Eff
 
 bool EffectVehicle::Tick()
 {
-	return _effect_tick_procs[this->subtype](this);
+	return _effect_procs[this->subtype].tick_proc(this);
 }
 
 void EffectVehicle::UpdateDeltaXY()
 {
-	this->x_offs        = 0;
-	this->y_offs        = 0;
-	this->x_extent      = 1;
-	this->y_extent      = 1;
-	this->z_extent      = 1;
+	this->bounds = {{}, {1, 1, 1}, {}};
 }
 
 /**
  * Determines the transparency option affecting the effect.
- * @return Transparency option, or TO_INVALID if none.
+ * @return Transparency option, or TransparencyOption::Invalid if none.
  */
 TransparencyOption EffectVehicle::GetTransparencyOption() const
 {
-	return _effect_transparency_options[this->subtype];
+	return _effect_procs[this->subtype].transparency;
 }

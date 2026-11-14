@@ -2,22 +2,31 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file object_gui.cpp The GUI for objects. */
 
 #include "stdafx.h"
 #include "command_func.h"
+#include "company_func.h"
+#include "hotkeys.h"
 #include "newgrf.h"
+#include "newgrf_badge_gui.h"
 #include "newgrf_object.h"
 #include "newgrf_text.h"
+#include "object.h"
+#include "object_base.h"
+#include "picker_gui.h"
+#include "sound_func.h"
 #include "strings_func.h"
 #include "viewport_func.h"
 #include "tilehighlight_func.h"
 #include "window_gui.h"
-#include "window_func.h"
 #include "zoom_func.h"
+#include "terraform_cmd.h"
+#include "object_cmd.h"
+#include "road_cmd.h"
 
 #include "widgets/object_widget.h"
 
@@ -25,510 +34,403 @@
 
 #include "safeguards.h"
 
-static ObjectClassID _selected_object_class; ///< the currently visible object class
-static int _selected_object_index;           ///< the index of the selected object in the current class or -1
-static uint8 _selected_object_view;          ///< the view of the selected object
+struct ObjectPickerSelection {
+	ObjectClassID sel_class; ///< Selected object class.
+	uint16_t sel_type; ///< Selected object type within the class.
+	uint8_t sel_view; ///< Selected view of the object.
+};
+static ObjectPickerSelection _object_gui; ///< Settings of the object picker.
+
+class ObjectPickerCallbacks : public PickerCallbacksNewGRFClass<ObjectClass> {
+public:
+	ObjectPickerCallbacks() : PickerCallbacksNewGRFClass<ObjectClass>("fav_objects") {}
+
+	GrfSpecFeature GetFeature() const override { return GrfSpecFeature::Objects; }
+
+	StringID GetClassTooltip() const override { return STR_PICKER_OBJECT_CLASS_TOOLTIP; }
+	StringID GetTypeTooltip() const override { return STR_PICKER_OBJECT_TYPE_TOOLTIP; }
+	StringID GetCollectionTooltip() const override { return STR_PICKER_OBJECT_COLLECTION_TOOLTIP; }
+
+	bool IsActive() const override
+	{
+		for (const auto &cls : ObjectClass::Classes()) {
+			for (const auto *spec : cls.Specs()) {
+				if (spec != nullptr && spec->IsEverAvailable()) return true;
+			}
+		}
+		return false;
+	}
+
+	int GetSelectedClass() const override { return _object_gui.sel_class.base(); }
+	void SetSelectedClass(int id) const override { _object_gui.sel_class = this->GetClassIndex(id); }
+
+	StringID GetClassName(int id) const override
+	{
+		const auto *objclass = this->GetClass(id);
+		if (objclass->GetUISpecCount() == 0) return INVALID_STRING_ID;
+		return objclass->name;
+	}
+
+	int GetSelectedType() const override { return _object_gui.sel_type; }
+	void SetSelectedType(int id) const override { _object_gui.sel_type = id; }
+
+	StringID GetTypeName(int cls_id, int id) const override
+	{
+		const auto *spec = this->GetSpec(cls_id, id);
+		return (spec == nullptr || !spec->IsEverAvailable()) ? INVALID_STRING_ID : spec->name;
+	}
+
+	std::span<const BadgeID> GetTypeBadges(int cls_id, int id) const override
+	{
+		const auto *spec = this->GetSpec(cls_id, id);
+		if (spec == nullptr || !spec->IsEverAvailable()) return {};
+		return spec->badges;
+	}
+
+	bool IsTypeAvailable(int cls_id, int id) const override
+	{
+		const auto *spec = this->GetSpec(cls_id, id);
+		return spec->IsAvailable();
+	}
+
+	void DrawType(int x, int y, int cls_id, int id) const override
+	{
+		const auto *spec = this->GetSpec(cls_id, id);
+		if (!spec->grf_prop.HasGrfFile()) {
+			extern const DrawTileSpriteSpan _objects[];
+			const DrawTileSprites *dts = &_objects[spec->grf_prop.local_id];
+			DrawOrigTileSeqInGUI(x, y, dts, PAL_NONE);
+		} else {
+			DrawNewObjectTileInGUI(x, y, spec, std::min<int>(_object_gui.sel_view, spec->views - 1));
+		}
+	}
+
+	void FillUsedItems(std::set<PickerItem> &items) override
+	{
+		for (const Object *o : Object::Iterate()) {
+			if (GetTileOwner(o->location.tile) != _current_company) continue;
+			const ObjectSpec *spec = ObjectSpec::Get(o->type);
+			if (spec == nullptr || spec->class_index == ObjectClassID::Invalid() || !spec->IsEverAvailable()) continue;
+			items.insert(GetPickerItem(spec));
+		}
+	}
+
+	static ObjectPickerCallbacks instance;
+};
+/* static */ ObjectPickerCallbacks ObjectPickerCallbacks::instance;
 
 /** The window used for building objects. */
-class BuildObjectWindow : public Window {
-	static const int OBJECT_MARGIN = 4; ///< The margin (in pixels) around an object.
-	int line_height;                    ///< The height of a single line.
-	int info_height;                    ///< The height of the info box.
-	Scrollbar *vscroll;                 ///< The scrollbar.
-
-	/** Scroll #WID_BO_CLASS_LIST so that the selected object class is visible. */
-	void EnsureSelectedObjectClassIsVisible()
-	{
-		uint pos = 0;
-		for (int i = 0; i < _selected_object_class; i++) {
-			if (ObjectClass::Get((ObjectClassID) i)->GetUISpecCount() == 0) continue;
-			pos++;
-		}
-		this->vscroll->ScrollTowards(pos);
-	}
-
-	/**
-	 * Tests whether the previously selected object can be selected.
-	 * @return \c true if the selected object is available, \c false otherwise.
-	 */
-	bool CanRestoreSelectedObject()
-	{
-		if (_selected_object_index == -1) return false;
-
-		ObjectClass *sel_objclass = ObjectClass::Get(_selected_object_class);
-		if ((int)sel_objclass->GetSpecCount() <= _selected_object_index) return false;
-
-		return sel_objclass->GetSpec(_selected_object_index)->IsAvailable();
-	}
-
-	/**
-	 * Calculate the number of columns of the #WID_BO_SELECT_MATRIX widget.
-	 * @return Number of columns in the matrix.
-	 */
-	uint GetMatrixColumnCount()
-	{
-		const NWidgetBase *matrix = this->GetWidget<NWidgetBase>(WID_BO_SELECT_MATRIX);
-		return 1 + (matrix->current_x - matrix->smallest_x) / matrix->resize_x;
-	}
+class BuildObjectWindow : public PickerWindow {
+	int info_height = 1; ///< The height of the info box.
 
 public:
-	BuildObjectWindow(WindowDesc *desc, WindowNumber number) : Window(desc), info_height(1)
+	BuildObjectWindow(WindowDesc &desc, WindowNumber) : PickerWindow(desc, nullptr, 0, ObjectPickerCallbacks::instance)
 	{
-		this->CreateNestedTree();
-		this->vscroll = this->GetScrollbar(WID_BO_SCROLLBAR);
-		this->FinishInitNested(number);
-
 		ResetObjectToPlace();
-
-		this->vscroll->SetPosition(0);
-		this->vscroll->SetCount(ObjectClass::GetUIClassCount());
-
-		NWidgetMatrix *matrix = this->GetWidget<NWidgetMatrix>(WID_BO_SELECT_MATRIX);
-		matrix->SetScrollbar(this->GetScrollbar(WID_BO_SELECT_SCROLL));
-
-		this->SelectOtherClass(_selected_object_class);
-		if (this->CanRestoreSelectedObject()) {
-			this->SelectOtherObject(_selected_object_index);
-		} else {
-			this->SelectFirstAvailableObject(true);
-		}
-		assert(ObjectClass::Get(_selected_object_class)->GetUISpecCount() > 0); // object GUI should be disables elsewise
-		this->EnsureSelectedObjectClassIsVisible();
-		this->GetWidget<NWidgetMatrix>(WID_BO_OBJECT_MATRIX)->SetCount(4);
+		this->ConstructWindow();
 	}
 
-	void SetStringParameters(int widget) const override
+	std::string GetWidgetString(WidgetID widget, StringID stringid) const override
 	{
 		switch (widget) {
-			case WID_BO_OBJECT_NAME: {
-				const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
-				SetDParam(0, spec != nullptr ? spec->name : STR_EMPTY);
-				break;
-			}
-
 			case WID_BO_OBJECT_SIZE: {
-				const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
+				ObjectClass *objclass = ObjectClass::Get(_object_gui.sel_class);
+				const ObjectSpec *spec = objclass->GetSpec(_object_gui.sel_type);
 				int size = spec == nullptr ? 0 : spec->size;
-				SetDParam(0, GB(size, HasBit(_selected_object_view, 0) ? 4 : 0, 4));
-				SetDParam(1, GB(size, HasBit(_selected_object_view, 0) ? 0 : 4, 4));
-				break;
+				return GetString(STR_OBJECT_BUILD_SIZE, GB(size, HasBit(_object_gui.sel_view, 0) ? 4 : 0, 4), GB(size, HasBit(_object_gui.sel_view, 0) ? 0 : 4, 4));
 			}
 
-			default: break;
+			default:
+				return this->PickerWindow::GetWidgetString(widget, stringid);
 		}
 	}
 
-	void UpdateWidgetSize(int widget, Dimension *size, const Dimension &padding, Dimension *fill, Dimension *resize) override
+	void OnInit() override
+	{
+		this->GetWidget<NWidgetMatrix>(WID_BO_OBJECT_MATRIX)->SetCount(4);
+		this->PickerWindow::OnInit();
+	}
+
+	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding, [[maybe_unused]] Dimension &fill, [[maybe_unused]] Dimension &resize) override
 	{
 		switch (widget) {
-			case WID_BO_CLASS_LIST: {
-				for (uint i = 0; i < ObjectClass::GetClassCount(); i++) {
-					ObjectClass *objclass = ObjectClass::Get((ObjectClassID)i);
-					if (objclass->GetUISpecCount() == 0) continue;
-					size->width = max(size->width, GetStringBoundingBox(objclass->name).width);
-				}
-				size->width += padding.width;
-				this->line_height = FONT_HEIGHT_NORMAL + WD_MATRIX_TOP + WD_MATRIX_BOTTOM;
-				resize->height = this->line_height;
-				size->height = 5 * this->line_height;
-				break;
-			}
-
-			case WID_BO_OBJECT_NAME:
 			case WID_BO_OBJECT_SIZE:
 				/* We do not want the window to resize when selecting objects; better clip texts */
-				size->width = 0;
+				size.width = 0;
 				break;
 
 			case WID_BO_OBJECT_MATRIX: {
 				/* Get the right amount of buttons based on the current spec. */
-				const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
+				const ObjectClass *objclass = ObjectClass::Get(_object_gui.sel_class);
+				const ObjectSpec *spec = objclass->GetSpec(_object_gui.sel_type);
 				if (spec != nullptr) {
-					if (spec->views >= 2) size->width  += resize->width;
-					if (spec->views >= 4) size->height += resize->height;
+					if (spec->views >= 2) size.width  += resize.width;
+					if (spec->views >= 4) size.height += resize.height;
 				}
-				resize->width = 0;
-				resize->height = 0;
+				resize.width = 0;
+				resize.height = 0;
 				break;
 			}
 
 			case WID_BO_OBJECT_SPRITE: {
-				bool two_wide = false;  // Whether there will be two widgets next to each other in the matrix or not.
-				int height[2] = {0, 0}; // The height for the different views; in this case views 1/2 and 4.
-
-				/* Get the height and view information. */
-				for (int i = 0; i < NUM_OBJECTS; i++) {
-					const ObjectSpec *spec = ObjectSpec::Get(i);
-					if (!spec->IsEverAvailable()) continue;
-					two_wide |= spec->views >= 2;
-					height[spec->views / 4] = max<int>(ObjectSpec::Get(i)->height, height[spec->views / 4]);
-				}
-
-				/* Determine the pixel heights. */
-				for (size_t i = 0; i < lengthof(height); i++) {
-					height[i] *= ScaleGUITrad(TILE_HEIGHT);
-					height[i] += ScaleGUITrad(TILE_PIXELS) + 2 * OBJECT_MARGIN;
-				}
-
-				/* Now determine the size of the minimum widgets. When there are two columns, then
-				 * we want these columns to be slightly less wide. When there are two rows, then
-				 * determine the size of the widgets based on the maximum size for a single row
-				 * of widgets, or just the twice the widget height of the two row ones. */
-				size->height = max(height[0], height[1] * 2 + 2);
-				if (two_wide) {
-					size->width  = (3 * ScaleGUITrad(TILE_PIXELS) + 2 * OBJECT_MARGIN) * 2 + 2;
-				} else {
-					size->width  = 4 * ScaleGUITrad(TILE_PIXELS) + 2 * OBJECT_MARGIN;
-				}
-
-				/* Get the right size for the single widget based on the current spec. */
-				const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
+				/* Get the right amount of buttons based on the current spec. */
+				const ObjectClass *objclass = ObjectClass::Get(_object_gui.sel_class);
+				const ObjectSpec *spec = objclass->GetSpec(_object_gui.sel_type);
+				size.width  = ScaleGUITrad(PREVIEW_WIDTH) + WidgetDimensions::scaled.fullbevel.Horizontal();
+				size.height = ScaleGUITrad(PREVIEW_HEIGHT) + WidgetDimensions::scaled.fullbevel.Vertical();
 				if (spec != nullptr) {
-					if (spec->views >= 2) size->width  = size->width  / 2 - 1;
-					if (spec->views >= 4) size->height = size->height / 2 - 1;
+					if (spec->views <= 1) size.width = size.width * 2 + WidgetDimensions::scaled.hsep_normal;
+					if (spec->views <= 2) size.height = size.height * 2 + WidgetDimensions::scaled.vsep_normal;
 				}
 				break;
 			}
 
 			case WID_BO_INFO:
-				size->height = this->info_height;
+				size.height = this->info_height;
+				fill.height = this->has_class_picker ? 0 : 1;
+				resize.height = this->has_class_picker ? 0 : 1;
 				break;
 
-			case WID_BO_SELECT_MATRIX:
-				fill->height = 1;
-				resize->height = 1;
+			default:
+				this->PickerWindow::UpdateWidgetSize(widget, size, padding, fill, resize);
 				break;
-
-			case WID_BO_SELECT_IMAGE:
-				size->width  = ScaleGUITrad(64) + 2;
-				size->height = ScaleGUITrad(58) + 2;
-				break;
-
-			default: break;
 		}
 	}
 
-	void DrawWidget(const Rect &r, int widget) const override
+	void DrawWidget(const Rect &r, WidgetID widget) const override
 	{
-		switch (GB(widget, 0, 16)) {
-			case WID_BO_CLASS_LIST: {
-				int y = r.top;
-				uint pos = 0;
-				for (uint i = 0; i < ObjectClass::GetClassCount(); i++) {
-					ObjectClass *objclass = ObjectClass::Get((ObjectClassID)i);
-					if (objclass->GetUISpecCount() == 0) continue;
-					if (!this->vscroll->IsVisible(pos++)) continue;
-					DrawString(r.left + WD_MATRIX_LEFT, r.right - WD_MATRIX_RIGHT, y + WD_MATRIX_TOP, objclass->name,
-							((int)i == _selected_object_class) ? TC_WHITE : TC_BLACK);
-					y += this->line_height;
-				}
-				break;
-			}
-
+		switch (widget) {
 			case WID_BO_OBJECT_SPRITE: {
-				const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
+				const ObjectClass *objclass = ObjectClass::Get(_object_gui.sel_class);
+				const ObjectSpec *spec = objclass->GetSpec(_object_gui.sel_type);
 				if (spec == nullptr) break;
 
-				/* Height of the selection matrix.
-				 * Depending on the number of views, the matrix has a 1x1, 1x2, 2x1 or 2x2 layout. To make the previews
-				 * look nice in all layouts, we use the 4x4 layout (smallest previews) as starting point. For the bigger
-				 * previews in the layouts with less views we add space homogeneously on all sides, so the 4x4 preview-rectangle
-				 * is centered in the 2x1, 1x2 resp. 1x1 buttons. */
-				uint matrix_height = this->GetWidget<NWidgetMatrix>(WID_BO_OBJECT_MATRIX)->current_y;
+				const NWidgetMatrix *matrix = this->GetWidget<NWidgetBase>(widget)->GetParentWidget<NWidgetMatrix>();
 
 				DrawPixelInfo tmp_dpi;
 				/* Set up a clipping area for the preview. */
-				if (FillDrawPixelInfo(&tmp_dpi, r.left, r.top, r.right - r.left + 1, r.bottom - r.top + 1)) {
-					DrawPixelInfo *old_dpi = _cur_dpi;
-					_cur_dpi = &tmp_dpi;
-					if (spec->grf_prop.grffile == nullptr) {
-						extern const DrawTileSprites _objects[];
-						const DrawTileSprites *dts = &_objects[spec->grf_prop.local_id];
-						DrawOrigTileSeqInGUI((r.right - r.left) / 2 - 1, (r.bottom - r.top + matrix_height / 2) / 2 - OBJECT_MARGIN - ScaleGUITrad(TILE_PIXELS), dts, PAL_NONE);
-					} else {
-						DrawNewObjectTileInGUI((r.right - r.left) / 2 - 1, (r.bottom - r.top + matrix_height / 2) / 2 - OBJECT_MARGIN - ScaleGUITrad(TILE_PIXELS), spec, GB(widget, 16, 16));
-					}
-					_cur_dpi = old_dpi;
-				}
-				break;
-			}
+				Rect ir = r.Shrink(WidgetDimensions::scaled.bevel);
+				if (FillDrawPixelInfo(&tmp_dpi, ir)) {
+					AutoRestoreBackup dpi_backup(_cur_dpi, &tmp_dpi);
+					int x = (ir.Width()  - ScaleSpriteTrad(PREVIEW_WIDTH)) / 2 + ScaleSpriteTrad(PREVIEW_LEFT);
+					int y = (ir.Height() + ScaleSpriteTrad(PREVIEW_HEIGHT)) / 2 - ScaleSpriteTrad(PREVIEW_BOTTOM);
 
-			case WID_BO_SELECT_IMAGE: {
-				ObjectClass *objclass = ObjectClass::Get(_selected_object_class);
-				int obj_index = objclass->GetIndexFromUI(GB(widget, 16, 16));
-				if (obj_index < 0) break;
-				const ObjectSpec *spec = objclass->GetSpec(obj_index);
-				if (spec == nullptr) break;
-
-				if (!spec->IsAvailable()) {
-					GfxFillRect(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1, PC_BLACK, FILLRECT_CHECKER);
-				}
-				DrawPixelInfo tmp_dpi;
-				/* Set up a clipping area for the preview. */
-				if (FillDrawPixelInfo(&tmp_dpi, r.left + 1, r.top, (r.right - 1) - (r.left + 1) + 1, r.bottom - r.top + 1)) {
-					DrawPixelInfo *old_dpi = _cur_dpi;
-					_cur_dpi = &tmp_dpi;
-					if (spec->grf_prop.grffile == nullptr) {
-						extern const DrawTileSprites _objects[];
+					if (!spec->grf_prop.HasGrfFile()) {
+						extern const DrawTileSpriteSpan _objects[];
 						const DrawTileSprites *dts = &_objects[spec->grf_prop.local_id];
-						DrawOrigTileSeqInGUI((r.right - r.left) / 2 - 1, r.bottom - r.top - OBJECT_MARGIN - ScaleGUITrad(TILE_PIXELS), dts, PAL_NONE);
+						DrawOrigTileSeqInGUI(x, y, dts, PAL_NONE);
 					} else {
-						DrawNewObjectTileInGUI((r.right - r.left) / 2 - 1, r.bottom - r.top - OBJECT_MARGIN - ScaleGUITrad(TILE_PIXELS), spec,
-								min(_selected_object_view, spec->views - 1));
+						DrawNewObjectTileInGUI(x, y, spec, matrix->GetCurrentElement());
 					}
-					_cur_dpi = old_dpi;
 				}
 				break;
 			}
 
 			case WID_BO_INFO: {
-				const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
+				const ObjectClass *objclass = ObjectClass::Get(_object_gui.sel_class);
+				const ObjectSpec *spec = objclass->GetSpec(_object_gui.sel_type);
 				if (spec == nullptr) break;
 
+				Rect tr = r;
+				const int bottom = tr.bottom;
+				/* Use all the available space past the rect, so that we can enlarge the window if needed. */
+				tr.bottom = INT16_MAX;
+				tr.top = DrawBadgeNameList(tr, spec->badges, GrfSpecFeature::Objects);
+
 				/* Get the extra message for the GUI */
-				if (HasBit(spec->callback_mask, CBM_OBJ_FUND_MORE_TEXT)) {
-					uint16 callback_res = GetObjectCallback(CBID_OBJECT_FUND_MORE_TEXT, 0, 0, spec, nullptr, INVALID_TILE, _selected_object_view);
+				if (spec->callback_mask.Test(ObjectCallbackMask::FundMoreText)) {
+					std::array<int32_t, 16> regs100;
+					uint16_t callback_res = GetObjectCallback(CBID_OBJECT_FUND_MORE_TEXT, 0, 0, spec, nullptr, INVALID_TILE, regs100, _object_gui.sel_view);
 					if (callback_res != CALLBACK_FAILED && callback_res != 0x400) {
-						if (callback_res > 0x400) {
-							ErrorUnknownCallbackResult(spec->grf_prop.grffile->grfid, CBID_OBJECT_FUND_MORE_TEXT, callback_res);
+						std::string str;
+						if (callback_res == 0x40F) {
+							str = GetGRFStringWithTextStack(spec->grf_prop.grffile, static_cast<GRFStringID>(regs100[0]), std::span{regs100}.subspan(1));
+						} else if (callback_res > 0x400) {
+							ErrorUnknownCallbackResult(spec->grf_prop.grfid, CBID_OBJECT_FUND_MORE_TEXT, callback_res);
 						} else {
-							StringID message = GetGRFStringID(spec->grf_prop.grffile->grfid, 0xD000 + callback_res);
-							if (message != STR_NULL && message != STR_UNDEFINED) {
-								StartTextRefStackUsage(spec->grf_prop.grffile, 6);
-								/* Use all the available space left from where we stand up to the
-								 * end of the window. We ALSO enlarge the window if needed, so we
-								 * can 'go' wild with the bottom of the window. */
-								int y = DrawStringMultiLine(r.left, r.right, r.top, UINT16_MAX, message, TC_ORANGE) - r.top;
-								StopTextRefStackUsage();
-								if (y > this->info_height) {
-									BuildObjectWindow *bow = const_cast<BuildObjectWindow *>(this);
-									bow->info_height = y + 2;
-									bow->ReInit();
-								}
-							}
+							str = GetGRFStringWithTextStack(spec->grf_prop.grffile, GRFSTR_MISC_GRF_TEXT + callback_res, regs100);
+						}
+						if (!str.empty()) {
+							tr.top = DrawStringMultiLine(tr, str, TextColour::Orange);
 						}
 					}
 				}
+
+				if (tr.top > bottom) {
+					BuildObjectWindow *bow = const_cast<BuildObjectWindow *>(this);
+					bow->info_height += tr.top - bottom;
+					bow->ReInit();
+				}
+
+				break;
 			}
+
+			default:
+				this->PickerWindow::DrawWidget(r, widget);
+				break;
 		}
 	}
 
-	/**
-	 * Select the specified object class.
-	 * @param object_class_index Object class index to select.
-	 */
-	void SelectOtherClass(ObjectClassID object_class_index)
+	void UpdateSelectSize(const ObjectSpec *spec)
 	{
-		_selected_object_class = object_class_index;
-		this->GetWidget<NWidgetMatrix>(WID_BO_SELECT_MATRIX)->SetCount(ObjectClass::Get(_selected_object_class)->GetUISpecCount());
-	}
-
-	/**
-	 * Select the specified object in #_selected_object_class class.
-	 * @param object_index Object index to select, \c -1 means select nothing.
-	 */
-	void SelectOtherObject(int object_index)
-	{
-		_selected_object_index = object_index;
-		if (_selected_object_index != -1) {
-			const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
-			_selected_object_view = min(_selected_object_view, spec->views - 1);
-			this->ReInit();
-		} else {
-			_selected_object_view = 0;
-		}
-
-		if (_selected_object_index != -1) {
-			SetObjectToPlaceWnd(SPR_CURSOR_TRANSMITTER, PAL_NONE, HT_RECT, this);
-		}
-
-		this->UpdateButtons(_selected_object_class, _selected_object_index, _selected_object_view);
-	}
-
-	void UpdateSelectSize()
-	{
-		if (_selected_object_index == -1) {
+		if (spec == nullptr) {
 			SetTileSelectSize(1, 1);
+			ResetObjectToPlace();
 		} else {
-			const ObjectSpec *spec = ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index);
-			int w = GB(spec->size, HasBit(_selected_object_view, 0) ? 4 : 0, 4);
-			int h = GB(spec->size, HasBit(_selected_object_view, 0) ? 0 : 4, 4);
+			_object_gui.sel_view = std::min<int>(_object_gui.sel_view, spec->views - 1);
+			SetObjectToPlaceWnd(SPR_CURSOR_TRANSMITTER, PAL_NONE, HT_RECT | HT_DIAGONAL, this);
+			int w = GB(spec->size, HasBit(_object_gui.sel_view, 0) ? 4 : 0, 4);
+			int h = GB(spec->size, HasBit(_object_gui.sel_view, 0) ? 0 : 4, 4);
 			SetTileSelectSize(w, h);
+			this->ReInit();
 		}
 	}
 
 	/**
 	 * Update buttons to show the selection to the user.
-	 * @param sel_class The class of the selected object.
-	 * @param sel_index Index of the object to select, or \c -1 .
-	 * @param sel_view View of the object to select.
+	 * @param spec The object spec of the selected object.
 	 */
-	void UpdateButtons(ObjectClassID sel_class, int sel_index, uint sel_view)
+	void UpdateButtons(const ObjectSpec *spec)
 	{
-		int view_number, object_number;
-		if (sel_index == -1) {
-			view_number = -1; // If no object selected, also hide the selected view.
-			object_number = -1;
-		} else {
-			view_number = sel_view;
-			object_number = ObjectClass::Get(sel_class)->GetUIFromIndex(sel_index);
-		}
-
-		this->GetWidget<NWidgetMatrix>(WID_BO_OBJECT_MATRIX)->SetClicked(view_number);
-		this->GetWidget<NWidgetMatrix>(WID_BO_SELECT_MATRIX)->SetClicked(object_number);
-		this->UpdateSelectSize();
+		this->GetWidget<NWidgetMatrix>(WID_BO_OBJECT_MATRIX)->SetClicked(_object_gui.sel_view);
+		this->UpdateSelectSize(spec);
 		this->SetDirty();
 	}
 
-	void OnResize() override
+	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override
 	{
-		this->vscroll->SetCapacityFromWidget(this, WID_BO_CLASS_LIST);
+		this->PickerWindow::OnInvalidateData(data, gui_scope);
+
+		if (!gui_scope) return;
+
+		PickerInvalidations pi(data);
+		if (pi.Test(PickerInvalidation::Position)) {
+			const auto objclass = ObjectClass::Get(_object_gui.sel_class);
+			const auto spec = objclass->GetSpec(_object_gui.sel_type);
+			_object_gui.sel_view = std::min<int>(_object_gui.sel_view, spec->views - 1);
+			this->UpdateButtons(spec);
+		}
 	}
 
-	void OnClick(Point pt, int widget, int click_count) override
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
 	{
-		switch (GB(widget, 0, 16)) {
-			case WID_BO_CLASS_LIST: {
-				int num_clicked = this->vscroll->GetPosition() + (pt.y - this->nested_array[widget]->pos_y) / this->line_height;
-				if (num_clicked >= (int)ObjectClass::GetUIClassCount()) break;
-
-				this->SelectOtherClass(ObjectClass::GetUIClass(num_clicked));
-				this->SelectFirstAvailableObject(false);
-				break;
-			}
-
-			case WID_BO_SELECT_IMAGE: {
-				ObjectClass *objclass = ObjectClass::Get(_selected_object_class);
-				int num_clicked = objclass->GetIndexFromUI(GB(widget, 16, 16));
-				if (num_clicked >= 0 && objclass->GetSpec(num_clicked)->IsAvailable()) this->SelectOtherObject(num_clicked);
-				break;
-			}
-
+		switch (widget) {
 			case WID_BO_OBJECT_SPRITE:
-				if (_selected_object_index != -1) {
-					_selected_object_view = GB(widget, 16, 16);
-					this->SelectOtherObject(_selected_object_index); // Re-select the object for a different view.
+				if (_object_gui.sel_type != std::numeric_limits<uint16_t>::max()) {
+					_object_gui.sel_view = this->GetWidget<NWidgetBase>(widget)->GetParentWidget<NWidgetMatrix>()->GetCurrentElement();
+					this->InvalidateData(PickerInvalidation::Position);
+					SndClickBeep();
 				}
+				break;
+
+			default:
+				this->PickerWindow::OnClick(pt, widget, click_count);
 				break;
 		}
 	}
 
-	void OnPlaceObject(Point pt, TileIndex tile) override
+	void OnPlaceObject([[maybe_unused]] Point pt, TileIndex tile) override
 	{
-		DoCommandP(tile, ObjectClass::Get(_selected_object_class)->GetSpec(_selected_object_index)->Index(),
-				_selected_object_view, CMD_BUILD_OBJECT | CMD_MSG(STR_ERROR_CAN_T_BUILD_OBJECT), CcTerraform);
+		const ObjectSpec *spec = ObjectClass::Get(_object_gui.sel_class)->GetSpec(_object_gui.sel_type);
+
+		if (spec->size == OBJECT_SIZE_1X1) {
+			VpStartPlaceSizing(tile, VPM_X_AND_Y, DDSP_BUILD_OBJECT);
+		} else {
+			Command<Commands::BuildObject>::Post(STR_ERROR_CAN_T_BUILD_OBJECT, CcPlaySound_CONSTRUCTION_OTHER, tile, spec->Index(), _object_gui.sel_view);
+		}
+	}
+
+	void OnPlaceDrag(ViewportPlaceMethod select_method, [[maybe_unused]] ViewportDragDropSelectionProcess select_proc, [[maybe_unused]] Point pt) override
+	{
+		VpSelectTilesWithMethod(pt.x, pt.y, select_method);
+	}
+
+	void OnPlaceMouseUp([[maybe_unused]] ViewportPlaceMethod select_method, [[maybe_unused]] ViewportDragDropSelectionProcess select_proc, [[maybe_unused]] Point pt, TileIndex start_tile, TileIndex end_tile) override
+	{
+		if (pt.x == -1) return;
+
+		assert(select_proc == DDSP_BUILD_OBJECT);
+
+		const ObjectSpec *spec = ObjectClass::Get(_object_gui.sel_class)->GetSpec(_object_gui.sel_type);
+		Command<Commands::BuildObjectArea>::Post(STR_ERROR_CAN_T_BUILD_OBJECT, CcPlaySound_CONSTRUCTION_OTHER,
+			end_tile, start_tile, spec->Index(), _object_gui.sel_view, IsCtrlPressed());
 	}
 
 	void OnPlaceObjectAbort() override
 	{
-		this->UpdateButtons(_selected_object_class, -1, _selected_object_view);
+		this->UpdateButtons(nullptr);
 	}
 
 	/**
-	 * Select the first available object.
-	 * @param change_class If true, change the class if no object in the current
-	 *   class is available.
+	 * Handler for global hotkeys of the BuildObjectWindow.
+	 * @param hotkey Hotkey
+	 * @return EventState::Handled if hotkey was accepted.
 	 */
-	void SelectFirstAvailableObject(bool change_class)
+	static EventState BuildObjectGlobalHotkeys(int hotkey)
 	{
-		/* First try to select an object in the selected class. */
-		ObjectClass *sel_objclass = ObjectClass::Get(_selected_object_class);
-		for (uint i = 0; i < sel_objclass->GetSpecCount(); i++) {
-			const ObjectSpec *spec = sel_objclass->GetSpec(i);
-			if (spec->IsAvailable()) {
-				this->SelectOtherObject(i);
-				return;
-			}
-		}
-		if (change_class) {
-			/* If that fails, select the first available object
-			 * from a random class. */
-			for (ObjectClassID j = OBJECT_CLASS_BEGIN; j < OBJECT_CLASS_MAX; j++) {
-				ObjectClass *objclass = ObjectClass::Get(j);
-				for (uint i = 0; i < objclass->GetSpecCount(); i++) {
-					const ObjectSpec *spec = objclass->GetSpec(i);
-					if (spec->IsAvailable()) {
-						this->SelectOtherClass(j);
-						this->SelectOtherObject(i);
-						return;
-					}
-				}
-			}
-		}
-		/* If all objects are unavailable, select nothing... */
-		if (ObjectClass::Get(_selected_object_class)->GetUISpecCount() == 0) {
-			/* ... but make sure that the class is not empty. */
-			for (ObjectClassID j = OBJECT_CLASS_BEGIN; j < OBJECT_CLASS_MAX; j++) {
-				if (ObjectClass::Get(j)->GetUISpecCount() > 0) {
-					this->SelectOtherClass(j);
-					break;
-				}
-			}
-		}
-		this->SelectOtherObject(-1);
+		if (_game_mode == GameMode::Menu) return EventState::NotHandled;
+		Window *w = ShowBuildObjectPicker();
+		if (w == nullptr) return EventState::NotHandled;
+		return w->OnHotkey(hotkey);
 	}
+
+	static inline HotkeyList hotkeys{"buildobject", {
+		Hotkey('F', "focus_filter_box", PCWHK_FOCUS_FILTER_BOX),
+	}, BuildObjectGlobalHotkeys};
 };
 
-static const NWidgetPart _nested_build_object_widgets[] = {
+static constexpr std::initializer_list<NWidgetPart> _nested_build_object_widgets = {
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_CLOSEBOX, COLOUR_DARK_GREEN),
-		NWidget(WWT_CAPTION, COLOUR_DARK_GREEN), SetDataTip(STR_OBJECT_BUILD_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
-		NWidget(WWT_DEFSIZEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_CLOSEBOX, Colours::DarkGreen),
+		NWidget(WWT_CAPTION, Colours::DarkGreen), SetStringTip(STR_OBJECT_BUILD_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_SHADEBOX, Colours::DarkGreen),
+		NWidget(WWT_DEFSIZEBOX, Colours::DarkGreen),
+		NWidget(WWT_STICKYBOX, Colours::DarkGreen),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_DARK_GREEN),
-		NWidget(NWID_HORIZONTAL), SetPadding(2, 0, 0, 0),
-			NWidget(NWID_VERTICAL),
-				NWidget(NWID_HORIZONTAL), SetPadding(0, 5, 2, 5),
-					NWidget(WWT_MATRIX, COLOUR_GREY, WID_BO_CLASS_LIST), SetFill(1, 0), SetMatrixDataTip(1, 0, STR_OBJECT_BUILD_CLASS_TOOLTIP), SetScrollbar(WID_BO_SCROLLBAR),
-					NWidget(NWID_VSCROLLBAR, COLOUR_GREY, WID_BO_SCROLLBAR),
-				EndContainer(),
-				NWidget(NWID_HORIZONTAL), SetPadding(0, 5, 0, 5),
-					NWidget(NWID_MATRIX, COLOUR_DARK_GREEN, WID_BO_OBJECT_MATRIX), SetPIP(0, 2, 0),
-						NWidget(WWT_PANEL, COLOUR_GREY, WID_BO_OBJECT_SPRITE), SetDataTip(0x0, STR_OBJECT_BUILD_PREVIEW_TOOLTIP), EndContainer(),
-					EndContainer(),
-				EndContainer(),
-				NWidget(WWT_TEXT, COLOUR_DARK_GREEN, WID_BO_OBJECT_NAME), SetDataTip(STR_ORANGE_STRING, STR_NULL), SetPadding(2, 5, 2, 5),
-				NWidget(WWT_TEXT, COLOUR_DARK_GREEN, WID_BO_OBJECT_SIZE), SetDataTip(STR_OBJECT_BUILD_SIZE, STR_NULL), SetPadding(2, 5, 2, 5),
-			EndContainer(),
-			NWidget(WWT_PANEL, COLOUR_DARK_GREEN), SetScrollbar(WID_BO_SELECT_SCROLL),
-				NWidget(NWID_HORIZONTAL),
-					NWidget(NWID_MATRIX, COLOUR_DARK_GREEN, WID_BO_SELECT_MATRIX), SetFill(0, 1), SetPIP(0, 2, 0),
-						NWidget(WWT_PANEL, COLOUR_DARK_GREEN, WID_BO_SELECT_IMAGE), SetMinimalSize(66, 60), SetDataTip(0x0, STR_OBJECT_BUILD_TOOLTIP),
-								SetFill(0, 0), SetResize(0, 0), SetScrollbar(WID_BO_SELECT_SCROLL),
+	NWidget(NWID_HORIZONTAL),
+		NWidget(NWID_VERTICAL),
+			NWidgetFunction(MakePickerClassWidgets),
+			NWidget(WWT_PANEL, Colours::DarkGreen),
+				NWidget(NWID_VERTICAL), SetPIP(0, WidgetDimensions::unscaled.vsep_picker, 0), SetPadding(WidgetDimensions::unscaled.picker),
+					NWidget(WWT_LABEL, Colours::Invalid), SetStringTip(STR_STATION_BUILD_ORIENTATION), SetFill(1, 0),
+					NWidget(NWID_HORIZONTAL), SetPIPRatio(1, 0, 1),
+						NWidget(NWID_MATRIX, Colours::DarkGreen, WID_BO_OBJECT_MATRIX), SetPIP(0, 2, 0),
+							NWidget(WWT_PANEL, Colours::Grey, WID_BO_OBJECT_SPRITE), SetToolTip(STR_OBJECT_BUILD_PREVIEW_TOOLTIP), EndContainer(),
+							EndContainer(),
 						EndContainer(),
+						NWidget(WWT_TEXT, Colours::Invalid, WID_BO_OBJECT_SIZE), SetAlignment({AlignmentH::Centre, AlignmentV::Middle}),
+						NWidget(WWT_EMPTY, Colours::Invalid, WID_BO_INFO), SetFill(1, 0), SetResize(1, 0),
 					EndContainer(),
-					NWidget(NWID_VSCROLLBAR, COLOUR_DARK_GREEN, WID_BO_SELECT_SCROLL),
 				EndContainer(),
 			EndContainer(),
-		EndContainer(),
-		NWidget(NWID_HORIZONTAL),
-			NWidget(WWT_EMPTY, INVALID_COLOUR, WID_BO_INFO), SetPadding(2, 5, 0, 5), SetFill(1, 0), SetResize(1, 0),
-			NWidget(NWID_VERTICAL),
-				NWidget(WWT_PANEL, COLOUR_DARK_GREEN), SetFill(0, 1), EndContainer(),
-				NWidget(WWT_RESIZEBOX, COLOUR_DARK_GREEN),
-			EndContainer(),
-		EndContainer(),
+		NWidgetFunction(MakePickerTypeWidgets),
 	EndContainer(),
 };
 
+/** Window definition for the build object window. */
 static WindowDesc _build_object_desc(
-	WDP_AUTO, "build_object", 0, 0,
-	WC_BUILD_OBJECT, WC_BUILD_TOOLBAR,
-	WDF_CONSTRUCTION,
-	_nested_build_object_widgets, lengthof(_nested_build_object_widgets)
+	WindowPosition::Automatic, "build_object", 0, 0,
+	WindowClass::BuildObject, WindowClass::BuildToolbar,
+	WindowDefaultFlag::Construction,
+	_nested_build_object_widgets,
+	&BuildObjectWindow::hotkeys
 );
 
-/** Show our object picker.  */
-void ShowBuildObjectPicker()
+/**
+ * Show our object picker.
+ * @return The allocated window or \c nullptr when no window was allocated.
+ */
+Window *ShowBuildObjectPicker()
 {
 	/* Don't show the place object button when there are no objects to place. */
-	if (ObjectClass::GetUIClassCount() > 0) {
-		AllocateWindowDescFront<BuildObjectWindow>(&_build_object_desc, 0);
+	if (ObjectPickerCallbacks::instance.IsActive()) {
+		return AllocateWindowDescFront<BuildObjectWindow>(_build_object_desc, 0);
 	}
+	return nullptr;
 }
 
 /** Reset all data of the object GUI. */
 void InitializeObjectGui()
 {
-	_selected_object_class = (ObjectClassID)0;
+	_object_gui.sel_class = ObjectClassID::Begin();
 }

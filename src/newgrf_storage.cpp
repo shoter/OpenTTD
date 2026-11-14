@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file newgrf_storage.cpp Functionality related to the temporary and persistent storage arrays for NewGRFs. */
@@ -10,9 +10,8 @@
 #include "stdafx.h"
 #include "newgrf_storage.h"
 #include "core/pool_func.hpp"
-#include "core/endian_func.hpp"
+#include "string_func.h"
 #include "debug.h"
-#include <set>
 
 #include "safeguards.h"
 
@@ -26,9 +25,7 @@ bool BasePersistentStorageArray::gameloop;
 bool BasePersistentStorageArray::command;
 bool BasePersistentStorageArray::testmode;
 
-/**
- * Remove references to use.
- */
+/** Remove references to us. */
 BasePersistentStorageArray::~BasePersistentStorageArray()
 {
 	_changed_storage_arrays->erase(this);
@@ -52,7 +49,7 @@ void AddChangedPersistentStorage(BasePersistentStorageArray *storage)
  * @param mode Mode switch affecting temporary/persistent changes.
  * @param ignore_prev_mode Disable some sanity checks for exceptional call circumstances.
  */
-/* static */ void BasePersistentStorageArray::SwitchMode(PersistentStorageMode mode, bool ignore_prev_mode)
+/* static */ void BasePersistentStorageArray::SwitchMode(PersistentStorageMode mode, [[maybe_unused]] bool ignore_prev_mode)
 {
 	switch (mode) {
 		case PSM_ENTER_GAMELOOP:
@@ -91,9 +88,9 @@ void AddChangedPersistentStorage(BasePersistentStorageArray *storage)
 	}
 
 	/* Discard all temporary changes */
-	for (std::set<BasePersistentStorageArray*>::iterator it = _changed_storage_arrays->begin(); it != _changed_storage_arrays->end(); it++) {
-		DEBUG(desync, 1, "Discarding persistent storage changes: Feature %d, GrfID %08X, Tile %d", (*it)->feature, BSWAP32((*it)->grfid), (*it)->tile);
-		(*it)->ClearChanges();
+	for (auto &it : *_changed_storage_arrays) {
+		Debug(Facility::Desync, Severity::Warning, "warning: discarding persistent storage changes: Feature {}, GrfID {}, Tile {}", it->feature, FormatArrayAsHex(it->grfid), it->tile);
+		it->ClearChanges();
 	}
 	_changed_storage_arrays->clear();
 }

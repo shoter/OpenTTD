@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file tile_map.h Map writing/reading functions for tiles. */
@@ -24,12 +24,12 @@
  *
  * @param tile The tile to get the height from
  * @return the height of the tile
- * @pre tile < MapSize()
+ * @pre tile < Map::Size()
  */
-static inline uint TileHeight(TileIndex tile)
+[[debug_inline]] static inline uint TileHeight(Tile tile)
 {
-	assert(tile < MapSize());
-	return _m[tile].height;
+	assert(tile < Map::Size());
+	return tile.height();
 }
 
 /**
@@ -39,9 +39,9 @@ static inline uint TileHeight(TileIndex tile)
  * @param y Y coordinate of the tile, may be outside the map.
  * @return The height in the same unit as TileHeight.
  */
-static inline uint TileHeightOutsideMap(int x, int y)
+inline uint TileHeightOutsideMap(int x, int y)
 {
-	return TileHeight(TileXY(Clamp(x, 0, MapMaxX()), Clamp(y, 0, MapMaxY())));
+	return TileHeight(TileXY(Clamp(x, 0, Map::MaxX()), Clamp(y, 0, Map::MaxY())));
 }
 
 /**
@@ -51,14 +51,14 @@ static inline uint TileHeightOutsideMap(int x, int y)
  *
  * @param tile The tile to change the height
  * @param height The new height value of the tile
- * @pre tile < MapSize()
+ * @pre tile < Map::Size()
  * @pre height <= MAX_TILE_HEIGHT
  */
-static inline void SetTileHeight(TileIndex tile, uint height)
+inline void SetTileHeight(Tile tile, uint height)
 {
-	assert(tile < MapSize());
+	assert(tile < Map::Size());
 	assert(height <= MAX_TILE_HEIGHT);
-	_m[tile].height = height;
+	tile.height() = height;
 }
 
 /**
@@ -69,7 +69,7 @@ static inline void SetTileHeight(TileIndex tile, uint height)
  * @param tile The tile to get the height
  * @return The height of the tile in pixel
  */
-static inline uint TilePixelHeight(TileIndex tile)
+inline uint TilePixelHeight(Tile tile)
 {
 	return TileHeight(tile) * TILE_HEIGHT;
 }
@@ -81,7 +81,7 @@ static inline uint TilePixelHeight(TileIndex tile)
  * @param y Y coordinate of the tile, may be outside the map.
  * @return The height in pixels in the same unit as TilePixelHeight.
  */
-static inline uint TilePixelHeightOutsideMap(int x, int y)
+inline uint TilePixelHeightOutsideMap(int x, int y)
 {
 	return TileHeightOutsideMap(x, y) * TILE_HEIGHT;
 }
@@ -91,12 +91,12 @@ static inline uint TilePixelHeightOutsideMap(int x, int y)
  *
  * @param tile The tile to get the TileType
  * @return The tiletype of the tile
- * @pre tile < MapSize()
+ * @pre tile < Map::Size()
  */
-static inline TileType GetTileType(TileIndex tile)
+[[debug_inline]] static inline TileType GetTileType(Tile tile)
 {
-	assert(tile < MapSize());
-	return (TileType)GB(_m[tile].type, 4, 4);
+	assert(tile < Map::Size());
+	return TileType(GB(tile.type(), 4, TILE_TYPE_BITS));
 }
 
 /**
@@ -104,38 +104,38 @@ static inline TileType GetTileType(TileIndex tile)
  *
  * @param tile The tile to check
  * @return Whether the tile is in the interior of the map
- * @pre tile < MapSize()
+ * @pre tile < Map::Size()
  */
-static inline bool IsInnerTile(TileIndex tile)
+inline bool IsInnerTile(Tile tile)
 {
-	assert(tile < MapSize());
+	assert(tile < Map::Size());
 
 	uint x = TileX(tile);
 	uint y = TileY(tile);
 
-	return x < MapMaxX() && y < MapMaxY() && ((x > 0 && y > 0) || !_settings_game.construction.freeform_edges);
+	return x < Map::MaxX() && y < Map::MaxY() && ((x > 0 && y > 0) || !_settings_game.construction.freeform_edges);
 }
 
 /**
  * Set the type of a tile
  *
  * This functions sets the type of a tile. If the type
- * MP_VOID is selected the tile must be at the south-west or
+ * TileType::Void is selected the tile must be at the south-west or
  * south-east edges of the map and vice versa.
  *
  * @param tile The tile to save the new type
  * @param type The type to save
- * @pre tile < MapSize()
- * @pre type MP_VOID <=> tile is on the south-east or south-west edge.
+ * @pre tile < Map::Size()
+ * @pre type TileType::Void <=> tile is on the south-east or south-west edge.
  */
-static inline void SetTileType(TileIndex tile, TileType type)
+inline void SetTileType(Tile tile, TileType type)
 {
-	assert(tile < MapSize());
+	assert(tile < Map::Size());
 	/* VOID tiles (and no others) are exactly allowed at the lower left and right
 	 * edges of the map. If _settings_game.construction.freeform_edges is true,
 	 * the upper edges of the map are also VOID tiles. */
-	assert(IsInnerTile(tile) == (type != MP_VOID));
-	SB(_m[tile].type, 4, 4, type);
+	assert(IsInnerTile(tile) == (type != TileType::Void));
+	SB(tile.type(), 4, TILE_TYPE_BITS, to_underlying(type));
 }
 
 /**
@@ -147,7 +147,7 @@ static inline void SetTileType(TileIndex tile, TileType type)
  * @param type The type to check against
  * @return true If the type matches against the type of the tile
  */
-static inline bool IsTileType(TileIndex tile, TileType type)
+[[debug_inline]] static inline bool IsTileType(Tile tile, TileType type)
 {
 	return GetTileType(tile) == type;
 }
@@ -156,52 +156,52 @@ static inline bool IsTileType(TileIndex tile, TileType type)
  * Checks if a tile is valid
  *
  * @param tile The tile to check
- * @return True if the tile is on the map and not one of MP_VOID.
+ * @return True if the tile is on the map and not one of TileType::Void.
  */
-static inline bool IsValidTile(TileIndex tile)
+inline bool IsValidTile(Tile tile)
 {
-	return tile < MapSize() && !IsTileType(tile, MP_VOID);
+	return tile < Map::Size() && !IsTileType(tile, TileType::Void);
 }
 
 /**
  * Returns the owner of a tile
  *
  * This function returns the owner of a tile. This cannot used
- * for tiles which type is one of MP_HOUSE, MP_VOID and MP_INDUSTRY
+ * for tiles which type is one of TileType::House, TileType::Void and TileType::Industry
  * as no company owned any of these buildings.
  *
  * @param tile The tile to check
  * @return The owner of the tile
  * @pre IsValidTile(tile)
- * @pre The type of the tile must not be MP_HOUSE and MP_INDUSTRY
+ * @pre The type of the tile must not be TileType::House and TileType::Industry
  */
-static inline Owner GetTileOwner(TileIndex tile)
+inline Owner GetTileOwner(Tile tile)
 {
 	assert(IsValidTile(tile));
-	assert(!IsTileType(tile, MP_HOUSE));
-	assert(!IsTileType(tile, MP_INDUSTRY));
+	assert(!IsTileType(tile, TileType::House));
+	assert(!IsTileType(tile, TileType::Industry));
 
-	return (Owner)GB(_m[tile].m1, 0, 5);
+	return static_cast<Owner>(GB(tile.m1(), 0, 5));
 }
 
 /**
  * Sets the owner of a tile
  *
  * This function sets the owner status of a tile. Note that you cannot
- * set a owner for tiles of type MP_HOUSE, MP_VOID and MP_INDUSTRY.
+ * set a owner for tiles of type TileType::House, TileType::Void and TileType::Industry.
  *
  * @param tile The tile to change the owner status.
  * @param owner The new owner.
  * @pre IsValidTile(tile)
- * @pre The type of the tile must not be MP_HOUSE and MP_INDUSTRY
+ * @pre The type of the tile must not be TileType::House and TileType::Industry
  */
-static inline void SetTileOwner(TileIndex tile, Owner owner)
+inline void SetTileOwner(Tile tile, Owner owner)
 {
 	assert(IsValidTile(tile));
-	assert(!IsTileType(tile, MP_HOUSE));
-	assert(!IsTileType(tile, MP_INDUSTRY));
+	assert(!IsTileType(tile, TileType::House));
+	assert(!IsTileType(tile, TileType::Industry));
 
-	SB(_m[tile].m1, 0, 5, owner);
+	SB(tile.m1(), 0, 5, owner.base());
 }
 
 /**
@@ -211,7 +211,7 @@ static inline void SetTileOwner(TileIndex tile, Owner owner)
  * @param owner The owner to check against
  * @return True if a tile belongs the the given owner
  */
-static inline bool IsTileOwner(TileIndex tile, Owner owner)
+inline bool IsTileOwner(Tile tile, Owner owner)
 {
 	return GetTileOwner(tile) == owner;
 }
@@ -220,78 +220,86 @@ static inline bool IsTileOwner(TileIndex tile, Owner owner)
  * Set the tropic zone
  * @param tile the tile to set the zone of
  * @param type the new type
- * @pre tile < MapSize()
+ * @pre tile < Map::Size()
  */
-static inline void SetTropicZone(TileIndex tile, TropicZone type)
+inline void SetTropicZone(Tile tile, TropicZone type)
 {
-	assert(tile < MapSize());
-	assert(!IsTileType(tile, MP_VOID) || type == TROPICZONE_NORMAL);
-	SB(_m[tile].type, 0, 2, type);
+	assert(tile < Map::Size());
+	assert(!IsTileType(tile, TileType::Void) || type == TropicZone::Normal);
+	SB(tile.type(), 0, 2, to_underlying(type));
 }
 
 /**
  * Get the tropic zone
  * @param tile the tile to get the zone of
- * @pre tile < MapSize()
+ * @pre tile < Map::Size()
  * @return the zone type
  */
-static inline TropicZone GetTropicZone(TileIndex tile)
+inline TropicZone GetTropicZone(Tile tile)
 {
-	assert(tile < MapSize());
-	return (TropicZone)GB(_m[tile].type, 0, 2);
+	assert(tile < Map::Size());
+	return static_cast<TropicZone>(GB(tile.type(), 0, 2));
 }
 
 /**
  * Get the current animation frame
  * @param t the tile
- * @pre IsTileType(t, MP_HOUSE) || IsTileType(t, MP_OBJECT) || IsTileType(t, MP_INDUSTRY) ||IsTileType(t, MP_STATION)
+ * @pre IsTileType(t, TileType::House) || IsTileType(t, TileType::Object) || IsTileType(t, TileType::Industry) || IsTileType(t, TileType::Station)
  * @return frame number
  */
-static inline byte GetAnimationFrame(TileIndex t)
+inline uint8_t GetAnimationFrame(Tile t)
 {
-	assert(IsTileType(t, MP_HOUSE) || IsTileType(t, MP_OBJECT) || IsTileType(t, MP_INDUSTRY) ||IsTileType(t, MP_STATION));
-	return _me[t].m7;
+	assert(IsTileType(t, TileType::House) || IsTileType(t, TileType::Object) || IsTileType(t, TileType::Industry) || IsTileType(t, TileType::Station));
+	return t.m7();
 }
 
 /**
  * Set a new animation frame
  * @param t the tile
  * @param frame the new frame number
- * @pre IsTileType(t, MP_HOUSE) || IsTileType(t, MP_OBJECT) || IsTileType(t, MP_INDUSTRY) ||IsTileType(t, MP_STATION)
+ * @pre IsTileType(t, TileType::House) || IsTileType(t, TileType::Object) || IsTileType(t, TileType::Industry) || IsTileType(t, TileType::Station)
  */
-static inline void SetAnimationFrame(TileIndex t, byte frame)
+inline void SetAnimationFrame(Tile t, uint8_t frame)
 {
-	assert(IsTileType(t, MP_HOUSE) || IsTileType(t, MP_OBJECT) || IsTileType(t, MP_INDUSTRY) ||IsTileType(t, MP_STATION));
-	_me[t].m7 = frame;
+	assert(IsTileType(t, TileType::House) || IsTileType(t, TileType::Object) || IsTileType(t, TileType::Industry) || IsTileType(t, TileType::Station));
+	t.m7() = frame;
 }
 
-Slope GetTileSlope(TileIndex tile, int *h = nullptr);
+std::tuple<Slope, int> GetTileSlopeZ(TileIndex tile);
 int GetTileZ(TileIndex tile);
 int GetTileMaxZ(TileIndex tile);
 
 bool IsTileFlat(TileIndex tile, int *h = nullptr);
 
 /**
- * Return the slope of a given tile
+ * Return the slope of a given tile inside the map.
  * @param tile Tile to compute slope of
- * @param h    If not \c nullptr, pointer to storage of z height
  * @return Slope of the tile, except for the HALFTILE part
  */
-static inline Slope GetTilePixelSlope(TileIndex tile, int *h)
+inline Slope GetTileSlope(TileIndex tile)
 {
-	Slope s = GetTileSlope(tile, h);
-	if (h != nullptr) *h *= TILE_HEIGHT;
-	return s;
+	return std::get<Slope>(GetTileSlopeZ(tile));
 }
 
-Slope GetTilePixelSlopeOutsideMap(int x, int y, int *h);
+/**
+ * Return the slope of a given tile
+ * @param tile Tile to compute slope of
+ * @return Slope of the tile, except for the HALFTILE part, and the z height.
+ */
+inline std::tuple<Slope, int> GetTilePixelSlope(TileIndex tile)
+{
+	auto [s, h] = GetTileSlopeZ(tile);
+	return {s, h * TILE_HEIGHT};
+}
+
+std::tuple<Slope, int> GetTilePixelSlopeOutsideMap(int x, int y);
 
 /**
  * Get bottom height of the tile
  * @param tile Tile to compute height of
  * @return Minimum height of the tile
  */
-static inline int GetTilePixelZ(TileIndex tile)
+inline int GetTilePixelZ(TileIndex tile)
 {
 	return GetTileZ(tile) * TILE_HEIGHT;
 }
@@ -301,7 +309,7 @@ static inline int GetTilePixelZ(TileIndex tile)
  * @param tile Tile to compute height of
  * @return Maximum height of the tile
  */
-static inline int GetTileMaxPixelZ(TileIndex tile)
+inline int GetTileMaxPixelZ(TileIndex tile)
 {
 	return GetTileMaxZ(tile) * TILE_HEIGHT;
 }
@@ -313,7 +321,7 @@ static inline int GetTileMaxPixelZ(TileIndex tile)
  * @param y The Y coordinate
  * @return The hash of the tile
  */
-static inline uint TileHash(uint x, uint y)
+inline uint TileHash(uint x, uint y)
 {
 	uint hash = x >> 4;
 	hash ^= x >> 6;
@@ -331,7 +339,7 @@ static inline uint TileHash(uint x, uint y)
  * @param y The Y coordinate
  * @return The last two bits from hash of the tile
  */
-static inline uint TileHash2Bit(uint x, uint y)
+inline uint TileHash2Bit(uint x, uint y)
 {
 	return GB(TileHash(x, y), 0, 2);
 }

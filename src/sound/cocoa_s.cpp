@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file cocoa_s.cpp Sound driver for cocoa. */
@@ -20,7 +20,6 @@
 #include "../debug.h"
 #include "../driver.h"
 #include "../mixer.h"
-#include "../core/endian_type.hpp"
 #include "cocoa_s.h"
 
 #define Rect        OTTDRect
@@ -36,7 +35,7 @@ static FSoundDriver_Cocoa iFSoundDriver_Cocoa;
 static AudioUnit _outputAudioUnit;
 
 /* The CoreAudio callback */
-static OSStatus audioCallback(void *inRefCon, AudioUnitRenderActionFlags *inActionFlags, const AudioTimeStamp *inTimeStamp, UInt32 inBusNumber, UInt32 inNumberFrames, AudioBufferList * ioData)
+static OSStatus audioCallback(void *, AudioUnitRenderActionFlags *, const AudioTimeStamp *, UInt32, UInt32, AudioBufferList *ioData)
 {
 	MxMixSamples(ioData->mBuffers[0].mData, ioData->mBuffers[0].mDataByteSize / 4);
 
@@ -44,7 +43,7 @@ static OSStatus audioCallback(void *inRefCon, AudioUnitRenderActionFlags *inActi
 }
 
 
-const char *SoundDriver_Cocoa::Start(const StringList &parm)
+std::optional<std::string_view> SoundDriver_Cocoa::Start(const StringList &parm)
 {
 	struct AURenderCallbackStruct callback;
 	AudioStreamBasicDescription requestedDesc;
@@ -58,9 +57,9 @@ const char *SoundDriver_Cocoa::Start(const StringList &parm)
 	requestedDesc.mBitsPerChannel = 16;
 	requestedDesc.mFormatFlags |= kLinearPCMFormatFlagIsSignedInteger;
 
-#if TTD_ENDIAN == TTD_BIG_ENDIAN
-	requestedDesc.mFormatFlags |= kLinearPCMFormatFlagIsBigEndian;
-#endif /* TTD_ENDIAN == TTD_BIG_ENDIAN */
+	if constexpr (std::endian::native == std::endian::big) {
+		requestedDesc.mFormatFlags |= kLinearPCMFormatFlagIsBigEndian;
+	}
 
 	requestedDesc.mFramesPerPacket = 1;
 	requestedDesc.mBytesPerFrame = requestedDesc.mBitsPerChannel * requestedDesc.mChannelsPerFrame / 8;
@@ -108,7 +107,7 @@ const char *SoundDriver_Cocoa::Start(const StringList &parm)
 	}
 
 	/* We're running! */
-	return nullptr;
+	return std::nullopt;
 }
 
 
@@ -118,7 +117,7 @@ void SoundDriver_Cocoa::Stop()
 
 	/* stop processing the audio unit */
 	if (AudioOutputUnitStop(_outputAudioUnit) != noErr) {
-		DEBUG(driver, 0, "cocoa_s: Core_CloseAudio: AudioOutputUnitStop failed");
+		Debug(Facility::Driver, Severity::Critical, "cocoa_s: Core_CloseAudio: AudioOutputUnitStop failed");
 		return;
 	}
 
@@ -126,12 +125,12 @@ void SoundDriver_Cocoa::Stop()
 	callback.inputProc = 0;
 	callback.inputProcRefCon = 0;
 	if (AudioUnitSetProperty(_outputAudioUnit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr) {
-		DEBUG(driver, 0, "cocoa_s: Core_CloseAudio: AudioUnitSetProperty (kAudioUnitProperty_SetRenderCallback) failed");
+		Debug(Facility::Driver, Severity::Critical, "cocoa_s: Core_CloseAudio: AudioUnitSetProperty (kAudioUnitProperty_SetRenderCallback) failed");
 		return;
 	}
 
 	if (AudioComponentInstanceDispose(_outputAudioUnit) != noErr) {
-		DEBUG(driver, 0, "cocoa_s: Core_CloseAudio: AudioComponentInstanceDispose failed");
+		Debug(Facility::Driver, Severity::Critical, "cocoa_s: Core_CloseAudio: AudioComponentInstanceDispose failed");
 		return;
 	}
 }

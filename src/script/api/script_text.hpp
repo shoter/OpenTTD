@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_text.hpp Everything to handle text which can be translated. */
@@ -11,7 +11,9 @@
 #define SCRIPT_TEXT_HPP
 
 #include "script_object.hpp"
-#include "../../core/alloc_type.hpp"
+#include "../../core/string_builder.hpp"
+
+#include <variant>
 
 /**
  * Internal parent object of all Text-like objects.
@@ -21,17 +23,17 @@ class Text : public ScriptObject {
 public:
 	/**
 	 * Convert a ScriptText to a normal string.
-	 * @return A string (in a static buffer), or nullptr.
+	 * @return A string.
 	 * @api -all
 	 */
-	virtual const char *GetEncodedText() = 0;
+	virtual EncodedString GetEncodedText() const = 0;
 
 	/**
 	 * Convert a #ScriptText into a decoded normal string.
-	 * @return A string (in a static buffer), or nullptr.
+	 * @return A string.
 	 * @api -all
 	 */
-	const char *GetDecodedText();
+	std::string GetDecodedText() const;
 };
 
 /**
@@ -40,12 +42,11 @@ public:
  */
 class RawText : public Text {
 public:
-	RawText(const char *text);
-	~RawText();
+	RawText(const std::string &text) : text(text) {}
 
-	const char *GetEncodedText() override { return this->text; }
+	EncodedString GetEncodedText() const override;
 private:
-	const char *text;
+	const std::string text;
 };
 
 /**
@@ -71,10 +72,8 @@ private:
  *
  * @api game
  */
-class ScriptText : public Text , public ZeroedMemoryAllocator {
+class ScriptText : public Text {
 public:
-	static const int SCRIPT_TEXT_MAX_PARAMETERS = 20; ///< The maximum amount of parameters you can give to one object.
-
 #ifndef DOXYGEN_API
 	/**
 	 * The constructor wrapper from Squirrel.
@@ -88,8 +87,7 @@ public:
 	 * @param ... Optional arguments for this string.
 	 */
 	ScriptText(StringID string, ...);
-#endif
-	~ScriptText();
+#endif /* DOXYGEN_API */
 
 #ifndef DOXYGEN_API
 	/**
@@ -112,37 +110,69 @@ public:
 	 * @param parameter Which parameter to set.
 	 * @param value The value of the parameter. Has to be string, integer or an instance of the class ScriptText.
 	 */
-	void SetParam(int parameter, Object value);
+	void SetParam(int parameter, object value);
 
 	/**
 	 * Add a value as parameter (appending it).
 	 * @param value The value of the parameter. Has to be string, integer or an instance of the class ScriptText.
 	 * @return The same object as on which this is called, so you can chain.
 	 */
-	ScriptText *AddParam(Object value);
+	ScriptText *AddParam(object value);
 #endif /* DOXYGEN_API */
 
 	/**
 	 * @api -all
 	 */
-	virtual const char *GetEncodedText();
+	EncodedString GetEncodedText() const override;
+
+	/**
+	 * @api -all
+	 */
+	static void SetPadParameterCount(HSQUIRRELVM vm);
 
 private:
-	StringID string;
-	char *params[SCRIPT_TEXT_MAX_PARAMETERS];
-	int64 parami[SCRIPT_TEXT_MAX_PARAMETERS];
-	ScriptText *paramt[SCRIPT_TEXT_MAX_PARAMETERS];
-	int paramc;
+	using ScriptTextRef = ScriptObjectRef<ScriptText>;
+	using ScriptTextList = std::vector<const ScriptText *>;
+	using Param = std::variant<std::monostate, SQInteger, std::string, ScriptTextRef>;
+
+	struct ParamCheck {
+		StringIndexInTab owner;
+		int idx;
+		const Param *param;
+		bool used = false;
+		std::string_view cmd;
+
+		ParamCheck(StringIndexInTab owner, int idx, const Param *param) : owner(owner), idx(idx), param(param) {}
+
+		void Encode(StringBuilder &output, std::string_view cmd);
+	};
+
+	using ParamList = std::vector<ParamCheck>;
+	using ParamSpan = std::span<ParamCheck>;
+
+	StringIndexInTab string;
+	std::vector<Param> param{};
+
+	static inline int pad_parameter_count = 0; ///< Pad parameters for relaxed string validation.
+
+	/**
+	 * Internal function to recursively fill a list of parameters.
+	 * The parameters are added as _GetEncodedText used to encode them
+	 *  before the addition of parameter validation.
+	 * @param params The list of parameters to fill.
+	 * @param seen_texts The list of seen ScriptText.
+	 */
+	void _FillParamList(ParamList &params, ScriptTextList &seen_texts) const;
 
 	/**
 	 * Internal function for recursive calling this function over multiple
 	 *  instances, while writing in the same buffer.
-	 * @param p The current position in the buffer.
-	 * @param lastofp The last position valid in the buffer.
-	 * @param param_count The number of parameters that are in the string.
-	 * @return The new current position in the buffer.
+	 * @param output The output to write the encoded text to.
+	 * @param param_count The number of parameters that are consumed by the string.
+	 * @param args The parameters to be consumed.
+	 * @param first Whether it's the first call in the recursion.
 	 */
-	char *_GetEncodedText(char *p, char *lastofp, int &param_count);
+	void _GetEncodedText(StringBuilder &output, int &param_count, ParamSpan args, bool first) const;
 
 	/**
 	 * Set a parameter, where the value is the first item on the stack.

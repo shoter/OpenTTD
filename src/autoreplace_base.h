@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file autoreplace_base.h Base class for autoreplaces/autorenews. */
@@ -15,14 +15,14 @@
 #include "engine_type.h"
 #include "group_type.h"
 
-typedef uint16 EngineRenewID;
+using EngineRenewID = PoolID<uint16_t, struct EngineRenewIDTag, 64000, 0xFFFF>;
 
 /**
  * Memory pool for engine renew elements. DO NOT USE outside of engine.c. Is
  * placed here so the only exception to this rule, the saveload code, can use
  * it.
  */
-typedef Pool<EngineRenew, EngineRenewID, 16, 64000> EngineRenewPool;
+using EngineRenewPool = Pool<EngineRenew, EngineRenewID, 16>;
 extern EngineRenewPool _enginerenew_pool;
 
 /**
@@ -31,14 +31,15 @@ extern EngineRenewPool _enginerenew_pool;
  * it.
  */
 struct EngineRenew : EngineRenewPool::PoolItem<&_enginerenew_pool> {
-	EngineID from;
-	EngineID to;
-	EngineRenew *next;
-	GroupID group_id;
-	bool replace_when_old; ///< Do replacement only when vehicle is old.
+	EngineID from = EngineID::Invalid();
+	EngineID to = EngineID::Invalid();
+	EngineRenew *next = nullptr;
+	GroupID group_id = GroupID::Invalid();
+	bool replace_when_old = false; ///< Do replacement only when vehicle is old.
 
-	EngineRenew(EngineID from = INVALID_ENGINE, EngineID to = INVALID_ENGINE) : from(from), to(to) {}
-	~EngineRenew() {}
+	EngineRenew(EngineRenewID index) : EngineRenewPool::PoolItem<&_enginerenew_pool>(index) {}
+	EngineRenew(EngineRenewID index, EngineID from, EngineID to, GroupID group_id, bool replace_when_old, EngineRenew *next) :
+		EngineRenewPool::PoolItem<&_enginerenew_pool>(index), from(from), to(to), next(next), group_id(group_id), replace_when_old(replace_when_old) {}
 };
 
 #endif /* AUTOREPLACE_BASE_H */

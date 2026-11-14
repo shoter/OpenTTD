@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file timetable_gui.cpp GUI for time tabling. */
@@ -15,13 +15,17 @@
 #include "textbuf_gui.h"
 #include "strings_func.h"
 #include "vehicle_base.h"
-#include "string_func.h"
 #include "gfx_func.h"
 #include "company_func.h"
-#include "date_func.h"
+#include "timer/timer.h"
+#include "timer/timer_game_tick.h"
+#include "timer/timer_game_economy.h"
 #include "date_gui.h"
 #include "vehicle_gui.h"
 #include "settings_type.h"
+#include "timetable_cmd.h"
+#include "timetable.h"
+#include "core/string_consumer.hpp"
 
 #include "widgets/timetable_widget.h"
 
@@ -32,24 +36,61 @@
 
 /** Container for the arrival/departure dates of a vehicle */
 struct TimetableArrivalDeparture {
-	Ticks arrival;   ///< The arrival time
-	Ticks departure; ///< The departure time
+	TimerGameTick::Ticks arrival;   ///< The arrival time
+	TimerGameTick::Ticks departure; ///< The departure time
 };
 
 /**
- * Set the timetable parameters in the format as described by the setting.
- * @param param1 the first DParam to fill
- * @param param2 the second DParam to fill
- * @param ticks  the number of ticks to 'draw'
+ * Get parameters to format timetable time.
+ * @param ticks Number of ticks to format.
+ * @returns Pair of parameters to format timetable time.
  */
-void SetTimetableParams(int param1, int param2, Ticks ticks)
+std::pair<StringParameter, StringParameter> GetTimetableParameters(TimerGameTick::Ticks ticks)
 {
-	if (_settings_client.gui.timetable_in_ticks) {
-		SetDParam(param1, STR_TIMETABLE_TICKS);
-		SetDParam(param2, ticks);
-	} else {
-		SetDParam(param1, STR_TIMETABLE_DAYS);
-		SetDParam(param2, ticks / DAY_TICKS);
+	switch (_settings_client.gui.timetable_mode) {
+		case TimetableMode::Days: return {STR_UNITS_DAYS, ticks / Ticks::DAY_TICKS};
+		case TimetableMode::Seconds: return {STR_UNITS_SECONDS, ticks / Ticks::TICKS_PER_SECOND};
+		case TimetableMode::Ticks: return {STR_UNITS_TICKS, ticks};
+		default:
+			NOT_REACHED();
+	}
+}
+
+/**
+ * Get the number of ticks in the current timetable display unit.
+ * @return The number of ticks per day, second, or tick, to match the timetable display.
+ */
+static inline TimerGameTick::Ticks TicksPerTimetableUnit()
+{
+	switch (_settings_client.gui.timetable_mode) {
+		case TimetableMode::Days:
+			return Ticks::DAY_TICKS;
+		case TimetableMode::Seconds:
+			return Ticks::TICKS_PER_SECOND;
+		case TimetableMode::Ticks:
+			return 1;
+		default:
+			NOT_REACHED();
+	}
+}
+
+/**
+ * Determine if a vehicle should be shown as late or early, using a threshold depending on the timetable display setting.
+ * @param ticks The number of ticks that the vehicle is late or early.
+ * @param round_to_day When using ticks, if we should round up to the nearest day.
+ * @return True if the vehicle is outside the "on time" threshold, either early or late.
+ */
+bool VehicleIsAboveLatenessThreshold(TimerGameTick::Ticks ticks, bool round_to_day)
+{
+	switch (_settings_client.gui.timetable_mode) {
+		case TimetableMode::Days:
+			return ticks > Ticks::DAY_TICKS;
+		case TimetableMode::Seconds:
+			return ticks > Ticks::TICKS_PER_SECOND;
+		case TimetableMode::Ticks:
+			return ticks > (round_to_day ? Ticks::DAY_TICKS : 0);
+		default:
+			NOT_REACHED();
 	}
 }
 
@@ -59,15 +100,15 @@ void SetTimetableParams(int param1, int param2, Ticks ticks)
  * @param travelling whether we are interested in the travel or the wait part.
  * @return true if the travel/wait time can be used.
  */
-static bool CanDetermineTimeTaken(const Order *order, bool travelling)
+static bool CanDetermineTimeTaken(const Order &order, bool travelling)
 {
 	/* Current order is conditional */
-	if (order->IsType(OT_CONDITIONAL) || order->IsType(OT_IMPLICIT)) return false;
+	if (order.IsType(OT_CONDITIONAL) || order.IsType(OT_IMPLICIT)) return false;
 	/* No travel time and we have not already finished travelling */
-	if (travelling && !order->IsTravelTimetabled()) return false;
+	if (travelling && !order.IsTravelTimetabled()) return false;
 	/* No wait time but we are loading at this timetabled station */
-	if (!travelling && !order->IsWaitTimetabled() && order->IsType(OT_GOTO_STATION) &&
-			!(order->GetNonStopType() & ONSF_NO_STOP_AT_DESTINATION_STATION)) {
+	if (!travelling && !order.IsWaitTimetabled() && order.IsType(OT_GOTO_STATION) &&
+			!order.GetNonStopType().Test(OrderNonStopFlag::GoVia)) {
 		return false;
 	}
 
@@ -83,20 +124,20 @@ static bool CanDetermineTimeTaken(const Order *order, bool travelling)
  * @param table Fill in arrival and departures including intermediate orders
  * @param offset Add this value to result and all arrivals and departures
  */
-static void FillTimetableArrivalDepartureTable(const Vehicle *v, VehicleOrderID start, bool travelling, TimetableArrivalDeparture *table, Ticks offset)
+static void FillTimetableArrivalDepartureTable(const Vehicle *v, VehicleOrderID start, bool travelling, std::vector<TimetableArrivalDeparture> &table, TimerGameTick::Ticks offset)
 {
-	assert(table != nullptr);
+	assert(!table.empty());
 	assert(v->GetNumOrders() >= 2);
 	assert(start < v->GetNumOrders());
 
-	Ticks sum = offset;
-	VehicleOrderID i = start;
-	const Order *order = v->GetOrder(i);
-
 	/* Pre-initialize with unknown time */
 	for (int i = 0; i < v->GetNumOrders(); ++i) {
-		table[i].arrival = table[i].departure = INVALID_TICKS;
+		table[i].arrival = table[i].departure = Ticks::INVALID_TICKS;
 	}
+
+	TimerGameTick::Ticks sum = offset;
+	VehicleOrderID i = start;
+	auto orders = v->Orders();
 
 	/* Cyclically loop over all orders until we reach the current one again.
 	 * As we may start at the current order, do a post-checking loop */
@@ -104,65 +145,51 @@ static void FillTimetableArrivalDepartureTable(const Vehicle *v, VehicleOrderID 
 		/* Automatic orders don't influence the overall timetable;
 		 * they just add some untimetabled entries, but the time till
 		 * the next non-implicit order can still be known. */
-		if (!order->IsType(OT_IMPLICIT)) {
+		if (!orders[i].IsType(OT_IMPLICIT)) {
 			if (travelling || i != start) {
-				if (!CanDetermineTimeTaken(order, true)) return;
-				sum += order->GetTimetabledTravel();
+				if (!CanDetermineTimeTaken(orders[i], true)) return;
+				sum += orders[i].GetTimetabledTravel();
 				table[i].arrival = sum;
 			}
 
-			if (!CanDetermineTimeTaken(order, false)) return;
-			sum += order->GetTimetabledWait();
+			if (!CanDetermineTimeTaken(orders[i], false)) return;
+			sum += orders[i].GetTimetabledWait();
 			table[i].departure = sum;
 		}
 
-		++i;
-		order = order->next;
-		if (i >= v->GetNumOrders()) {
-			i = 0;
-			assert(order == nullptr);
-			order = v->orders.list->GetFirstOrder();
-		}
+		i = v->orders->GetNext(i);
 	} while (i != start);
 
 	/* When loading at a scheduled station we still have to treat the
 	 * travelling part of the first order. */
 	if (!travelling) {
-		if (!CanDetermineTimeTaken(order, true)) return;
-		sum += order->GetTimetabledTravel();
+		if (!CanDetermineTimeTaken(orders[i], true)) return;
+		sum += orders[i].GetTimetabledTravel();
 		table[i].arrival = sum;
 	}
 }
 
-
-/**
- * Callback for when a time has been chosen to start the time table
- * @param w the window related to the setting of the date
- * @param date the actually chosen date
- */
-static void ChangeTimetableStartCallback(const Window *w, Date date)
-{
-	DoCommandP(0, w->window_number, date, CMD_SET_TIMETABLE_START | CMD_MSG(STR_ERROR_CAN_T_TIMETABLE_VEHICLE));
-}
-
-
 struct TimetableWindow : Window {
-	int sel_index;
-	const Vehicle *vehicle; ///< Vehicle monitored by the window.
-	bool show_expected;     ///< Whether we show expected arrival or scheduled
-	uint deparr_time_width; ///< The width of the departure/arrival time
-	uint deparr_abbr_width; ///< The width of the departure/arrival abbreviation
-	Scrollbar *vscroll;
-	bool query_is_speed_query; ///< The currently open query window is a speed query and not a time query.
+	int sel_index = -1;
+	VehicleTimetableWidgets query_widget{}; ///< Which button was clicked to open the query text input?
+	const Vehicle *vehicle = nullptr; ///< Vehicle monitored by the window.
+	bool show_expected = true; ///< Whether we show expected arrival or scheduled.
+	Scrollbar *vscroll = nullptr; ///< The scrollbar.
+	bool set_start_date_all = false; ///< Set start date using minutes text entry for all timetable entries (ctrl-click) action.
+	bool change_timetable_all = false; ///< Set wait time or speed for all timetable entries (ctrl-click) action.
 
-	TimetableWindow(WindowDesc *desc, WindowNumber window_number) :
+	TimetableWindow(WindowDesc &desc, WindowNumber window_number) :
 			Window(desc),
-			sel_index(-1),
-			vehicle(Vehicle::Get(window_number)),
-			show_expected(true)
+			vehicle(Vehicle::Get(window_number))
 	{
 		this->CreateNestedTree();
 		this->vscroll = this->GetScrollbar(WID_VT_SCROLLBAR);
+
+		/* When using wallclock units, we must ensure the client displays timetables in seconds. */
+		if (TimerGameEconomy::UsingWallclockUnits()) {
+			_settings_client.gui.timetable_mode = TimetableMode::Seconds;
+		}
+
 		this->UpdateSelectionStates();
 		this->FinishInitNested(window_number);
 
@@ -175,49 +202,59 @@ struct TimetableWindow : Window {
 	 * @param table the table to fill
 	 * @return if next arrival will be early
 	 */
-	static bool BuildArrivalDepartureList(const Vehicle *v, TimetableArrivalDeparture *table)
+	static bool BuildArrivalDepartureList(const Vehicle *v, std::vector<TimetableArrivalDeparture> &table)
 	{
-		assert(HasBit(v->vehicle_flags, VF_TIMETABLE_STARTED));
+		assert(v->vehicle_flags.Test(VehicleFlag::TimetableStarted));
 
-		bool travelling = (!v->current_order.IsType(OT_LOADING) || v->current_order.GetNonStopType() == ONSF_STOP_EVERYWHERE);
-		Ticks start_time = _date_fract - v->current_order_time;
+		bool travelling = (!v->current_order.IsType(OT_LOADING) || v->current_order.GetNonStopType().None());
+		TimerGameTick::Ticks start_time = -v->current_order_time;
+
+		/* If arrival and departure times are in days, compensate for the current date_fract. */
+		if (_settings_client.gui.timetable_mode != TimetableMode::Seconds) start_time += TimerGameEconomy::date_fract;
 
 		FillTimetableArrivalDepartureTable(v, v->cur_real_order_index % v->GetNumOrders(), travelling, table, start_time);
 
 		return (travelling && v->lateness_counter < 0);
 	}
 
-	void UpdateWidgetSize(int widget, Dimension *size, const Dimension &padding, Dimension *fill, Dimension *resize) override
+	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding, [[maybe_unused]] Dimension &fill, [[maybe_unused]] Dimension &resize) override
 	{
 		switch (widget) {
 			case WID_VT_ARRIVAL_DEPARTURE_PANEL:
-				SetDParamMaxValue(0, MAX_YEAR * DAYS_IN_YEAR, 0, FS_SMALL);
-				this->deparr_time_width = GetStringBoundingBox(STR_JUST_DATE_TINY).width;
-				this->deparr_abbr_width = max(GetStringBoundingBox(STR_TIMETABLE_ARRIVAL_ABBREVIATION).width, GetStringBoundingBox(STR_TIMETABLE_DEPARTURE_ABBREVIATION).width);
-				size->width = WD_FRAMERECT_LEFT + this->deparr_abbr_width + 10 + this->deparr_time_width + WD_FRAMERECT_RIGHT;
-				FALLTHROUGH;
+				/* We handle this differently depending on the timetable mode. */
+				if (_settings_client.gui.timetable_mode == TimetableMode::Seconds) {
+					/* A five-digit number would fit a timetable lasting 2.7 real-world hours, which should be plenty. */
+					uint64_t max_digits = GetParamMaxDigits(4, FontSize::Small);
+					size.width = std::max(
+							GetStringBoundingBox(GetString(STR_TIMETABLE_ARRIVAL_SECONDS_IN_FUTURE, TextColour::Black, max_digits)).width,
+							GetStringBoundingBox(GetString(STR_TIMETABLE_DEPARTURE_SECONDS_IN_FUTURE, TextColour::Black, max_digits)).width)
+							+ WidgetDimensions::scaled.hsep_wide + padding.width;
+				} else {
+					uint64_t max_value = GetParamMaxValue(TimerGameEconomy::DateAtStartOfYear(EconomyTime::MAX_YEAR).base(), 0, FontSize::Small);
+					size.width = std::max(
+							GetStringBoundingBox(GetString(STR_TIMETABLE_ARRIVAL_DATE, TextColour::Black, max_value)).width,
+							GetStringBoundingBox(GetString(STR_TIMETABLE_DEPARTURE_DATE, TextColour::Black, max_value)).width)
+							+ WidgetDimensions::scaled.hsep_wide + padding.width;
+				}
+				[[fallthrough]];
 
-			case WID_VT_ARRIVAL_DEPARTURE_SELECTION:
 			case WID_VT_TIMETABLE_PANEL:
-				resize->height = FONT_HEIGHT_NORMAL;
-				size->height = WD_FRAMERECT_TOP + 8 * resize->height + WD_FRAMERECT_BOTTOM;
+				fill.height = resize.height = GetCharacterHeight(FontSize::Normal);
+				size.height = 8 * resize.height + padding.height;
 				break;
 
 			case WID_VT_SUMMARY_PANEL:
-				size->height = WD_FRAMERECT_TOP + 2 * FONT_HEIGHT_NORMAL + WD_FRAMERECT_BOTTOM;
+				size.height = 2 * GetCharacterHeight(FontSize::Normal) + padding.height;
 				break;
 		}
 	}
 
-	int GetOrderFromTimetableWndPt(int y, const Vehicle *v)
+	int GetOrderFromTimetableWndPt(int y, [[maybe_unused]] const Vehicle *v)
 	{
-		int sel = (y - this->GetWidget<NWidgetBase>(WID_VT_TIMETABLE_PANEL)->pos_y - WD_FRAMERECT_TOP) / FONT_HEIGHT_NORMAL;
-
-		if ((uint)sel >= this->vscroll->GetCapacity()) return INVALID_ORDER;
-
-		sel += this->vscroll->GetPosition();
-
-		return (sel < v->GetNumOrders() * 2 && sel >= 0) ? sel : INVALID_ORDER;
+		int32_t sel = this->vscroll->GetScrolledRowFromWidget(y, this, WID_VT_TIMETABLE_PANEL, WidgetDimensions::scaled.framerect.top);
+		if (sel == INT32_MAX) return sel;
+		assert(IsInsideBS(sel, 0, v->GetNumOrders() * 2));
+		return sel;
 	}
 
 	/**
@@ -225,7 +262,7 @@ struct TimetableWindow : Window {
 	 * @param data Information about the changed data.
 	 * @param gui_scope Whether the call is done from GUI scope. You may not do everything when not in GUI scope. See #InvalidateWindowData() for details.
 	 */
-	void OnInvalidateData(int data = 0, bool gui_scope = true) override
+	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override
 	{
 		switch (data) {
 			case VIWD_AUTOREPLACE:
@@ -237,7 +274,7 @@ struct TimetableWindow : Window {
 				/* Removed / replaced all orders (after deleting / sharing) */
 				if (this->sel_index == -1) break;
 
-				this->DeleteChildWindows();
+				this->CloseChildWindows();
 				this->sel_index = -1;
 				break;
 
@@ -276,7 +313,7 @@ struct TimetableWindow : Window {
 					/* Now we are modifying the selected order */
 					if (to == INVALID_VEH_ORDER_ID) {
 						/* Deleting selected order */
-						this->DeleteChildWindows();
+						this->CloseChildWindows();
 						this->sel_index = -1;
 						break;
 					} else {
@@ -306,13 +343,13 @@ struct TimetableWindow : Window {
 			bool disable = true;
 			if (selected != -1) {
 				const Order *order = v->GetOrder(((selected + 1) / 2) % v->GetNumOrders());
-				if (selected % 2 == 1) {
+				if (selected % 2 != 0) {
 					disable = order != nullptr && (order->IsType(OT_CONDITIONAL) || order->IsType(OT_IMPLICIT));
 				} else {
-					disable = order == nullptr || ((!order->IsType(OT_GOTO_STATION) || (order->GetNonStopType() & ONSF_NO_STOP_AT_DESTINATION_STATION)) && !order->IsType(OT_CONDITIONAL));
+					disable = order == nullptr || ((!order->IsType(OT_GOTO_STATION) || order->GetNonStopType().Test(OrderNonStopFlag::GoVia)) && !order->IsType(OT_CONDITIONAL));
 				}
 			}
-			bool disable_speed = disable || selected % 2 != 1 || v->type == VEH_AIRCRAFT;
+			bool disable_speed = disable || selected % 2 == 0 || v->type == VehicleType::Aircraft;
 
 			this->SetWidgetDisabledState(WID_VT_CHANGE_TIME, disable);
 			this->SetWidgetDisabledState(WID_VT_CLEAR_TIME, disable);
@@ -320,9 +357,9 @@ struct TimetableWindow : Window {
 			this->SetWidgetDisabledState(WID_VT_CLEAR_SPEED, disable_speed);
 			this->SetWidgetDisabledState(WID_VT_SHARED_ORDER_LIST, !v->IsOrderListShared());
 
-			this->SetWidgetDisabledState(WID_VT_START_DATE, v->orders.list == nullptr);
-			this->SetWidgetDisabledState(WID_VT_RESET_LATENESS, v->orders.list == nullptr);
-			this->SetWidgetDisabledState(WID_VT_AUTOFILL, v->orders.list == nullptr);
+			this->SetWidgetDisabledState(WID_VT_START_DATE, v->orders == nullptr);
+			this->SetWidgetDisabledState(WID_VT_RESET_LATENESS, v->orders == nullptr);
+			this->SetWidgetDisabledState(WID_VT_AUTOFILL, v->orders == nullptr);
 		} else {
 			this->DisableWidget(WID_VT_START_DATE);
 			this->DisableWidget(WID_VT_CHANGE_TIME);
@@ -334,184 +371,255 @@ struct TimetableWindow : Window {
 			this->DisableWidget(WID_VT_SHARED_ORDER_LIST);
 		}
 
-		this->SetWidgetLoweredState(WID_VT_AUTOFILL, HasBit(v->vehicle_flags, VF_AUTOFILL_TIMETABLE));
+		this->SetWidgetLoweredState(WID_VT_AUTOFILL, v->vehicle_flags.Test(VehicleFlag::AutofillTimetable));
 
 		this->DrawWidgets();
 	}
 
-	void SetStringParameters(int widget) const override
+	std::string GetWidgetString(WidgetID widget, StringID stringid) const override
 	{
 		switch (widget) {
-			case WID_VT_CAPTION: SetDParam(0, this->vehicle->index); break;
-			case WID_VT_EXPECTED: SetDParam(0, this->show_expected ? STR_TIMETABLE_EXPECTED : STR_TIMETABLE_SCHEDULED); break;
+			case WID_VT_CAPTION: return GetString(STR_TIMETABLE_TITLE, this->vehicle->index);
+			case WID_VT_EXPECTED: return GetString(this->show_expected ? STR_TIMETABLE_EXPECTED : STR_TIMETABLE_SCHEDULED);
+			default: return this->Window::GetWidgetString(widget, stringid);
 		}
 	}
 
-	void DrawWidget(const Rect &r, int widget) const override
+	/**
+	 * Get the time table travel string
+	 * @param order The order.
+	 * @param i The index of the currently requested order.
+	 * @param[out] colour The text colour.
+	 * @return The status as string.
+	 */
+	std::string GetTimetableTravelString(const Order &order, int i, ExtendedTextColour &colour) const
+	{
+		colour = (i == this->sel_index) ? TextColour::White : TextColour::Black;
+
+		if (order.IsType(OT_CONDITIONAL)) {
+			return GetString(STR_TIMETABLE_NO_TRAVEL);
+		}
+
+		if (order.IsType(OT_IMPLICIT)) {
+			colour = ExtendedTextColour{(i == this->sel_index) ? TextColour::Silver : TextColour::Grey, ExtendedTextColourFlag::NoShade};
+			return GetString(STR_TIMETABLE_NOT_TIMETABLEABLE);
+		}
+
+		if (order.IsTravelTimetabled()) {
+			auto [str, value] = GetTimetableParameters(order.GetTimetabledTravel());
+			return order.GetMaxSpeed() != UINT16_MAX
+				? GetString(STR_TIMETABLE_TRAVEL_FOR_SPEED, str, value, PackVelocity(order.GetMaxSpeed(), this->vehicle->type))
+				: GetString(STR_TIMETABLE_TRAVEL_FOR, str, value);
+		}
+
+		if (order.GetTravelTime() > 0) {
+			auto [str, value] = GetTimetableParameters(order.GetTravelTime());
+			return order.GetMaxSpeed() != UINT16_MAX
+				? GetString(STR_TIMETABLE_TRAVEL_FOR_SPEED_ESTIMATED, str, value, PackVelocity(order.GetMaxSpeed(), this->vehicle->type))
+				: GetString(STR_TIMETABLE_TRAVEL_FOR_ESTIMATED, str, value);
+		}
+
+		return order.GetMaxSpeed() != UINT16_MAX
+			? GetString(STR_TIMETABLE_TRAVEL_NOT_TIMETABLED_SPEED, PackVelocity(order.GetMaxSpeed(), this->vehicle->type))
+			: GetString(STR_TIMETABLE_TRAVEL_NOT_TIMETABLED);
+	}
+
+	/**
+	 * Helper function to draw the timetable panel.
+	 * @param r The rect to draw within.
+	 */
+	void DrawTimetablePanel(const Rect &r) const
 	{
 		const Vehicle *v = this->vehicle;
+		if (v->GetNumOrders() == 0) return;
+		Rect tr = r.Shrink(WidgetDimensions::scaled.framerect);
+		int i = this->vscroll->GetPosition();
+		VehicleOrderID order_id = (i + 1) / 2;
+		bool final_order = false;
 		int selected = this->sel_index;
 
-		switch (widget) {
-			case WID_VT_TIMETABLE_PANEL: {
-				int y = r.top + WD_FRAMERECT_TOP;
-				int i = this->vscroll->GetPosition();
-				VehicleOrderID order_id = (i + 1) / 2;
-				bool final_order = false;
+		bool rtl = _current_text_dir == TD_RTL;
+		int index_column_width = GetStringBoundingBox(GetString(STR_ORDER_INDEX, GetParamMaxValue(v->GetNumOrders(), 2))).width + 2 * GetSpriteSize(rtl ? SPR_ARROW_RIGHT : SPR_ARROW_LEFT).width + WidgetDimensions::scaled.hsep_normal;
+		int middle = rtl ? tr.right - index_column_width : tr.left + index_column_width;
 
-				bool rtl = _current_text_dir == TD_RTL;
-				SetDParamMaxValue(0, v->GetNumOrders(), 2);
-				int index_column_width = GetStringBoundingBox(STR_ORDER_INDEX).width + 2 * GetSpriteSize(rtl ? SPR_ARROW_RIGHT : SPR_ARROW_LEFT).width + 3;
-				int middle = rtl ? r.right - WD_FRAMERECT_RIGHT - index_column_width : r.left + WD_FRAMERECT_LEFT + index_column_width;
+		auto orders = v->Orders();
+		while (true) {
+			/* Don't draw anything if it extends past the end of the window. */
+			if (!this->vscroll->IsVisible(i)) break;
 
-				const Order *order = v->GetOrder(order_id);
-				while (order != nullptr) {
-					/* Don't draw anything if it extends past the end of the window. */
-					if (!this->vscroll->IsVisible(i)) break;
+			if (i % 2 == 0) {
+				DrawOrderString(v, &orders[order_id], order_id, tr.top, i == selected, true, tr.left, middle, tr.right);
+				if (v->orders->GetNext(order_id) == 0) final_order = true;
+				order_id = v->orders->GetNext(order_id);
+			} else {
+				ExtendedTextColour colour;
+				std::string string = GetTimetableTravelString(orders[order_id], i, colour);
 
-					if (i % 2 == 0) {
-						DrawOrderString(v, order, order_id, y, i == selected, true, r.left + WD_FRAMERECT_LEFT, middle, r.right - WD_FRAMERECT_RIGHT);
+				DrawString(rtl ? tr.left : middle, rtl ? middle : tr.right, tr.top, string, colour);
 
-						order_id++;
+				if (final_order) break;
+			}
 
-						if (order_id >= v->GetNumOrders()) {
-							order = v->GetOrder(0);
-							final_order = true;
-						} else {
-							order = order->next;
-						}
+			i++;
+			tr.top += GetCharacterHeight(FontSize::Normal);
+		}
+	}
+
+	/**
+	 * Helper function to draw the arrival and departure panel.
+	 * @param r The rect to draw within.
+	 */
+	void DrawArrivalDeparturePanel(const Rect &r) const
+	{
+		const Vehicle *v = this->vehicle;
+
+		/* Arrival and departure times are handled in an all-or-nothing approach,
+		 * i.e. are only shown if we can calculate all times.
+		 * Excluding order lists with only one order makes some things easier. */
+		TimerGameTick::Ticks total_time = v->orders != nullptr ? v->orders->GetTimetableDurationIncomplete() : 0;
+		if (total_time <= 0 || v->GetNumOrders() <= 1 || !v->vehicle_flags.Test(VehicleFlag::TimetableStarted)) return;
+
+		std::vector<TimetableArrivalDeparture> arr_dep(v->GetNumOrders());
+		const VehicleOrderID cur_order = v->cur_real_order_index % v->GetNumOrders();
+
+		VehicleOrderID early_id = BuildArrivalDepartureList(v, arr_dep) ? cur_order : (VehicleOrderID)INVALID_VEH_ORDER_ID;
+		int selected = this->sel_index;
+
+		Rect tr = r.Shrink(WidgetDimensions::scaled.framerect);
+		bool show_late = this->show_expected && VehicleIsAboveLatenessThreshold(v->lateness_counter, true);
+		TimerGameTick::Ticks offset = show_late ? 0 : -v->lateness_counter;
+
+		for (int i = this->vscroll->GetPosition(); i / 2 < v->GetNumOrders(); ++i) { // note: i is also incremented in the loop
+			/* Don't draw anything if it extends past the end of the window. */
+			if (!this->vscroll->IsVisible(i)) break;
+
+			/* TextColour::Invalid will skip the colour change. */
+			TextColour tc = show_late ? TextColour::Red : TextColour::Invalid;
+			if (i % 2 == 0) {
+				/* Draw an arrival time. */
+				if (arr_dep[i / 2].arrival != Ticks::INVALID_TICKS) {
+					/* First set the offset and text colour based on the expected/scheduled mode and some other things. */
+					TimerGameTick::Ticks this_offset;
+					if (this->show_expected && i / 2 == early_id) {
+						/* Show expected arrival. */
+						this_offset = 0;
+						tc = TextColour::Green;
 					} else {
-						StringID string;
-						TextColour colour = (i == selected) ? TC_WHITE : TC_BLACK;
-						if (order->IsType(OT_CONDITIONAL)) {
-							string = STR_TIMETABLE_NO_TRAVEL;
-						} else if (order->IsType(OT_IMPLICIT)) {
-							string = STR_TIMETABLE_NOT_TIMETABLEABLE;
-							colour = ((i == selected) ? TC_SILVER : TC_GREY) | TC_NO_SHADE;
-						} else if (!order->IsTravelTimetabled()) {
-							if (order->GetTravelTime() > 0) {
-								SetTimetableParams(0, 1, order->GetTravelTime());
-								string = order->GetMaxSpeed() != UINT16_MAX ?
-										STR_TIMETABLE_TRAVEL_FOR_SPEED_ESTIMATED  :
-										STR_TIMETABLE_TRAVEL_FOR_ESTIMATED;
-							} else {
-								string = order->GetMaxSpeed() != UINT16_MAX ?
-										STR_TIMETABLE_TRAVEL_NOT_TIMETABLED_SPEED :
-										STR_TIMETABLE_TRAVEL_NOT_TIMETABLED;
-							}
-						} else {
-							SetTimetableParams(0, 1, order->GetTimetabledTravel());
-							string = order->GetMaxSpeed() != UINT16_MAX ?
-									STR_TIMETABLE_TRAVEL_FOR_SPEED : STR_TIMETABLE_TRAVEL_FOR;
-						}
-						SetDParam(2, order->GetMaxSpeed());
-
-						DrawString(rtl ? r.left + WD_FRAMERECT_LEFT : middle, rtl ? middle : r.right - WD_FRAMERECT_LEFT, y, string, colour);
-
-						if (final_order) break;
+						/* Show scheduled arrival. */
+						this_offset = offset;
 					}
 
-					i++;
-					y += FONT_HEIGHT_NORMAL;
+					/* Now actually draw the arrival time. */
+					if (_settings_client.gui.timetable_mode == TimetableMode::Seconds) {
+						/* Display seconds from now. */
+						DrawString(tr,
+							GetString(STR_TIMETABLE_ARRIVAL_SECONDS_IN_FUTURE, tc, (arr_dep[i / 2].arrival + offset) / Ticks::TICKS_PER_SECOND),
+							i == selected ? TextColour::White : TextColour::Black);
+					} else {
+						/* Show a date. */
+						DrawString(tr,
+							GetString(STR_TIMETABLE_ARRIVAL_DATE, tc, TimerGameEconomy::date + (arr_dep[i / 2].arrival + this_offset) / Ticks::DAY_TICKS),
+							i == selected ? TextColour::White : TextColour::Black);
+					}
 				}
+			} else {
+				/* Draw a departure time. */
+				if (arr_dep[i / 2].departure != Ticks::INVALID_TICKS) {
+					if (_settings_client.gui.timetable_mode == TimetableMode::Seconds) {
+						/* Display seconds from now. */
+						DrawString(tr,
+							GetString(STR_TIMETABLE_DEPARTURE_SECONDS_IN_FUTURE, tc, (arr_dep[i / 2].departure + offset) / Ticks::TICKS_PER_SECOND),
+							i == selected ? TextColour::White : TextColour::Black);
+					} else {
+						/* Show a date. */
+						DrawString(tr,
+							GetString(STR_TIMETABLE_DEPARTURE_DATE, tc, TimerGameEconomy::date + (arr_dep[i / 2].departure + offset) / Ticks::DAY_TICKS),
+							i == selected ? TextColour::White : TextColour::Black);
+					}
+				}
+			}
+			tr.top += GetCharacterHeight(FontSize::Normal);
+		}
+	}
+
+	std::string GetTimetableTotalTimeString(TimerGameTick::Ticks total_time) const
+	{
+		auto [str, value] = GetTimetableParameters(total_time);
+		if (!this->vehicle->orders->IsCompleteTimetable()) return GetString(STR_TIMETABLE_TOTAL_TIME_INCOMPLETE, str, value);
+		if (total_time % TicksPerTimetableUnit() == 0) return GetString(STR_TIMETABLE_TOTAL_TIME, str, value);
+		return GetString(STR_TIMETABLE_APPROX_TIME, str, value);
+	}
+
+	/**
+	 * Helper function to draw the summary panel.
+	 * @param r The rect to draw within.
+	 */
+	void DrawSummaryPanel(const Rect &r) const
+	{
+		const Vehicle *v = this->vehicle;
+		Rect tr = r.Shrink(WidgetDimensions::scaled.framerect);
+
+		TimerGameTick::Ticks total_time = v->orders != nullptr ? v->orders->GetTimetableDurationIncomplete() : 0;
+		if (total_time != 0) {
+			DrawString(tr, GetTimetableTotalTimeString(total_time));
+		}
+		tr.top += GetCharacterHeight(FontSize::Normal);
+
+		/* Draw the lateness display, or indicate that the timetable has not started yet. */
+		if (v->timetable_start != 0) {
+			/* We are running towards the first station so we can start the
+			 * timetable at the given time. */
+			if (_settings_client.gui.timetable_mode == TimetableMode::Seconds) {
+				/* Real time units use seconds relative to now. */
+				DrawString(tr, GetString(STR_TIMETABLE_STATUS_START_IN_SECONDS, static_cast<TimerGameTick::Ticks>(v->timetable_start - TimerGameTick::counter) / Ticks::TICKS_PER_SECOND));
+			} else {
+				/* Other units use dates. */
+				DrawString(tr, GetString(STR_TIMETABLE_STATUS_START_AT_DATE, STR_JUST_DATE_TINY, GetDateFromStartTick(v->timetable_start)));
+			}
+		} else if (!v->vehicle_flags.Test(VehicleFlag::TimetableStarted)) {
+			/* We aren't running on a timetable yet. */
+			DrawString(tr, STR_TIMETABLE_STATUS_NOT_STARTED);
+		} else if (!VehicleIsAboveLatenessThreshold(abs(v->lateness_counter), false)) {
+			/* We are on time. */
+			DrawString(tr, STR_TIMETABLE_STATUS_ON_TIME);
+		} else {
+			/* We are late. */
+			auto [str, value] = GetTimetableParameters(abs(v->lateness_counter));
+			DrawString(tr, GetString(v->lateness_counter < 0 ? STR_TIMETABLE_STATUS_EARLY : STR_TIMETABLE_STATUS_LATE, str, value));
+		}
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		switch (widget) {
+			case WID_VT_TIMETABLE_PANEL: {
+				this->DrawTimetablePanel(r);
 				break;
 			}
 
 			case WID_VT_ARRIVAL_DEPARTURE_PANEL: {
-				/* Arrival and departure times are handled in an all-or-nothing approach,
-				 * i.e. are only shown if we can calculate all times.
-				 * Excluding order lists with only one order makes some things easier.
-				 */
-				Ticks total_time = v->orders.list != nullptr ? v->orders.list->GetTimetableDurationIncomplete() : 0;
-				if (total_time <= 0 || v->GetNumOrders() <= 1 || !HasBit(v->vehicle_flags, VF_TIMETABLE_STARTED)) break;
-
-				TimetableArrivalDeparture *arr_dep = AllocaM(TimetableArrivalDeparture, v->GetNumOrders());
-				const VehicleOrderID cur_order = v->cur_real_order_index % v->GetNumOrders();
-
-				VehicleOrderID earlyID = BuildArrivalDepartureList(v, arr_dep) ? cur_order : (VehicleOrderID)INVALID_VEH_ORDER_ID;
-
-				int y = r.top + WD_FRAMERECT_TOP;
-
-				bool show_late = this->show_expected && v->lateness_counter > DAY_TICKS;
-				Ticks offset = show_late ? 0 : -v->lateness_counter;
-
-				bool rtl = _current_text_dir == TD_RTL;
-				int abbr_left  = rtl ? r.right - WD_FRAMERECT_RIGHT - this->deparr_abbr_width : r.left + WD_FRAMERECT_LEFT;
-				int abbr_right = rtl ? r.right - WD_FRAMERECT_RIGHT : r.left + WD_FRAMERECT_LEFT + this->deparr_abbr_width;
-				int time_left  = rtl ? r.left + WD_FRAMERECT_LEFT : r.right - WD_FRAMERECT_RIGHT - this->deparr_time_width;
-				int time_right = rtl ? r.left + WD_FRAMERECT_LEFT + this->deparr_time_width : r.right - WD_FRAMERECT_RIGHT;
-
-				for (int i = this->vscroll->GetPosition(); i / 2 < v->GetNumOrders(); ++i) { // note: i is also incremented in the loop
-					/* Don't draw anything if it extends past the end of the window. */
-					if (!this->vscroll->IsVisible(i)) break;
-
-					if (i % 2 == 0) {
-						if (arr_dep[i / 2].arrival != INVALID_TICKS) {
-							DrawString(abbr_left, abbr_right, y, STR_TIMETABLE_ARRIVAL_ABBREVIATION, i == selected ? TC_WHITE : TC_BLACK);
-							if (this->show_expected && i / 2 == earlyID) {
-								SetDParam(0, _date + arr_dep[i / 2].arrival / DAY_TICKS);
-								DrawString(time_left, time_right, y, STR_JUST_DATE_TINY, TC_GREEN);
-							} else {
-								SetDParam(0, _date + (arr_dep[i / 2].arrival + offset) / DAY_TICKS);
-								DrawString(time_left, time_right, y, STR_JUST_DATE_TINY,
-										show_late ? TC_RED : i == selected ? TC_WHITE : TC_BLACK);
-							}
-						}
-					} else {
-						if (arr_dep[i / 2].departure != INVALID_TICKS) {
-							DrawString(abbr_left, abbr_right, y, STR_TIMETABLE_DEPARTURE_ABBREVIATION, i == selected ? TC_WHITE : TC_BLACK);
-							SetDParam(0, _date + (arr_dep[i/2].departure + offset) / DAY_TICKS);
-							DrawString(time_left, time_right, y, STR_JUST_DATE_TINY,
-									show_late ? TC_RED : i == selected ? TC_WHITE : TC_BLACK);
-						}
-					}
-					y += FONT_HEIGHT_NORMAL;
-				}
+				this->DrawArrivalDeparturePanel(r);
 				break;
 			}
 
 			case WID_VT_SUMMARY_PANEL: {
-				int y = r.top + WD_FRAMERECT_TOP;
-
-				Ticks total_time = v->orders.list != nullptr ? v->orders.list->GetTimetableDurationIncomplete() : 0;
-				if (total_time != 0) {
-					SetTimetableParams(0, 1, total_time);
-					DrawString(r.left + WD_FRAMERECT_LEFT, r.right - WD_FRAMERECT_RIGHT, y, v->orders.list->IsCompleteTimetable() ? STR_TIMETABLE_TOTAL_TIME : STR_TIMETABLE_TOTAL_TIME_INCOMPLETE);
-				}
-				y += FONT_HEIGHT_NORMAL;
-
-				if (v->timetable_start != 0) {
-					/* We are running towards the first station so we can start the
-					 * timetable at the given time. */
-					SetDParam(0, STR_JUST_DATE_TINY);
-					SetDParam(1, v->timetable_start);
-					DrawString(r.left + WD_FRAMERECT_LEFT, r.right - WD_FRAMERECT_RIGHT, y, STR_TIMETABLE_STATUS_START_AT);
-				} else if (!HasBit(v->vehicle_flags, VF_TIMETABLE_STARTED)) {
-					/* We aren't running on a timetable yet, so how can we be "on time"
-					 * when we aren't even "on service"/"on duty"? */
-					DrawString(r.left + WD_FRAMERECT_LEFT, r.right - WD_FRAMERECT_RIGHT, y, STR_TIMETABLE_STATUS_NOT_STARTED);
-				} else if (v->lateness_counter == 0 || (!_settings_client.gui.timetable_in_ticks && v->lateness_counter / DAY_TICKS == 0)) {
-					DrawString(r.left + WD_FRAMERECT_LEFT, r.right - WD_FRAMERECT_RIGHT, y, STR_TIMETABLE_STATUS_ON_TIME);
-				} else {
-					SetTimetableParams(0, 1, abs(v->lateness_counter));
-					DrawString(r.left + WD_FRAMERECT_LEFT, r.right - WD_FRAMERECT_RIGHT, y, v->lateness_counter < 0 ? STR_TIMETABLE_STATUS_EARLY : STR_TIMETABLE_STATUS_LATE);
-				}
+				this->DrawSummaryPanel(r);
 				break;
 			}
 		}
 	}
 
-	static inline uint32 PackTimetableArgs(const Vehicle *v, uint selected, bool speed)
+	static inline std::tuple<VehicleOrderID, ModifyTimetableFlags> PackTimetableArgs(const Vehicle *v, uint selected, bool speed)
 	{
 		uint order_number = (selected + 1) / 2;
-		ModifyTimetableFlags mtf = (selected % 2 == 1) ? (speed ? MTF_TRAVEL_SPEED : MTF_TRAVEL_TIME) : MTF_WAIT_TIME;
+		ModifyTimetableFlags mtf = (selected % 2 != 0) ? (speed ? MTF_TRAVEL_SPEED : MTF_TRAVEL_TIME) : MTF_WAIT_TIME;
 
 		if (order_number >= v->GetNumOrders()) order_number = 0;
 
-		return v->index | (order_number << 20) | (mtf << 28);
+		return { order_number, mtf };
 	}
 
-	void OnClick(Point pt, int widget, int click_count) override
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
 	{
 		const Vehicle *v = this->vehicle;
 
@@ -523,80 +631,95 @@ struct TimetableWindow : Window {
 			case WID_VT_TIMETABLE_PANEL: { // Main panel.
 				int selected = GetOrderFromTimetableWndPt(pt.y, v);
 
-				this->DeleteChildWindows();
-				this->sel_index = (selected == INVALID_ORDER || selected == this->sel_index) ? -1 : selected;
+				this->CloseChildWindows();
+				this->sel_index = (selected == INT32_MAX || selected == this->sel_index) ? -1 : selected;
 				break;
 			}
 
 			case WID_VT_START_DATE: // Change the date that the timetable starts.
-				ShowSetDateWindow(this, v->index | (v->orders.list->IsCompleteTimetable() && _ctrl_pressed ? 1U << 20 : 0), _date, _cur_year, _cur_year + 15, ChangeTimetableStartCallback);
+				if (_settings_client.gui.timetable_mode == TimetableMode::Seconds) {
+					this->query_widget = WID_VT_START_DATE;
+					this->change_timetable_all = IsCtrlPressed();
+					ShowQueryString({}, STR_TIMETABLE_START_SECONDS_QUERY, 6, this, CS_NUMERAL, QueryStringFlag::AcceptUnchanged);
+				} else {
+					ShowSetDateWindow(this, v->index.base(), TimerGameEconomy::date, TimerGameEconomy::year, TimerGameEconomy::year + MAX_TIMETABLE_START_YEARS,
+						[ctrl=IsCtrlPressed()](const Window *w, TimerGameEconomy::Date date) {
+							Command<Commands::SetTimetableStart>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, w->window_number, ctrl, GetStartTickFromDate(date));
+						}
+					);
+				}
 				break;
 
 			case WID_VT_CHANGE_TIME: { // "Wait For" button.
+				this->query_widget = WID_VT_CHANGE_TIME;
 				int selected = this->sel_index;
 				VehicleOrderID real = (selected + 1) / 2;
 
 				if (real >= v->GetNumOrders()) real = 0;
 
 				const Order *order = v->GetOrder(real);
-				StringID current = STR_EMPTY;
+				std::string current;
 
 				if (order != nullptr) {
-					uint time = (selected % 2 == 1) ? order->GetTravelTime() : order->GetWaitTime();
-					if (!_settings_client.gui.timetable_in_ticks) time /= DAY_TICKS;
+					uint time = (selected % 2 != 0) ? order->GetTravelTime() : order->GetWaitTime();
+					time /= TicksPerTimetableUnit();
 
 					if (time != 0) {
-						SetDParam(0, time);
-						current = STR_JUST_INT;
+						current = GetString(STR_JUST_INT, time);
 					}
 				}
 
-				this->query_is_speed_query = false;
-				ShowQueryString(current, STR_TIMETABLE_CHANGE_TIME, 31, this, CS_NUMERAL, QSF_ACCEPT_UNCHANGED);
+				this->change_timetable_all = IsCtrlPressed() && (order != nullptr);
+				ShowQueryString(current, STR_TIMETABLE_CHANGE_TIME_QUERY, 31, this, CS_NUMERAL, QueryStringFlag::AcceptUnchanged);
 				break;
 			}
 
 			case WID_VT_CHANGE_SPEED: { // Change max speed button.
+				this->query_widget = WID_VT_CHANGE_SPEED;
 				int selected = this->sel_index;
 				VehicleOrderID real = (selected + 1) / 2;
 
 				if (real >= v->GetNumOrders()) real = 0;
 
-				StringID current = STR_EMPTY;
+				std::string current;
 				const Order *order = v->GetOrder(real);
 				if (order != nullptr) {
 					if (order->GetMaxSpeed() != UINT16_MAX) {
-						SetDParam(0, ConvertKmhishSpeedToDisplaySpeed(order->GetMaxSpeed()));
-						current = STR_JUST_INT;
+						current = GetString(STR_JUST_INT, ConvertKmhishSpeedToDisplaySpeed(order->GetMaxSpeed(), v->type));
 					}
 				}
 
-				this->query_is_speed_query = true;
-				ShowQueryString(current, STR_TIMETABLE_CHANGE_SPEED, 31, this, CS_NUMERAL, QSF_NONE);
+				this->change_timetable_all = IsCtrlPressed() && (order != nullptr);
+				ShowQueryString(current, STR_TIMETABLE_CHANGE_SPEED_QUERY, 31, this, CS_NUMERAL, {});
 				break;
 			}
 
 			case WID_VT_CLEAR_TIME: { // Clear waiting time.
-				uint32 p1 = PackTimetableArgs(v, this->sel_index, false);
-				DoCommandP(0, p1, 0, CMD_CHANGE_TIMETABLE | CMD_MSG(STR_ERROR_CAN_T_TIMETABLE_VEHICLE));
+				auto [order_id, mtf] = PackTimetableArgs(v, this->sel_index, false);
+				if (IsCtrlPressed()) {
+					Command<Commands::ChangeTimetableBulk>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, mtf, 0);
+				} else {
+					Command<Commands::ChangeTimetable>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, order_id, mtf, 0);
+				}
 				break;
 			}
 
 			case WID_VT_CLEAR_SPEED: { // Clear max speed button.
-				uint32 p1 = PackTimetableArgs(v, this->sel_index, true);
-				DoCommandP(0, p1, UINT16_MAX, CMD_CHANGE_TIMETABLE | CMD_MSG(STR_ERROR_CAN_T_TIMETABLE_VEHICLE));
+				auto [order_id, mtf] = PackTimetableArgs(v, this->sel_index, true);
+				if (IsCtrlPressed()) {
+					Command<Commands::ChangeTimetableBulk>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, mtf, UINT16_MAX);
+				} else {
+					Command<Commands::ChangeTimetable>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, order_id, mtf, UINT16_MAX);
+				}
 				break;
 			}
 
 			case WID_VT_RESET_LATENESS: // Reset the vehicle's late counter.
-				DoCommandP(0, v->index, 0, CMD_SET_VEHICLE_ON_TIME | CMD_MSG(STR_ERROR_CAN_T_TIMETABLE_VEHICLE));
+				Command<Commands::SetVehicleOnTime>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, IsCtrlPressed());
 				break;
 
 			case WID_VT_AUTOFILL: { // Autofill the timetable.
-				uint32 p2 = 0;
-				if (!HasBit(v->vehicle_flags, VF_AUTOFILL_TIMETABLE)) SetBit(p2, 0);
-				if (_ctrl_pressed) SetBit(p2, 1);
-				DoCommandP(0, v->index, p2, CMD_AUTOFILL_TIMETABLE | CMD_MSG(STR_ERROR_CAN_T_TIMETABLE_VEHICLE));
+				Command<Commands::AutofillTimetable>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, !v->vehicle_flags.Test(VehicleFlag::AutofillTimetable), IsCtrlPressed());
 				break;
 			}
 
@@ -612,30 +735,51 @@ struct TimetableWindow : Window {
 		this->SetDirty();
 	}
 
-	void OnQueryTextFinished(char *str) override
+	void OnQueryTextFinished(std::optional<std::string> str) override
 	{
-		if (str == nullptr) return;
+		if (!str.has_value()) return;
 
 		const Vehicle *v = this->vehicle;
+		uint64_t val = ParseInteger<uint64_t>(*str, 10, true).value_or(0);
+		auto [order_id, mtf] = PackTimetableArgs(v, this->sel_index, query_widget == WID_VT_CHANGE_SPEED);
 
-		uint32 p1 = PackTimetableArgs(v, this->sel_index, this->query_is_speed_query);
+		switch (query_widget) {
+			case WID_VT_CHANGE_SPEED: {
+				val = ConvertDisplaySpeedToKmhishSpeed(val, v->type);
 
-		uint64 val = StrEmpty(str) ? 0 : strtoul(str, nullptr, 10);
-		if (this->query_is_speed_query) {
-			val = ConvertDisplaySpeedToKmhishSpeed(val);
-		} else {
-			if (!_settings_client.gui.timetable_in_ticks) val *= DAY_TICKS;
+				if (this->change_timetable_all) {
+					Command<Commands::ChangeTimetableBulk>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, mtf, ClampTo<uint16_t>(val));
+				} else {
+					Command<Commands::ChangeTimetable>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, order_id, mtf, ClampTo<uint16_t>(val));
+				}
+				break;
+			}
+
+			case WID_VT_CHANGE_TIME:
+				val *= TicksPerTimetableUnit();
+
+				if (this->change_timetable_all) {
+					Command<Commands::ChangeTimetableBulk>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, mtf, ClampTo<uint16_t>(val));
+				} else {
+					Command<Commands::ChangeTimetable>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, order_id, mtf, ClampTo<uint16_t>(val));
+				}
+				break;
+
+			case WID_VT_START_DATE: {
+				TimerGameTick::TickCounter start_tick = TimerGameTick::counter + (val * Ticks::TICKS_PER_SECOND);
+				Command<Commands::SetTimetableStart>::Post(STR_ERROR_CAN_T_TIMETABLE_VEHICLE, v->index, this->change_timetable_all, start_tick);
+				break;
+			}
+
+			default:
+				NOT_REACHED();
 		}
-
-		uint32 p2 = minu(val, UINT16_MAX);
-
-		DoCommandP(0, p1, p2, CMD_CHANGE_TIMETABLE | CMD_MSG(STR_ERROR_CAN_T_TIMETABLE_VEHICLE));
 	}
 
 	void OnResize() override
 	{
 		/* Update the scroll bar */
-		this->vscroll->SetCapacityFromWidget(this, WID_VT_TIMETABLE_PANEL, WD_FRAMERECT_TOP + WD_FRAMERECT_BOTTOM);
+		this->vscroll->SetCapacityFromWidget(this, WID_VT_TIMETABLE_PANEL, WidgetDimensions::scaled.framerect.Vertical());
 	}
 
 	/**
@@ -646,59 +790,71 @@ struct TimetableWindow : Window {
 		this->GetWidget<NWidgetStacked>(WID_VT_ARRIVAL_DEPARTURE_SELECTION)->SetDisplayedPlane(_settings_client.gui.timetable_arrival_departure ? 0 : SZSP_NONE);
 		this->GetWidget<NWidgetStacked>(WID_VT_EXPECTED_SELECTION)->SetDisplayedPlane(_settings_client.gui.timetable_arrival_departure ? 0 : 1);
 	}
+
+	/**
+	 * In real-time mode, the timetable GUI shows relative times and needs to be redrawn every second.
+	 */
+	const IntervalTimer<TimerGameTick> redraw_interval = { { TimerGameTick::Priority::None, Ticks::TICKS_PER_SECOND }, [this](auto) {
+		if (_settings_client.gui.timetable_mode == TimetableMode::Seconds) {
+			this->SetDirty();
+		}
+	}};
 };
 
-static const NWidgetPart _nested_timetable_widgets[] = {
+static constexpr std::initializer_list<NWidgetPart> _nested_timetable_widgets = {
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_CLOSEBOX, COLOUR_GREY),
-		NWidget(WWT_CAPTION, COLOUR_GREY, WID_VT_CAPTION), SetDataTip(STR_TIMETABLE_TITLE, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_ORDER_VIEW), SetMinimalSize(61, 14), SetDataTip( STR_TIMETABLE_ORDER_VIEW, STR_TIMETABLE_ORDER_VIEW_TOOLTIP),
-		NWidget(WWT_SHADEBOX, COLOUR_GREY),
-		NWidget(WWT_DEFSIZEBOX, COLOUR_GREY),
-		NWidget(WWT_STICKYBOX, COLOUR_GREY),
+		NWidget(WWT_CLOSEBOX, Colours::Grey),
+		NWidget(WWT_CAPTION, Colours::Grey, WID_VT_CAPTION),
+		NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_ORDER_VIEW), SetStringTip(STR_TIMETABLE_ORDER_VIEW, STR_TIMETABLE_ORDER_VIEW_TOOLTIP),
+		NWidget(WWT_SHADEBOX, Colours::Grey),
+		NWidget(WWT_DEFSIZEBOX, Colours::Grey),
+		NWidget(WWT_STICKYBOX, Colours::Grey),
 	EndContainer(),
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_PANEL, COLOUR_GREY, WID_VT_TIMETABLE_PANEL), SetMinimalSize(388, 82), SetResize(1, 10), SetDataTip(STR_NULL, STR_TIMETABLE_TOOLTIP), SetScrollbar(WID_VT_SCROLLBAR), EndContainer(),
-		NWidget(NWID_SELECTION, INVALID_COLOUR, WID_VT_ARRIVAL_DEPARTURE_SELECTION),
-			NWidget(WWT_PANEL, COLOUR_GREY, WID_VT_ARRIVAL_DEPARTURE_PANEL), SetMinimalSize(110, 0), SetFill(0, 1), SetDataTip(STR_NULL, STR_TIMETABLE_TOOLTIP), SetScrollbar(WID_VT_SCROLLBAR), EndContainer(),
+		NWidget(WWT_PANEL, Colours::Grey, WID_VT_TIMETABLE_PANEL), SetResize(1, 0), SetToolTip(STR_TIMETABLE_TOOLTIP), SetScrollbar(WID_VT_SCROLLBAR),
 		EndContainer(),
-		NWidget(NWID_VSCROLLBAR, COLOUR_GREY, WID_VT_SCROLLBAR),
+		NWidget(NWID_SELECTION, Colours::Invalid, WID_VT_ARRIVAL_DEPARTURE_SELECTION),
+			NWidget(WWT_PANEL, Colours::Grey, WID_VT_ARRIVAL_DEPARTURE_PANEL), SetFill(0, 1), SetToolTip(STR_TIMETABLE_TOOLTIP), SetScrollbar(WID_VT_SCROLLBAR),
+			EndContainer(),
+		EndContainer(),
+		NWidget(NWID_VSCROLLBAR, Colours::Grey, WID_VT_SCROLLBAR),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_GREY, WID_VT_SUMMARY_PANEL), SetMinimalSize(400, 22), SetResize(1, 0), EndContainer(),
+	NWidget(WWT_PANEL, Colours::Grey, WID_VT_SUMMARY_PANEL), SetResize(1, 0), EndContainer(),
 	NWidget(NWID_HORIZONTAL),
-		NWidget(NWID_HORIZONTAL, NC_EQUALSIZE),
-			NWidget(NWID_VERTICAL, NC_EQUALSIZE),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_CHANGE_TIME), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_TIMETABLE_CHANGE_TIME, STR_TIMETABLE_WAIT_TIME_TOOLTIP),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_CLEAR_TIME), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_TIMETABLE_CLEAR_TIME, STR_TIMETABLE_CLEAR_TIME_TOOLTIP),
+		NWidget(NWID_HORIZONTAL),
+			NWidget(NWID_VERTICAL, NWidContainerFlag::EqualSize),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_CHANGE_TIME), SetResize(1, 0), SetFill(1, 1), SetStringTip(STR_TIMETABLE_CHANGE_TIME, STR_TIMETABLE_WAIT_TIME_TOOLTIP),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_CLEAR_TIME), SetResize(1, 0), SetFill(1, 1), SetStringTip(STR_TIMETABLE_CLEAR_TIME, STR_TIMETABLE_CLEAR_TIME_TOOLTIP),
 			EndContainer(),
-			NWidget(NWID_VERTICAL, NC_EQUALSIZE),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_CHANGE_SPEED), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_TIMETABLE_CHANGE_SPEED, STR_TIMETABLE_CHANGE_SPEED_TOOLTIP),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_CLEAR_SPEED), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_TIMETABLE_CLEAR_SPEED, STR_TIMETABLE_CLEAR_SPEED_TOOLTIP),
+			NWidget(NWID_VERTICAL, NWidContainerFlag::EqualSize),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_CHANGE_SPEED), SetResize(1, 0), SetFill(1, 1), SetStringTip(STR_TIMETABLE_CHANGE_SPEED, STR_TIMETABLE_CHANGE_SPEED_TOOLTIP),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_CLEAR_SPEED), SetResize(1, 0), SetFill(1, 1), SetStringTip(STR_TIMETABLE_CLEAR_SPEED, STR_TIMETABLE_CLEAR_SPEED_TOOLTIP),
 			EndContainer(),
-			NWidget(NWID_VERTICAL, NC_EQUALSIZE),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_START_DATE), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_TIMETABLE_STARTING_DATE, STR_TIMETABLE_STARTING_DATE_TOOLTIP),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_RESET_LATENESS), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_TIMETABLE_RESET_LATENESS, STR_TIMETABLE_RESET_LATENESS_TOOLTIP),
+			NWidget(NWID_VERTICAL, NWidContainerFlag::EqualSize),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_START_DATE), SetResize(1, 0), SetFill(1, 1), SetStringTip(STR_TIMETABLE_START, STR_TIMETABLE_START_TOOLTIP),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_RESET_LATENESS), SetResize(1, 0), SetFill(1, 1), SetStringTip(STR_TIMETABLE_RESET_LATENESS, STR_TIMETABLE_RESET_LATENESS_TOOLTIP),
 			EndContainer(),
-			NWidget(NWID_VERTICAL, NC_EQUALSIZE),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_AUTOFILL), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_TIMETABLE_AUTOFILL, STR_TIMETABLE_AUTOFILL_TOOLTIP),
-				NWidget(NWID_SELECTION, INVALID_COLOUR, WID_VT_EXPECTED_SELECTION),
-					NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_VT_EXPECTED), SetResize(1, 0), SetFill(1, 1), SetDataTip(STR_BLACK_STRING, STR_TIMETABLE_EXPECTED_TOOLTIP),
-					NWidget(WWT_PANEL, COLOUR_GREY), SetResize(1, 0), SetFill(1, 1), EndContainer(),
+			NWidget(NWID_VERTICAL, NWidContainerFlag::EqualSize),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_AUTOFILL), SetResize(1, 0), SetFill(1, 1), SetStringTip(STR_TIMETABLE_AUTOFILL, STR_TIMETABLE_AUTOFILL_TOOLTIP),
+				NWidget(NWID_SELECTION, Colours::Invalid, WID_VT_EXPECTED_SELECTION),
+					NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_VT_EXPECTED), SetResize(1, 0), SetFill(1, 1), SetToolTip(STR_TIMETABLE_EXPECTED_TOOLTIP),
+					NWidget(WWT_PANEL, Colours::Grey), SetResize(1, 0), SetFill(1, 1), EndContainer(),
 				EndContainer(),
 			EndContainer(),
 		EndContainer(),
-		NWidget(NWID_VERTICAL, NC_EQUALSIZE),
-			NWidget(WWT_PUSHIMGBTN, COLOUR_GREY, WID_VT_SHARED_ORDER_LIST), SetFill(0, 1), SetDataTip(SPR_SHARED_ORDERS_ICON, STR_ORDERS_VEH_WITH_SHARED_ORDERS_LIST_TOOLTIP),
-			NWidget(WWT_RESIZEBOX, COLOUR_GREY), SetFill(0, 1),
+		NWidget(NWID_VERTICAL, NWidContainerFlag::EqualSize),
+			NWidget(WWT_PUSHIMGBTN, Colours::Grey, WID_VT_SHARED_ORDER_LIST), SetFill(0, 1), SetSpriteTip(SPR_SHARED_ORDERS_ICON, STR_ORDERS_VEH_WITH_SHARED_ORDERS_LIST_TOOLTIP),
+			NWidget(WWT_RESIZEBOX, Colours::Grey), SetFill(0, 1),
 		EndContainer(),
 	EndContainer(),
 };
 
+/** Window definition for the timetable window. */
 static WindowDesc _timetable_desc(
-	WDP_AUTO, "view_vehicle_timetable", 400, 130,
-	WC_VEHICLE_TIMETABLE, WC_VEHICLE_VIEW,
-	WDF_CONSTRUCTION,
-	_nested_timetable_widgets, lengthof(_nested_timetable_widgets)
+	WindowPosition::Automatic, "view_vehicle_timetable", 400, 130,
+	WindowClass::VehicleTimetable, WindowClass::VehicleView,
+	WindowDefaultFlag::Construction,
+	_nested_timetable_widgets
 );
 
 /**
@@ -707,7 +863,7 @@ static WindowDesc _timetable_desc(
  */
 void ShowTimetableWindow(const Vehicle *v)
 {
-	DeleteWindowById(WC_VEHICLE_DETAILS, v->index, false);
-	DeleteWindowById(WC_VEHICLE_ORDERS, v->index, false);
-	AllocateWindowDescFront<TimetableWindow>(&_timetable_desc, v->index);
+	CloseWindowById(WindowClass::VehicleDetails, v->index, false);
+	CloseWindowById(WindowClass::VehicleOrders, v->index, false);
+	AllocateWindowDescFront<TimetableWindow>(_timetable_desc, v->index);
 }

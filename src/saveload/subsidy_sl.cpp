@@ -2,48 +2,61 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file subsidy_sl.cpp Code handling saving and loading of subsidies */
+/** @file subsidy_sl.cpp Code handling saving and loading of subsidies. */
 
 #include "../stdafx.h"
-#include "../subsidy_base.h"
 
 #include "saveload.h"
+#include "compat/subsidy_sl_compat.h"
+
+#include "../subsidy_base.h"
 
 #include "../safeguards.h"
 
 static const SaveLoad _subsidies_desc[] = {
-	    SLE_VAR(Subsidy, cargo_type, SLE_UINT8),
-	    SLE_VAR(Subsidy, remaining,  SLE_UINT8),
-	SLE_CONDVAR(Subsidy, awarded,    SLE_UINT8,                 SLV_125, SL_MAX_VERSION),
-	SLE_CONDVAR(Subsidy, src_type,   SLE_UINT8,                 SLV_125, SL_MAX_VERSION),
-	SLE_CONDVAR(Subsidy, dst_type,   SLE_UINT8,                 SLV_125, SL_MAX_VERSION),
-	SLE_CONDVAR(Subsidy, src,        SLE_FILE_U8 | SLE_VAR_U16,   SL_MIN_VERSION, SLV_5),
-	SLE_CONDVAR(Subsidy, src,        SLE_UINT16,                  SLV_5, SL_MAX_VERSION),
-	SLE_CONDVAR(Subsidy, dst,        SLE_FILE_U8 | SLE_VAR_U16,   SL_MIN_VERSION, SLV_5),
-	SLE_CONDVAR(Subsidy, dst,        SLE_UINT16,                  SLV_5, SL_MAX_VERSION),
-	SLE_END()
+	SaveLoad::Variable<VarFileType::U8>("cargo_type", SLE_OBJECT_ADDRESS(Subsidy, cargo_type)),
+	SaveLoad::Variable<VarFileType::U8>("remaining", SLE_OBJECT_ADDRESS(Subsidy, remaining), SaveLoadVersion::MinVersion, SaveLoadVersion::CustomSubsidyDuration),
+	SaveLoad::Variable<VarFileType::U16>("remaining", SLE_OBJECT_ADDRESS(Subsidy, remaining), SaveLoadVersion::CustomSubsidyDuration),
+	SaveLoad::Variable<VarFileType::U8>("awarded", SLE_OBJECT_ADDRESS(Subsidy, awarded), SaveLoadVersion::RemoveSubsidyStationBinding),
+	SaveLoad::Variable<VarFileType::U8>("src_type", SLE_OBJECT_ADDRESS(Subsidy, src.type), SaveLoadVersion::RemoveSubsidyStationBinding),
+	SaveLoad::Variable<VarFileType::U8>("dst_type", SLE_OBJECT_ADDRESS(Subsidy, dst.type), SaveLoadVersion::RemoveSubsidyStationBinding),
+	SaveLoad::Variable<VarFileType::U8>("src", SLE_OBJECT_ADDRESS(Subsidy, src.id), SaveLoadVersion::MinVersion, SaveLoadVersion::BigMap),
+	SaveLoad::Variable<VarFileType::U16>("src", SLE_OBJECT_ADDRESS(Subsidy, src.id), SaveLoadVersion::BigMap),
+	SaveLoad::Variable<VarFileType::U8>("dst", SLE_OBJECT_ADDRESS(Subsidy, dst.id), SaveLoadVersion::MinVersion, SaveLoadVersion::BigMap),
+	SaveLoad::Variable<VarFileType::U16>("dst", SLE_OBJECT_ADDRESS(Subsidy, dst.id), SaveLoadVersion::BigMap),
 };
 
-static void Save_SUBS()
-{
-	for (Subsidy *s : Subsidy::Iterate()) {
-		SlSetArrayIndex(s->index);
-		SlObject(s, _subsidies_desc);
-	}
-}
+struct SUBSChunkHandler : ChunkHandler {
+	SUBSChunkHandler() : ChunkHandler("SUBS", ChunkType::Table) {}
 
-static void Load_SUBS()
-{
-	int index;
-	while ((index = SlIterateArray()) != -1) {
-		Subsidy *s = new (index) Subsidy();
-		SlObject(s, _subsidies_desc);
-	}
-}
+	void Save() const override
+	{
+		SlTableHeader(_subsidies_desc);
 
-extern const ChunkHandler _subsidy_chunk_handlers[] = {
-	{ 'SUBS', Save_SUBS, Load_SUBS, nullptr, nullptr, CH_ARRAY | CH_LAST},
+		for (Subsidy *s : Subsidy::Iterate()) {
+			SlSetArrayIndex(s->index);
+			SlObject(s, _subsidies_desc);
+		}
+	}
+
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_subsidies_desc, _subsidies_sl_compat);
+
+		int index;
+		while ((index = SlIterateArray()) != -1) {
+			Subsidy *s = Subsidy::CreateAtIndex(SubsidyID(index));
+			SlObject(s, slt);
+		}
+	}
 };
+
+static const SUBSChunkHandler SUBS;
+static const ChunkHandlerRef subsidy_chunk_handlers[] = {
+	SUBS,
+};
+
+extern const ChunkHandlerTable _subsidy_chunk_handlers(subsidy_chunk_handlers);

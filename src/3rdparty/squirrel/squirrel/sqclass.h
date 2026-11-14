@@ -10,6 +10,7 @@ struct SQClassMember {
 		val = o.val;
 		attrs = o.attrs;
 	}
+	SQClassMember& operator=(SQClassMember &o) = delete;
 	SQObjectPtr val;
 	SQObjectPtr attrs;
 };
@@ -18,6 +19,7 @@ typedef sqvector<SQClassMember> SQClassMemberVec;
 
 #define MEMBER_TYPE_METHOD 0x01000000
 #define MEMBER_TYPE_FIELD 0x02000000
+#define MEMBER_MAX_COUNT 0x00FFFFFF
 
 #define _ismethod(o) (_integer(o)&MEMBER_TYPE_METHOD)
 #define _isfield(o) (_integer(o)&MEMBER_TYPE_FIELD)
@@ -32,7 +34,7 @@ struct SQClass : public CHAINABLE_OBJ
 public:
 	static SQClass* Create(SQSharedState *ss,SQClass *base) {
 		SQClass *newclass = (SQClass *)SQ_MALLOC(sizeof(SQClass));
-		new (newclass) SQClass(ss, base);
+		new (newclass, sizeof(SQClass)) SQClass(ss, base);
 		return newclass;
 	}
 	~SQClass();
@@ -53,13 +55,13 @@ public:
 	bool SetAttributes(const SQObjectPtr &key,const SQObjectPtr &val);
 	bool GetAttributes(const SQObjectPtr &key,SQObjectPtr &outval);
 	void Lock() { _locked = true; if(_base) _base->Lock(); }
-	void Release() {
+	void Release() override {
 		if (_hook) { _hook(_typetag,0);}
 		sq_delete(this, SQClass);
 	}
-	void Finalize();
+	void Finalize() override;
 #ifndef NO_GARBAGE_COLLECTOR
-	void Mark(SQCollectable ** );
+	void EnqueueMarkObjectForChildren(SQGCMarkerQueue &queue) override;
 #endif
 	SQInteger Next(const SQObjectPtr &refpos, SQObjectPtr &outkey, SQObjectPtr &outval);
 	SQInstance *CreateInstance();
@@ -88,7 +90,7 @@ public:
 
 		SQInteger size = calcinstancesize(theclass);
 		SQInstance *newinst = (SQInstance *)SQ_MALLOC(size);
-		new (newinst) SQInstance(ss, theclass,size);
+		new (newinst, size) SQInstance(ss, theclass,size);
 		if(theclass->_udsize) {
 			newinst->_userpointer = ((unsigned char *)newinst) + (size - theclass->_udsize);
 		}
@@ -98,7 +100,7 @@ public:
 	{
 		SQInteger size = calcinstancesize(_class);
 		SQInstance *newinst = (SQInstance *)SQ_MALLOC(size);
-		new (newinst) SQInstance(ss, this,size);
+		new (newinst, size) SQInstance(ss, this,size);
 		if(_class->_udsize) {
 			newinst->_userpointer = ((unsigned char *)newinst) + (size - _class->_udsize);
 		}
@@ -126,31 +128,33 @@ public:
 		}
 		return false;
 	}
-	void Release() {
+	void Release() override {
 		_uiRef++;
 		try {
 			if (_hook) { _hook(_userpointer,0);}
 		} catch (...) {
 			_uiRef--;
 			if (_uiRef == 0) {
-				SQInteger size = _memsize;
-				this->~SQInstance();
-				SQ_FREE(this, size);
+				this->_sharedstate->DelayFinalFree(this);
 			}
 			throw;
 		}
 		_uiRef--;
 		if(_uiRef > 0) return;
+		this->_sharedstate->DelayFinalFree(this);
+	}
+	void FinalFree() override
+	{
 		SQInteger size = _memsize;
 		this->~SQInstance();
 		SQ_FREE(this, size);
 	}
-	void Finalize();
+	void Finalize() override;
 #ifndef NO_GARBAGE_COLLECTOR
-	void Mark(SQCollectable ** );
+	void EnqueueMarkObjectForChildren(SQGCMarkerQueue &queue) override;
 #endif
 	bool InstanceOf(SQClass *trg);
-	bool GetMetaMethod(SQVM *v,SQMetaMethod mm,SQObjectPtr &res);
+	bool GetMetaMethod(SQVM *v,SQMetaMethod mm,SQObjectPtr &res) override;
 
 	SQClass *_class;
 	SQUserPointer _userpointer;

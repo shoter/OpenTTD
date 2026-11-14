@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file network_internal.h Variables and function used internally. */
@@ -10,10 +10,12 @@
 #ifndef NETWORK_INTERNAL_H
 #define NETWORK_INTERNAL_H
 
-#include "network_func.h"
+#include "core/tcp_coordinator.h"
 #include "core/tcp_game.h"
 
 #include "../command_type.h"
+#include "../gfx_type.h"
+#include "../strings_type.h"
 
 #ifdef RANDOM_DEBUG
 /**
@@ -34,137 +36,86 @@
 #define NETWORK_SEND_DOUBLE_SEED
 #endif /* RANDOM_DEBUG */
 
-/**
- * Helper variable to make the dedicated server go fast until the (first) join.
- * Used to load the desync debug logs, i.e. for reproducing a desync.
- * There's basically no need to ever enable this, unless you really know what
- * you are doing, i.e. debugging a desync.
- * See docs/desync.txt for details.
- */
-#ifdef DEBUG_DUMP_COMMANDS
-extern bool _ddc_fastforward;
-#else
-#define _ddc_fastforward (false)
-#endif /* DEBUG_DUMP_COMMANDS */
-
-typedef class ServerNetworkGameSocketHandler NetworkClientSocket;
+using NetworkClientSocket = class ServerNetworkGameSocketHandler; ///< @copydoc ServerNetworkGameSocketHandler
 
 /** Status of the clients during joining. */
-enum NetworkJoinStatus {
-	NETWORK_JOIN_STATUS_CONNECTING,
-	NETWORK_JOIN_STATUS_AUTHORIZING,
-	NETWORK_JOIN_STATUS_WAITING,
-	NETWORK_JOIN_STATUS_DOWNLOADING,
-	NETWORK_JOIN_STATUS_PROCESSING,
-	NETWORK_JOIN_STATUS_REGISTERING,
+enum class NetworkJoinStatus : uint8_t {
+	Connecting, ///< Opening the connection to the server.
+	Authorizing, ///< Starting authorizing the client to join the game and optionally company.
+	Waiting, ///< Waiting for other clients to finish downloading the map.
+	Downloading, ///< Downloading the map from the server.
+	Processing, ///< Loading the savegame.
+	Registering, ///< Creating a new company.
 
-	NETWORK_JOIN_STATUS_GETTING_COMPANY_INFO,
-	NETWORK_JOIN_STATUS_END,
+	End, ///< Sentinel for end-of-enumeration.
 };
 
-/** Language ids for server_lang and client_lang. Do NOT modify the order. */
-enum NetworkLanguage {
-	NETLANG_ANY = 0,
-	NETLANG_ENGLISH,
-	NETLANG_GERMAN,
-	NETLANG_FRENCH,
-	NETLANG_BRAZILIAN,
-	NETLANG_BULGARIAN,
-	NETLANG_CHINESE,
-	NETLANG_CZECH,
-	NETLANG_DANISH,
-	NETLANG_DUTCH,
-	NETLANG_ESPERANTO,
-	NETLANG_FINNISH,
-	NETLANG_HUNGARIAN,
-	NETLANG_ICELANDIC,
-	NETLANG_ITALIAN,
-	NETLANG_JAPANESE,
-	NETLANG_KOREAN,
-	NETLANG_LITHUANIAN,
-	NETLANG_NORWEGIAN,
-	NETLANG_POLISH,
-	NETLANG_PORTUGUESE,
-	NETLANG_ROMANIAN,
-	NETLANG_RUSSIAN,
-	NETLANG_SLOVAK,
-	NETLANG_SLOVENIAN,
-	NETLANG_SPANISH,
-	NETLANG_SWEDISH,
-	NETLANG_TURKISH,
-	NETLANG_UKRAINIAN,
-	NETLANG_AFRIKAANS,
-	NETLANG_CROATIAN,
-	NETLANG_CATALAN,
-	NETLANG_ESTONIAN,
-	NETLANG_GALICIAN,
-	NETLANG_GREEK,
-	NETLANG_LATVIAN,
-	NETLANG_COUNT
-};
+extern uint32_t _frame_counter_server; // The frame_counter of the server, if in network-mode
+extern uint32_t _frame_counter_max; // To where we may go with our clients
+extern uint32_t _frame_counter;
 
-extern uint32 _frame_counter_server; // The frame_counter of the server, if in network-mode
-extern uint32 _frame_counter_max; // To where we may go with our clients
-extern uint32 _frame_counter;
-
-extern uint32 _last_sync_frame; // Used in the server to store the last time a sync packet was sent to clients.
+extern uint32_t _last_sync_frame; // Used in the server to store the last time a sync packet was sent to clients.
 
 /* networking settings */
 extern NetworkAddressList _broadcast_list;
 
-extern uint32 _sync_seed_1;
+extern uint32_t _sync_seed_1;
 #ifdef NETWORK_SEND_DOUBLE_SEED
-extern uint32 _sync_seed_2;
+extern uint32_t _sync_seed_2;
 #endif
-extern uint32 _sync_frame;
+extern uint32_t _sync_frame;
 extern bool _network_first_time;
 /* Vars needed for the join-GUI */
 extern NetworkJoinStatus _network_join_status;
-extern uint8 _network_join_waiting;
-extern uint32 _network_join_bytes;
-extern uint32 _network_join_bytes_total;
+extern uint8_t _network_join_waiting;
+extern uint32_t _network_join_bytes;
+extern uint32_t _network_join_bytes_total;
+extern ConnectionType _network_server_connection_type;
+extern std::string _network_server_invite_code;
 
-extern uint8 _network_reconnect;
+/* Variable available for clients. */
+extern std::string _network_server_name;
 
-extern bool _network_udp_server;
-extern uint16 _network_udp_broadcast;
+extern uint8_t _network_reconnect;
 
-extern uint8 _network_advertise_retries;
+void NetworkQueryServer(std::string_view connection_string);
 
-extern CompanyMask _network_company_passworded;
-
-void NetworkTCPQueryServer(NetworkAddress address);
-
-void GetBindAddresses(NetworkAddressList *addresses, uint16 port);
-void NetworkAddServer(const char *b);
+void GetBindAddresses(NetworkAddressList *addresses, uint16_t port);
+struct NetworkGame *NetworkAddServer(std::string_view connection_string, bool manually = true, bool never_expire = false);
 void NetworkRebuildHostList();
 void UpdateNetworkGameWindow();
-
-bool IsNetworkCompatibleVersion(const char *version);
 
 /* From network_command.cpp */
 /**
  * Everything we need to know about a command to be able to execute it.
  */
-struct CommandPacket : CommandContainer {
-	/** Make sure the pointer is nullptr. */
-	CommandPacket() : next(nullptr), company(INVALID_COMPANY), frame(0), my_cmd(false) {}
-	CommandPacket *next; ///< the next command packet (if in queue)
-	CompanyID company;   ///< company that is executing the command
-	uint32 frame;        ///< the frame in which this packet is executed
-	bool my_cmd;         ///< did the command originate from "me"
+struct CommandPacket {
+	CompanyID company = CompanyID::Invalid(); ///< company that is executing the command
+	uint32_t frame = 0; ///< the frame in which this packet is executed
+	bool my_cmd = false; ///< did the command originate from "me"
+
+	Commands cmd{}; ///< command being executed.
+	StringID err_msg{}; ///< string ID of error message to use.
+	CommandCallback *callback = nullptr; ///< any callback function executed upon successful completion of the command.
+	CommandDataBuffer data{}; ///< command parameters.
 };
 
 void NetworkDistributeCommands();
 void NetworkExecuteLocalCommandQueue();
 void NetworkFreeLocalCommandQueue();
 void NetworkSyncCommandQueue(NetworkClientSocket *cs);
+void NetworkReplaceCommandClientId(CommandPacket &cp, ClientID client_id);
 
-void NetworkError(StringID error_string);
-void NetworkTextMessage(NetworkAction action, TextColour colour, bool self_send, const char *name, const char *str = "", int64 data = 0);
+void ShowNetworkError(StringID error_string);
+void NetworkTextMessage(NetworkAction action, ExtendedTextColour colour, bool self_send, std::string_view name, std::string_view str = {}, StringParameter &&data = {});
 uint NetworkCalculateLag(const NetworkClientSocket *cs);
 StringID GetNetworkErrorMsg(NetworkErrorCode err);
-bool NetworkFindName(char *new_name, const char *last);
-const char *GenerateCompanyPasswordHash(const char *password, const char *password_server_id, uint32 password_game_seed);
+bool NetworkMakeClientNameUnique(std::string &new_name);
+
+std::string_view ParseCompanyFromConnectionString(std::string_view connection_string, CompanyID *company_id);
+NetworkAddress ParseConnectionString(std::string_view connection_string, uint16_t default_port);
+std::string NormalizeConnectionString(std::string_view connection_string, uint16_t default_port);
+
+void ClientNetworkEmergencySave();
 
 #endif /* NETWORK_INTERNAL_H */

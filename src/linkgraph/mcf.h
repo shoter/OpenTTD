@@ -1,10 +1,16 @@
-/** @file mcf.h Declaration of Multi-Commodity-Flow solver */
+/*
+ * This file is part of OpenTTD.
+ * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
+ * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
+ */
+
+/** @file mcf.h Declaration of Multi-Commodity-Flow solver. */
 
 #ifndef MCF_H
 #define MCF_H
 
 #include "linkgraphjob_base.h"
-#include <vector>
 
 typedef std::vector<Path *> PathVector;
 
@@ -21,10 +27,10 @@ protected:
 			max_saturation(job.Settings().short_path_saturation)
 	{}
 
-	template<class Tannotation, class Tedge_iterator>
+	template <class Tannotation, class Tedge_iterator>
 	void Dijkstra(NodeID from, PathVector &paths);
 
-	uint PushFlow(Edge &edge, Path *path, uint accuracy, uint max_saturation);
+	uint PushFlow(Node &node, NodeID to, Path *path, uint accuracy, uint max_saturation);
 
 	void CleanupPaths(NodeID source, PathVector &paths);
 
@@ -73,20 +79,15 @@ public:
  * Link graph handler for MCF. Creates MultiCommodityFlow instance according to
  * the template parameter.
  */
-template<class Tpass>
+template <class Tpass>
 class MCFHandler : public ComponentHandler {
 public:
 
 	/**
 	 * Run the calculation.
-	 * @param graph Component to be calculated.
+	 * @param job Component to be calculated.
 	 */
-	virtual void Run(LinkGraphJob &job) const { Tpass pass(job); }
-
-	/**
-	 * Destructor. Has to be given because of virtual Run().
-	 */
-	virtual ~MCFHandler() {}
+	void Run(LinkGraphJob &job) const override { Tpass pass(job); }
 };
 
 #endif /* MCF_H */

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file cargoaction.h Actions to be applied to cargo packets. */
@@ -16,7 +16,7 @@
  * Abstract action of removing cargo from a vehicle or a station.
  * @tparam Tsource CargoList subclass to remove cargo from.
  */
-template<class Tsource>
+template <class Tsource>
 class CargoRemoval {
 protected:
 	Tsource *source; ///< Source of the cargo.
@@ -24,6 +24,11 @@ protected:
 	uint Preprocess(CargoPacket *cp);
 	bool Postprocess(CargoPacket *cp, uint remove);
 public:
+	/**
+	 * Create the removal.
+	 * @param source The source of the cargo.
+	 * @param max_move The maximum amount of cargo to be removed.
+	 */
 	CargoRemoval(Tsource *source, uint max_move) : source(source), max_move(max_move) {}
 
 	/**
@@ -38,10 +43,20 @@ public:
 /** Action of final delivery of cargo. */
 class CargoDelivery : public CargoRemoval<VehicleCargoList> {
 protected:
+	TileIndex current_tile; ///< Current tile cargo delivery is happening.
 	CargoPayment *payment; ///< Payment object where payments will be registered.
+	CargoType cargo; ///< The cargo type of the cargo.
 public:
-	CargoDelivery(VehicleCargoList *source, uint max_move, CargoPayment *payment) :
-			CargoRemoval<VehicleCargoList>(source, max_move), payment(payment) {}
+	/**
+	 * Create the delivery.
+	 * @param source The source of the cargo.
+	 * @param max_move The maximum amount of cargo to be moved.
+	 * @param cargo The type of cargo.
+	 * @param payment The payment for the delivery.
+	 * @param current_tile The tile the data is being delivered from.
+	 */
+	CargoDelivery(VehicleCargoList *source, uint max_move, CargoType cargo, CargoPayment *payment, TileIndex current_tile) :
+			CargoRemoval<VehicleCargoList>(source, max_move), current_tile(current_tile), payment(payment), cargo(cargo) {}
 	bool operator()(CargoPacket *cp);
 };
 
@@ -50,7 +65,7 @@ public:
  * @tparam Tsource CargoList subclass to remove cargo from.
  * @tparam Tdest CargoList subclass to add cargo to.
  */
-template<class Tsource, class Tdest>
+template <class Tsource, class Tdest>
 class CargoMovement {
 protected:
 	Tsource *source;    ///< Source of the cargo.
@@ -58,6 +73,12 @@ protected:
 	uint max_move;      ///< Maximum amount of cargo to be moved with this action.
 	CargoPacket *Preprocess(CargoPacket *cp);
 public:
+	/**
+	 * Create the movement.
+	 * @param source The source of the cargo.
+	 * @param destination The destination of the cargo.
+	 * @param max_move The maximum amount of cargo to be moved.
+	 */
 	CargoMovement(Tsource *source, Tdest *destination, uint max_move) : source(source), destination(destination), max_move(max_move) {}
 
 	/**
@@ -69,36 +90,40 @@ public:
 
 /** Action of transferring cargo from a vehicle to a station. */
 class CargoTransfer : public CargoMovement<VehicleCargoList, StationCargoList> {
+protected:
+	TileIndex current_tile; ///< Current tile cargo unloading is happening.
 public:
-	CargoTransfer(VehicleCargoList *source, StationCargoList *destination, uint max_move) :
-			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move) {}
+	CargoTransfer(VehicleCargoList *source, StationCargoList *destination, uint max_move, TileIndex current_tile) :
+			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move), current_tile(current_tile) {}
 	bool operator()(CargoPacket *cp);
 };
 
 /** Action of loading cargo from a station onto a vehicle. */
 class CargoLoad : public CargoMovement<StationCargoList, VehicleCargoList> {
 protected:
-	TileIndex load_place; ///< TileIndex to be saved in the packets' loaded_at_xy.
+	TileIndex current_tile; ///< Current tile cargo loading is happening.
 public:
-	CargoLoad(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
-			CargoMovement<StationCargoList, VehicleCargoList>(source, destination, max_move), load_place(load_place) {}
+	CargoLoad(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex current_tile) :
+			CargoMovement<StationCargoList, VehicleCargoList>(source, destination, max_move), current_tile(current_tile) {}
 	bool operator()(CargoPacket *cp);
 };
 
 /** Action of reserving cargo from a station to be loaded onto a vehicle. */
 class CargoReservation : public CargoLoad {
 public:
-	CargoReservation(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex load_place) :
-			CargoLoad(source, destination, max_move, load_place) {}
+	CargoReservation(StationCargoList *source, VehicleCargoList *destination, uint max_move, TileIndex current_tile) :
+			CargoLoad(source, destination, max_move, current_tile) {}
 	bool operator()(CargoPacket *cp);
 };
 
 /** Action of returning previously reserved cargo from the vehicle to the station. */
 class CargoReturn : public CargoMovement<VehicleCargoList, StationCargoList> {
+protected:
+	TileIndex current_tile; ///< Current tile cargo unloading is happening.
 	StationID next;
 public:
-	CargoReturn(VehicleCargoList *source, StationCargoList *destination, uint max_move, StationID next) :
-			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move), next(next) {}
+	CargoReturn(VehicleCargoList *source, StationCargoList *destination, uint max_move, StationID next, TileIndex current_tile) :
+			CargoMovement<VehicleCargoList, StationCargoList>(source, destination, max_move), current_tile(current_tile), next(next) {}
 	bool operator()(CargoPacket *cp);
 };
 
@@ -111,13 +136,22 @@ public:
 };
 
 /** Action of rerouting cargo between different cargo lists and/or next hops. */
-template<class Tlist>
+template <class Tlist>
 class CargoReroute : public CargoMovement<Tlist, Tlist> {
 protected:
-	StationID avoid;
-	StationID avoid2;
-	const GoodsEntry *ge;
+	StationID avoid; ///< First station to avoid during rerouting.
+	StationID avoid2; ///< Second station to avoid during rerouting, could be StationID::Invalid().
+	const GoodsEntry *ge; ///< Goods that are to be rerouted.
 public:
+	/**
+	 * Create the movement.
+	 * @param source The source of the cargo.
+	 * @param dest The destination of the cargo.
+	 * @param max_move The maximum amount of cargo to be moved.
+	 * @param avoid First station to avoid.
+	 * @param avoid2 Optional second station to avoid (use StationID::Invalid()).
+	 * @param ge The goods to reroute.
+	 */
 	CargoReroute(Tlist *source, Tlist *dest, uint max_move, StationID avoid, StationID avoid2, const GoodsEntry *ge) :
 			CargoMovement<Tlist, Tlist>(source, dest, max_move), avoid(avoid), avoid2(avoid2), ge(ge) {}
 };
@@ -136,7 +170,7 @@ public:
 	VehicleCargoReroute(VehicleCargoList *source, VehicleCargoList *dest, uint max_move, StationID avoid, StationID avoid2, const GoodsEntry *ge) :
 			CargoReroute<VehicleCargoList>(source, dest, max_move, avoid, avoid2, ge)
 	{
-		assert(this->max_move <= source->ActionCount(VehicleCargoList::MTA_TRANSFER));
+		assert(this->max_move <= source->ActionCount(VehicleCargoList::MoveToAction::Transfer));
 	}
 	bool operator()(CargoPacket *cp);
 };

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file pathfinder_type.h General types related to pathfinders. */
@@ -11,18 +11,6 @@
 #define PATHFINDER_TYPE_H
 
 #include "../tile_type.h"
-
-/** Length (penalty) of one tile with NPF */
-static const int NPF_TILE_LENGTH = 100;
-
-/**
- * This penalty is the equivalent of "infinite", which means that paths that
- * get this penalty will be chosen, but only if there is no other route
- * without it. Be careful with not applying this penalty too often, or the
- * total path cost might overflow.
- */
-static const int NPF_INFINITE_PENALTY = 1000 * NPF_TILE_LENGTH;
-
 
 /** Length (penalty) of one tile with YAPF */
 static const int YAPF_TILE_LENGTH = 100;
@@ -37,9 +25,6 @@ static const int YAPF_TILE_CORNER_LENGTH = 71;
  * total path cost might overflow.
  */
 static const int YAPF_INFINITE_PENALTY = 1000 * YAPF_TILE_LENGTH;
-
-/** Maximum length of ship path cache */
-static const int YAPF_SHIP_PATH_CACHE_LENGTH = 32;
 
 /** Maximum segments of road vehicle path cache */
 static const int YAPF_ROADVEH_PATH_CACHE_SEGMENTS = 8;

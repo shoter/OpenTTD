@@ -2,22 +2,22 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file unicode.h Character mapping for using Unicode characters in OTTD. */
 
 struct DefaultUnicodeMapping {
-	WChar code; ///< Unicode value
-	byte key;   ///< Character index of sprite
+	char32_t code; ///< Unicode value
+	uint8_t key;   ///< Character index of sprite
 };
 
-static const byte CLRA = 0; ///< Identifier to clear all glyphs at this codepoint
+static const uint8_t CLRA = 0; ///< Identifier to clear all glyphs at this codepoint
 
 /* Default unicode mapping table for sprite based glyphs.
  * This table allows us use unicode characters even though the glyphs don't
  * exist, or are in the wrong place, in the standard sprite fonts.
- * This is not used for FreeType rendering */
+ * This is not used for TrueType rendering */
 
 static const DefaultUnicodeMapping _default_unicode_map[] = {
 	{ 0x00A0, 0x20 }, // Non-breaking space / Up arrow

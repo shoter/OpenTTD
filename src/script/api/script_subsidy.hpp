@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_subsidy.hpp Everything to query subsidies. */
@@ -12,6 +12,7 @@
 
 #include "script_company.hpp"
 #include "script_date.hpp"
+#include "../../subsidy_type.h"
 
 /**
  * Class that handles all subsidy related functions.
@@ -25,7 +26,7 @@ public:
 	 */
 	enum SubsidyParticipantType {
 		/* Values are important, as they represent the internal state of the game.
-		 *  It is originally named SourceType. ST_HEADQUARTERS is intentionally
+		 *  It is originally named SourceType. SourceType::Headquarters is intentionally
 		 *  left out, as it cannot be used for Subsidies. */
 		SPT_INDUSTRY =    0, ///< Subsidy participant is an industry
 		SPT_TOWN     =    1, ///< Subsidy participant is a town
@@ -49,12 +50,13 @@ public:
 
 	/**
 	 * Create a new subsidy.
-	 * @param cargo_type The type of cargo to cary for the subsidy.
+	 * @param cargo_type The type of cargo to carry for the subsidy.
 	 * @param from_type The type of the subsidy on the 'from' side.
 	 * @param from_id The ID of the 'from' side.
 	 * @param to_type The type of the subsidy on the 'to' side.
 	 * @param to_id The ID of the 'to' side.
 	 * @return True if the action succeeded.
+	 * @pre ScriptCompanyMode::IsDeity().
 	 * @pre ScriptCargo::IsValidCargo(cargo_type)
 	 * @pre from_type == SPT_INDUSTRY || from_type == SPT_TOWN.
 	 * @pre to_type   == SPT_INDUSTRY || to_type   == SPT_TOWN.
@@ -62,7 +64,7 @@ public:
 	 * @pre (to_type   == SPT_INDUSTRY && ScriptIndustry::IsValidIndustry(to_id))   || (to_type   == SPT_TOWN && ScriptTown::IsValidTown(to_id))
 	 * @api -ai
 	 */
-	static bool Create(CargoID cargo_type, SubsidyParticipantType from_type, uint16 from_id, SubsidyParticipantType to_type, uint16 to_id);
+	static bool Create(CargoType cargo_type, SubsidyParticipantType from_type, SQInteger from_id, SubsidyParticipantType to_type, SQInteger to_id);
 
 	/**
 	 * Get the company index of the company this subsidy is awarded to.
@@ -73,14 +75,15 @@ public:
 	static ScriptCompany::CompanyID GetAwardedTo(SubsidyID subsidy_id);
 
 	/**
-	 * Get the date this subsidy expires. In case the subsidy is already
-	 *  awarded, return the date the subsidy expires, else, return the date the
+	 * Get the economy-date this subsidy expires. In case the subsidy is already
+	 *  awarded, return the economy-date the subsidy expires, else, return the economy-date the
 	 *  offer expires.
 	 * @param subsidy_id The SubsidyID to check.
 	 * @pre IsValidSubsidy(subsidy_id).
-	 * @return The last valid date of this subsidy.
+	 * @return The last valid economy-date of this subsidy.
 	 * @note The return value of this function will change if the subsidy is
 	 *  awarded.
+	 * @see \ref ScriptEconomyTime
 	 */
 	static ScriptDate::Date GetExpireDate(SubsidyID subsidy_id);
 
@@ -91,7 +94,7 @@ public:
 	 * @pre IsValidSubsidy(subsidy_id).
 	 * @return The cargo type to transport.
 	 */
-	static CargoID GetCargoType(SubsidyID subsidy_id);
+	static CargoType GetCargoType(SubsidyID subsidy_id);
 
 	/**
 	 * Returns the type of source of subsidy.
@@ -109,7 +112,7 @@ public:
 	 * @pre IsValidSubsidy(subsidy_id).
 	 * @return One of TownID/IndustryID.
 	 */
-	static int32 GetSourceIndex(SubsidyID subsidy_id);
+	static SQInteger GetSourceIndex(SubsidyID subsidy_id);
 
 	/**
 	 * Returns the type of destination of subsidy.
@@ -127,7 +130,7 @@ public:
 	 * @pre IsValidSubsidy(subsidy_id).
 	 * @return One of TownID/IndustryID.
 	 */
-	static int32 GetDestinationIndex(SubsidyID subsidy_id);
+	static SQInteger GetDestinationIndex(SubsidyID subsidy_id);
 };
 
 #endif /* SCRIPT_SUBSIDY_HPP */

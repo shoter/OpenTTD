@@ -2,19 +2,19 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_industrytype.cpp Implementation of ScriptIndustryType. */
 
 #include "../../stdafx.h"
 #include "script_industrytype.hpp"
+#include "script_base.hpp"
 #include "script_map.hpp"
 #include "script_error.hpp"
 #include "../../strings_func.h"
-#include "../../industry.h"
 #include "../../newgrf_industries.h"
-#include "../../core/random_func.hpp"
+#include "../../industry_cmd.h"
 
 #include "../../safeguards.h"
 
@@ -43,8 +43,8 @@
 {
 	if (!IsValidIndustryType(industry_type)) return false;
 
-	if (_settings_game.game_creation.landscape != LT_TEMPERATE) return true;
-	return (::GetIndustrySpec(industry_type)->behaviour & INDUSTRYBEH_DONT_INCR_PROD) == 0;
+	if (_settings_game.game_creation.landscape != LandscapeType::Temperate) return true;
+	return !::GetIndustrySpec(industry_type)->behaviour.Test(IndustryBehaviour::DontIncrProd);
 }
 
 /* static */ Money ScriptIndustryType::GetConstructionCost(IndustryType industry_type)
@@ -55,11 +55,11 @@
 	return ::GetIndustrySpec(industry_type)->GetConstructionCost();
 }
 
-/* static */ char *ScriptIndustryType::GetName(IndustryType industry_type)
+/* static */ std::optional<std::string> ScriptIndustryType::GetName(IndustryType industry_type)
 {
-	if (!IsValidIndustryType(industry_type)) return nullptr;
+	if (!IsValidIndustryType(industry_type)) return std::nullopt;
 
-	return GetString(::GetIndustrySpec(industry_type)->name);
+	return ::StrMakeValid(::GetString(::GetIndustrySpec(industry_type)->name), {});
 }
 
 /* static */ ScriptList *ScriptIndustryType::GetProducedCargo(IndustryType industry_type)
@@ -69,8 +69,8 @@
 	const IndustrySpec *ins = ::GetIndustrySpec(industry_type);
 
 	ScriptList *list = new ScriptList();
-	for (size_t i = 0; i < lengthof(ins->produced_cargo); i++) {
-		if (ins->produced_cargo[i] != CT_INVALID) list->AddItem(ins->produced_cargo[i]);
+	for (const CargoType &cargo : ins->produced_cargo) {
+		if (::IsValidCargoType(cargo)) list->AddItem(cargo);
 	}
 
 	return list;
@@ -83,8 +83,8 @@
 	const IndustrySpec *ins = ::GetIndustrySpec(industry_type);
 
 	ScriptList *list = new ScriptList();
-	for (size_t i = 0; i < lengthof(ins->accepts_cargo); i++) {
-		if (ins->accepts_cargo[i] != CT_INVALID) list->AddItem(ins->accepts_cargo[i]);
+	for (const CargoType &cargo : ins->accepts_cargo) {
+		if (::IsValidCargoType(cargo)) list->AddItem(cargo);
 	}
 
 	return list;
@@ -94,8 +94,8 @@
 {
 	if (!IsValidIndustryType(industry_type)) return false;
 
-	const bool deity = ScriptObject::GetCompany() == OWNER_DEITY;
-	if (::GetIndustryProbabilityCallback(industry_type, deity ? IACT_RANDOMCREATION : IACT_USERCREATION, 1) == 0) return false;
+	const bool deity = ScriptCompanyMode::IsDeity();
+	if (::GetIndustryProbabilityCallback(industry_type, deity ? IndustryAvailabilityCallType::RandomCreation : IndustryAvailabilityCallType::UserCreation, 1) == 0) return false;
 	if (deity) return true;
 	if (!::GetIndustrySpec(industry_type)->IsRawIndustry()) return true;
 
@@ -107,9 +107,9 @@
 {
 	if (!IsValidIndustryType(industry_type)) return false;
 
-	const bool deity = ScriptObject::GetCompany() == OWNER_DEITY;
+	const bool deity = ScriptCompanyMode::IsDeity();
 	if (!deity && !::GetIndustrySpec(industry_type)->IsRawIndustry()) return false;
-	if (::GetIndustryProbabilityCallback(industry_type, deity ? IACT_RANDOMCREATION : IACT_USERCREATION, 1) == 0) return false;
+	if (::GetIndustryProbabilityCallback(industry_type, deity ? IndustryAvailabilityCallType::RandomCreation : IndustryAvailabilityCallType::UserCreation, 1) == 0) return false;
 
 	/* raw_industry_construction == 2 means "prospect" */
 	return deity || _settings_game.construction.raw_industry_construction == 2;
@@ -117,39 +117,48 @@
 
 /* static */ bool ScriptIndustryType::BuildIndustry(IndustryType industry_type, TileIndex tile)
 {
+	EnforceDeityOrCompanyModeValid(false);
 	EnforcePrecondition(false, CanBuildIndustry(industry_type));
 	EnforcePrecondition(false, ScriptMap::IsValidTile(tile));
 
-	uint32 seed = ::InteractiveRandom();
-	uint32 layout_index = ::InteractiveRandomRange((uint32)::GetIndustrySpec(industry_type)->layouts.size());
-	return ScriptObject::DoCommand(tile, (1 << 16) | (layout_index << 8) | industry_type, seed, CMD_BUILD_INDUSTRY);
+	uint32_t seed = ScriptBase::Rand();
+	uint32_t layout_index = ScriptBase::RandRange((uint32_t)::GetIndustrySpec(industry_type)->layouts.size());
+	return ScriptObject::Command<Commands::BuildIndustry>::Do(tile, industry_type, layout_index, true, seed);
 }
 
 /* static */ bool ScriptIndustryType::ProspectIndustry(IndustryType industry_type)
 {
+	EnforceDeityOrCompanyModeValid(false);
 	EnforcePrecondition(false, CanProspectIndustry(industry_type));
 
-	uint32 seed = ::InteractiveRandom();
-	return ScriptObject::DoCommand(0, industry_type, seed, CMD_BUILD_INDUSTRY);
+	uint32_t seed = ScriptBase::Rand();
+	return ScriptObject::Command<Commands::BuildIndustry>::Do(TileIndex{}, industry_type, 0, false, seed);
 }
 
 /* static */ bool ScriptIndustryType::IsBuiltOnWater(IndustryType industry_type)
 {
 	if (!IsValidIndustryType(industry_type)) return false;
 
-	return (::GetIndustrySpec(industry_type)->behaviour & INDUSTRYBEH_BUILT_ONWATER) != 0;
+	return ::GetIndustrySpec(industry_type)->behaviour.Test(IndustryBehaviour::BuiltOnWater);
 }
 
 /* static */ bool ScriptIndustryType::HasHeliport(IndustryType industry_type)
 {
 	if (!IsValidIndustryType(industry_type)) return false;
 
-	return (::GetIndustrySpec(industry_type)->behaviour & INDUSTRYBEH_AI_AIRSHIP_ROUTES) != 0;
+	return ::GetIndustrySpec(industry_type)->behaviour.Test(IndustryBehaviour::AIAirShipRoutes);
 }
 
 /* static */ bool ScriptIndustryType::HasDock(IndustryType industry_type)
 {
 	if (!IsValidIndustryType(industry_type)) return false;
 
-	return (::GetIndustrySpec(industry_type)->behaviour & INDUSTRYBEH_AI_AIRSHIP_ROUTES) != 0;
+	return ::GetIndustrySpec(industry_type)->behaviour.Test(IndustryBehaviour::AIAirShipRoutes);
+}
+
+/* static */ IndustryType ScriptIndustryType::ResolveNewGRFID(SQInteger grfid, SQInteger grf_local_id)
+{
+	EnforcePrecondition(IT_INVALID, IsInsideBS(grf_local_id, 0x00, NUM_INDUSTRYTYPES_PER_GRF));
+
+	return _industry_mngr.GetID(grf_local_id, UnflattenNewGRFLabel<GrfID>(std::byteswap(static_cast<uint32_t>(grfid))));
 }

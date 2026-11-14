@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_gamesettings.cpp Implementation of ScriptGameSettings. */
@@ -12,40 +12,38 @@
 #include "../../settings_internal.h"
 #include "../../settings_type.h"
 #include "../../command_type.h"
+#include "../../settings_cmd.h"
 
 #include "../../safeguards.h"
 
-/* static */ bool ScriptGameSettings::IsValid(const char *setting)
+/* static */ bool ScriptGameSettings::IsValid(const std::string &setting)
 {
-	uint i;
-	const SettingDesc *sd = GetSettingFromName(setting, &i);
-	return sd != nullptr && sd->desc.cmd != SDT_STRING;
+	const SettingDesc *sd = GetSettingFromName(setting);
+	return sd != nullptr && sd->IsIntSetting();
 }
 
-/* static */ int32 ScriptGameSettings::GetValue(const char *setting)
+/* static */ SQInteger ScriptGameSettings::GetValue(const std::string &setting)
 {
 	if (!IsValid(setting)) return -1;
 
-	uint index;
-	const SettingDesc *sd = GetSettingFromName(setting, &index);
-
-	void *ptr = GetVariableAddress(&_settings_game, &sd->save);
-	if (sd->desc.cmd == SDT_BOOLX) return *(bool*)ptr;
-
-	return (int32)ReadValue(ptr, sd->save.conv);
+	const SettingDesc *sd = GetSettingFromName(setting);
+	assert(sd != nullptr);
+	return sd->AsIntSetting()->Read(&_settings_game);
 }
 
-/* static */ bool ScriptGameSettings::SetValue(const char *setting, int value)
+/* static */ bool ScriptGameSettings::SetValue(const std::string &setting, SQInteger value)
 {
+	EnforceDeityOrCompanyModeValid(false);
 	if (!IsValid(setting)) return false;
 
-	uint index;
-	const SettingDesc *sd = GetSettingFromName(setting, &index);
+	const SettingDesc *sd = GetSettingFromName(setting);
+	assert(sd != nullptr);
 
-	if ((sd->save.conv & SLF_NO_NETWORK_SYNC) != 0) return false;
-	if (sd->desc.cmd != SDT_BOOLX && sd->desc.cmd != SDT_NUMX) return false;
+	if ((sd->flags.Test(SettingFlag::NoNetworkSync))) return false;
 
-	return ScriptObject::DoCommand(0, index, value, CMD_CHANGE_SETTING);
+	value = Clamp<SQInteger>(value, INT32_MIN, INT32_MAX);
+
+	return ScriptObject::Command<Commands::ChangeSetting>::Do(sd->GetName(), value);
 }
 
 /* static */ bool ScriptGameSettings::IsDisabledVehicleType(ScriptVehicle::VehicleType vehicle_type)

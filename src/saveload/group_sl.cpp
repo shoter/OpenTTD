@@ -2,60 +2,65 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file group_sl.cpp Code handling saving and loading of economy data */
+/** @file group_sl.cpp Code handling saving and loading of groups. */
 
 #include "../stdafx.h"
 #include "../group.h"
 #include "../company_base.h"
 
 #include "saveload.h"
+#include "compat/group_sl_compat.h"
 
 #include "../safeguards.h"
 
 static const SaveLoad _group_desc[] = {
-	 SLE_CONDVAR(Group, name,               SLE_NAME,                       SL_MIN_VERSION,  SLV_84),
-	SLE_CONDSSTR(Group, name,               SLE_STR | SLF_ALLOW_CONTROL,    SLV_84, SL_MAX_VERSION),
-	SLE_CONDNULL(2,                                                         SL_MIN_VERSION,  SLV_164), // num_vehicle
-	     SLE_VAR(Group, owner,              SLE_UINT8),
-	     SLE_VAR(Group, vehicle_type,       SLE_UINT8),
-	     SLE_VAR(Group, replace_protection, SLE_BOOL),
-	 SLE_CONDVAR(Group, livery.in_use,      SLE_UINT8,                     SLV_GROUP_LIVERIES, SL_MAX_VERSION),
-	 SLE_CONDVAR(Group, livery.colour1,     SLE_UINT8,                     SLV_GROUP_LIVERIES, SL_MAX_VERSION),
-	 SLE_CONDVAR(Group, livery.colour2,     SLE_UINT8,                     SLV_GROUP_LIVERIES, SL_MAX_VERSION),
-	 SLE_CONDVAR(Group, parent,             SLE_UINT16,                    SLV_189, SL_MAX_VERSION),
-	     SLE_END()
+	SaveLoad::Variable<VarFileType::StringID>("name", SLE_OBJECT_ADDRESS(Group, name), SaveLoadVersion::MinVersion, SaveLoadVersion::ReplaceCustomNameArray),
+	SaveLoad::String("name", SLE_OBJECT_ADDRESS(Group, name), StringValidationSetting::AllowControlCode, SaveLoadVersion::ReplaceCustomNameArray),
+	SaveLoad::Variable<VarFileType::U8>("owner", SLE_OBJECT_ADDRESS(Group, owner)),
+	SaveLoad::Variable<VarFileType::U8>("vehicle_type", SLE_OBJECT_ADDRESS(Group, vehicle_type)),
+	SaveLoad::Variable<VarFileType::U8>("flags", SLE_OBJECT_ADDRESS(Group, flags)),
+	SaveLoad::Variable<VarFileType::U8>("livery.in_use", SLE_OBJECT_ADDRESS(Group, livery.in_use), SaveLoadVersion::GroupLiveries),
+	SaveLoad::Variable<VarFileType::U8>("livery.colour1", SLE_OBJECT_ADDRESS(Group, livery.colour1), SaveLoadVersion::GroupLiveries),
+	SaveLoad::Variable<VarFileType::U8>("livery.colour2", SLE_OBJECT_ADDRESS(Group, livery.colour2), SaveLoadVersion::GroupLiveries),
+	SaveLoad::Variable<VarFileType::U16>("parent", SLE_OBJECT_ADDRESS(Group, parent), SaveLoadVersion::GroupHierarchy),
+	SaveLoad::Variable<VarFileType::U16>("number", SLE_OBJECT_ADDRESS(Group, number), SaveLoadVersion::GroupNumbers),
 };
 
-static void Save_GRPS()
-{
-	for (Group *g : Group::Iterate()) {
-		SlSetArrayIndex(g->index);
-		SlObject(g, _group_desc);
-	}
-}
+struct GRPSChunkHandler : ChunkHandler {
+	GRPSChunkHandler() : ChunkHandler("GRPS", ChunkType::Table) {}
 
+	void Save() const override
+	{
+		SlTableHeader(_group_desc);
 
-static void Load_GRPS()
-{
-	int index;
-
-	while ((index = SlIterateArray()) != -1) {
-		Group *g = new (index) Group();
-		SlObject(g, _group_desc);
-
-		if (IsSavegameVersionBefore(SLV_189)) g->parent = INVALID_GROUP;
-
-		if (IsSavegameVersionBefore(SLV_GROUP_LIVERIES)) {
-	                const Company *c = Company::Get(g->owner);
-	                g->livery.colour1 = c->livery[LS_DEFAULT].colour1;
-	                g->livery.colour2 = c->livery[LS_DEFAULT].colour2;
+		for (Group *g : Group::Iterate()) {
+			SlSetArrayIndex(g->index);
+			SlObject(g, _group_desc);
 		}
 	}
-}
 
-extern const ChunkHandler _group_chunk_handlers[] = {
-	{ 'GRPS', Save_GRPS, Load_GRPS, nullptr, nullptr, CH_ARRAY | CH_LAST},
+
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_group_desc, _group_sl_compat);
+
+		int index;
+
+		while ((index = SlIterateArray()) != -1) {
+			Group *g = Group::CreateAtIndex(GroupID(index));
+			SlObject(g, slt);
+
+			if (IsSavegameVersionBefore(SaveLoadVersion::GroupHierarchy)) g->parent = GroupID::Invalid();
+		}
+	}
 };
+
+static const GRPSChunkHandler GRPS;
+static const ChunkHandlerRef group_chunk_handlers[] = {
+	GRPS,
+};
+
+extern const ChunkHandlerTable _group_chunk_handlers(group_chunk_handlers);

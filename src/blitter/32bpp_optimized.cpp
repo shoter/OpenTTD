@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file 32bpp_optimized.cpp Implementation of the optimized 32 bpp blitter. */
@@ -10,6 +10,7 @@
 #include "../stdafx.h"
 #include "../zoom_func.h"
 #include "../settings_type.h"
+#include "../palette_func.h"
 #include "32bpp_optimized.hpp"
 
 #include "../safeguards.h"
@@ -24,41 +25,41 @@ static FBlitter_32bppOptimized iFBlitter_32bppOptimized;
  * @param bp further blitting parameters
  * @param zoom zoom level at which we are drawing
  */
-template <BlitterMode mode>
+template <BlitterMode mode, bool Tpal_to_rgb>
 inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomLevel zoom)
 {
 	const SpriteData *src = (const SpriteData *)bp->sprite;
 
-	/* src_px : each line begins with uint32 n = 'number of bytes in this line',
+	/* src_px : each line begins with uint32_t n = 'number of bytes in this line',
 	 *          then n times is the Colour struct for this line */
-	const Colour *src_px = (const Colour *)(src->data + src->offset[zoom][0]);
-	/* src_n  : each line begins with uint32 n = 'number of bytes in this line',
+	const Colour *src_px = reinterpret_cast<const Colour *>(src->data + src->offset[0][zoom]);
+	/* src_n  : each line begins with uint32_t n = 'number of bytes in this line',
 	 *          then interleaved stream of 'm' and 'n' channels. 'm' is remap,
 	 *          'n' is number of bytes with the same alpha channel class */
-	const uint16 *src_n  = (const uint16 *)(src->data + src->offset[zoom][1]);
+	const uint16_t *src_n = reinterpret_cast<const uint16_t *>(src->data + src->offset[1][zoom]);
 
 	/* skip upper lines in src_px and src_n */
 	for (uint i = bp->skip_top; i != 0; i--) {
-		src_px = (const Colour *)((const byte *)src_px + *(const uint32 *)src_px);
-		src_n = (const uint16 *)((const byte *)src_n + *(const uint32 *)src_n);
+		src_px = (const Colour *)((const uint8_t *)src_px + *(const uint32_t *)src_px);
+		src_n = (const uint16_t *)((const uint8_t *)src_n + *(const uint32_t *)src_n);
 	}
 
 	/* skip lines in dst */
 	Colour *dst = (Colour *)bp->dst + bp->top * bp->pitch + bp->left;
 
 	/* store so we don't have to access it via bp every time (compiler assumes pointer aliasing) */
-	const byte *remap = bp->remap;
+	const uint8_t *remap = bp->remap;
 
 	for (int y = 0; y < bp->height; y++) {
 		/* next dst line begins here */
 		Colour *dst_ln = dst + bp->pitch;
 
 		/* next src line begins here */
-		const Colour *src_px_ln = (const Colour *)((const byte *)src_px + *(const uint32 *)src_px);
+		const Colour *src_px_ln = (const Colour *)((const uint8_t *)src_px + *(const uint32_t *)src_px);
 		src_px++;
 
 		/* next src_n line begins here */
-		const uint16 *src_n_ln = (const uint16 *)((const byte *)src_n + *(const uint32 *)src_n);
+		const uint16_t *src_n_ln = (const uint16_t *)((const uint8_t *)src_n + *(const uint32_t *)src_n);
 		src_n += 2;
 
 		/* we will end this line when we reach this point */
@@ -83,7 +84,7 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 					dst = dst_end - bp->skip_left;
 					dst_end = dst + bp->width;
 
-					n = min<uint>(n - d, (uint)bp->width);
+					n = std::min(n - d, (uint)bp->width);
 					goto draw;
 				}
 				dst += n;
@@ -98,7 +99,7 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 		dst_end += bp->width;
 
 		while (dst < dst_end) {
-			n = min<uint>(*src_n++, (uint)(dst_end - dst));
+			n = std::min<uint>(*src_n++, dst_end - dst);
 
 			if (src_px->a == 0) {
 				dst += n;
@@ -110,7 +111,7 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 			draw:;
 
 			switch (mode) {
-				case BM_COLOUR_REMAP:
+				case BlitterMode::ColourRemap:
 					if (src_px->a == 255) {
 						do {
 							uint m = *src_n;
@@ -119,7 +120,7 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 								*dst = src_px->data;
 							} else {
 								uint r = remap[GB(m, 0, 8)];
-								if (r != 0) *dst = this->AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8));
+								if (r != 0) *dst = AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8));
 							}
 							dst++;
 							src_px++;
@@ -132,7 +133,7 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 								*dst = ComposeColourRGBANoCheck(src_px->r, src_px->g, src_px->b, src_px->a, *dst);
 							} else {
 								uint r = remap[GB(m, 0, 8)];
-								if (r != 0) *dst = ComposeColourPANoCheck(this->AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8)), src_px->a, *dst);
+								if (r != 0) *dst = ComposeColourPANoCheck(AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8)), src_px->a, *dst);
 							}
 							dst++;
 							src_px++;
@@ -141,16 +142,16 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 					}
 					break;
 
-				case BM_CRASH_REMAP:
+				case BlitterMode::CrashRemap:
 					if (src_px->a == 255) {
 						do {
 							uint m = *src_n;
 							if (m == 0) {
-								uint8 g = MakeDark(src_px->r, src_px->g, src_px->b);
+								uint8_t g = MakeDark(src_px->r, src_px->g, src_px->b);
 								*dst = ComposeColourRGBA(g, g, g, src_px->a, *dst);
 							} else {
 								uint r = remap[GB(m, 0, 8)];
-								if (r != 0) *dst = this->AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8));
+								if (r != 0) *dst = AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8));
 							}
 							dst++;
 							src_px++;
@@ -161,12 +162,12 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 							uint m = *src_n;
 							if (m == 0) {
 								if (src_px->a != 0) {
-									uint8 g = MakeDark(src_px->r, src_px->g, src_px->b);
+									uint8_t g = MakeDark(src_px->r, src_px->g, src_px->b);
 									*dst = ComposeColourRGBA(g, g, g, src_px->a, *dst);
 								}
 							} else {
 								uint r = remap[GB(m, 0, 8)];
-								if (r != 0) *dst = ComposeColourPANoCheck(this->AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8)), src_px->a, *dst);
+								if (r != 0) *dst = ComposeColourPANoCheck(AdjustBrightness(this->LookupColourInPalette(r), GB(m, 8, 8)), src_px->a, *dst);
 							}
 							dst++;
 							src_px++;
@@ -175,7 +176,7 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 					}
 					break;
 
-				case BM_BLACK_REMAP:
+				case BlitterMode::BlackRemap:
 					do {
 						*dst = Colour(0, 0, 0);
 						dst++;
@@ -184,11 +185,7 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 					} while (--n != 0);
 					break;
 
-				case BM_TRANSPARENT:
-					/* TODO -- We make an assumption here that the remap in fact is transparency, not some colour.
-					 *  This is never a problem with the code we produce, but newgrfs can make it fail... or at least:
-					 *  we produce a result the newgrf maker didn't expect ;) */
-
+				case BlitterMode::Transparent:
 					/* Make the current colour a bit more black, so it looks like this image is transparent */
 					src_n += n;
 					if (src_px->a == 255) {
@@ -206,21 +203,47 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 					}
 					break;
 
+				case BlitterMode::TransparentRemap:
+					/* Apply custom transparency remap. */
+					src_n += n;
+					if (src_px->a != 0) {
+						src_px += n;
+						do {
+							*dst = this->LookupColourInPalette(remap[GetNearestColourIndex(*dst)]);
+							dst++;
+						} while (--n != 0);
+					} else {
+						dst += n;
+						src_px += n;
+					}
+					break;
+
 				default:
 					if (src_px->a == 255) {
 						/* faster than memcpy(), n is usually low */
-						src_n += n;
 						do {
-							*dst = src_px->data;
+							if (Tpal_to_rgb && *src_n != 0) {
+								/* Convert the mapping channel to a RGB value */
+								*dst = AdjustBrightness(this->LookupColourInPalette(GB(*src_n, 0, 8)), GB(*src_n, 8, 8)).data;
+							} else {
+								*dst = src_px->data;
+							}
 							dst++;
 							src_px++;
+							src_n++;
 						} while (--n != 0);
 					} else {
-						src_n += n;
 						do {
-							*dst = ComposeColourRGBANoCheck(src_px->r, src_px->g, src_px->b, src_px->a, *dst);
+							if (Tpal_to_rgb && *src_n != 0) {
+								/* Convert the mapping channel to a RGB value */
+								Colour colour = AdjustBrightness(this->LookupColourInPalette(GB(*src_n, 0, 8)), GB(*src_n, 8, 8));
+								*dst = ComposeColourRGBANoCheck(colour.r, colour.g, colour.b, src_px->a, *dst);
+							} else {
+								*dst = ComposeColourRGBANoCheck(src_px->r, src_px->g, src_px->b, src_px->a, *dst);
+							}
 							dst++;
 							src_px++;
+							src_n++;
 						} while (--n != 0);
 					}
 					break;
@@ -233,6 +256,23 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
 	}
 }
 
+template <bool Tpal_to_rgb>
+void Blitter_32bppOptimized::Draw(Blitter::BlitterParams *bp, BlitterMode mode, ZoomLevel zoom)
+{
+	switch (mode) {
+		default: NOT_REACHED();
+		case BlitterMode::Normal: Draw<BlitterMode::Normal, Tpal_to_rgb>(bp, zoom); return;
+		case BlitterMode::ColourRemap: Draw<BlitterMode::ColourRemap, Tpal_to_rgb>(bp, zoom); return;
+		case BlitterMode::Transparent: Draw<BlitterMode::Transparent, Tpal_to_rgb>(bp, zoom); return;
+		case BlitterMode::TransparentRemap: Draw<BlitterMode::TransparentRemap, Tpal_to_rgb>(bp, zoom); return;
+		case BlitterMode::CrashRemap: Draw<BlitterMode::CrashRemap, Tpal_to_rgb>(bp, zoom); return;
+		case BlitterMode::BlackRemap: Draw<BlitterMode::BlackRemap, Tpal_to_rgb>(bp, zoom); return;
+	}
+}
+
+template void Blitter_32bppOptimized::Draw<true>(Blitter::BlitterParams *bp, BlitterMode mode, ZoomLevel zoom);
+template void Blitter_32bppOptimized::Draw<false>(Blitter::BlitterParams *bp, BlitterMode mode, ZoomLevel zoom);
+
 /**
  * Draws a sprite to a (screen) buffer. Calls adequate templated function.
  *
@@ -242,22 +282,16 @@ inline void Blitter_32bppOptimized::Draw(const Blitter::BlitterParams *bp, ZoomL
  */
 void Blitter_32bppOptimized::Draw(Blitter::BlitterParams *bp, BlitterMode mode, ZoomLevel zoom)
 {
-	switch (mode) {
-		default: NOT_REACHED();
-		case BM_NORMAL:       Draw<BM_NORMAL>      (bp, zoom); return;
-		case BM_COLOUR_REMAP: Draw<BM_COLOUR_REMAP>(bp, zoom); return;
-		case BM_TRANSPARENT:  Draw<BM_TRANSPARENT> (bp, zoom); return;
-		case BM_CRASH_REMAP:  Draw<BM_CRASH_REMAP> (bp, zoom); return;
-		case BM_BLACK_REMAP:  Draw<BM_BLACK_REMAP> (bp, zoom); return;
-	}
+	this->Draw<false>(bp, mode, zoom);
 }
 
-Sprite *Blitter_32bppOptimized::Encode(const SpriteLoader::Sprite *sprite, AllocatorProc *allocator)
+template <bool Tpal_to_rgb>
+Sprite *Blitter_32bppOptimized::EncodeInternal(SpriteType sprite_type, const SpriteLoader::SpriteCollection &sprite, SpriteAllocator &allocator)
 {
 	/* streams of pixels (a, r, g, b channels)
 	 *
 	 * stored in separated stream so data are always aligned on 4B boundary */
-	Colour *dst_px_orig[ZOOM_LVL_COUNT];
+	SpriteCollMap<std::unique_ptr<Colour[]>> dst_px_orig;
 
 	/* interleaved stream of 'm' channel and 'n' channel
 	 * 'n' is number of following pixels with the same alpha channel class
@@ -265,21 +299,21 @@ Sprite *Blitter_32bppOptimized::Encode(const SpriteLoader::Sprite *sprite, Alloc
 	 *
 	 * it has to be stored in one stream so fewer registers are used -
 	 * x86 has problems with register allocation even with this solution */
-	uint16 *dst_n_orig[ZOOM_LVL_COUNT];
+	SpriteCollMap<std::unique_ptr<uint16_t[]>> dst_n_orig;
 
 	/* lengths of streams */
-	uint32 lengths[ZOOM_LVL_COUNT][2];
+	SpriteCollMap<uint32_t> lengths[2];
 
 	ZoomLevel zoom_min;
 	ZoomLevel zoom_max;
 
-	if (sprite->type == ST_FONT) {
-		zoom_min = ZOOM_LVL_NORMAL;
-		zoom_max = ZOOM_LVL_NORMAL;
+	if (sprite_type == SpriteType::Font) {
+		zoom_min = ZoomLevel::Min;
+		zoom_max = ZoomLevel::Min;
 	} else {
 		zoom_min = _settings_client.gui.zoom_min;
 		zoom_max = _settings_client.gui.zoom_max;
-		if (zoom_max == zoom_min) zoom_max = ZOOM_LVL_MAX;
+		if (zoom_max == zoom_min) zoom_max = ZoomLevel::Max;
 	}
 
 	for (ZoomLevel z = zoom_min; z <= zoom_max; z++) {
@@ -287,25 +321,26 @@ Sprite *Blitter_32bppOptimized::Encode(const SpriteLoader::Sprite *sprite, Alloc
 
 		uint size = src_orig->height * src_orig->width;
 
-		dst_px_orig[z] = CallocT<Colour>(size + src_orig->height * 2);
-		dst_n_orig[z]  = CallocT<uint16>(size * 2 + src_orig->height * 4 * 2);
+		dst_px_orig[z] = std::make_unique<Colour[]>(size + src_orig->height * 2);
+		dst_n_orig[z]  = std::make_unique<uint16_t[]>(size * 2 + src_orig->height * 4 * 2);
 
-		uint32 *dst_px_ln = (uint32 *)dst_px_orig[z];
-		uint32 *dst_n_ln  = (uint32 *)dst_n_orig[z];
+		uint32_t *dst_px_ln = reinterpret_cast<uint32_t *>(dst_px_orig[z].get());
+		uint32_t *dst_n_ln  = reinterpret_cast<uint32_t *>(dst_n_orig[z].get());
 
 		const SpriteLoader::CommonPixel *src = (const SpriteLoader::CommonPixel *)src_orig->data;
 
 		for (uint y = src_orig->height; y > 0; y--) {
-			Colour *dst_px = (Colour *)(dst_px_ln + 1);
-			uint16 *dst_n = (uint16 *)(dst_n_ln + 1);
+			/* Index 0 of dst_px and dst_n is left as space to save the length of the row to be filled later. */
+			Colour *dst_px = (Colour *)&dst_px_ln[1];
+			uint16_t *dst_n = (uint16_t *)&dst_n_ln[1];
 
-			uint16 *dst_len = dst_n++;
+			uint16_t *dst_len = dst_n++;
 
 			uint last = 3;
 			int len = 0;
 
 			for (uint x = src_orig->width; x > 0; x--) {
-				uint8 a = src->a;
+				uint8_t a = src->a;
 				uint t = a > 0 && a < 255 ? 1 : a;
 
 				if (last != t || len == 65535) {
@@ -324,17 +359,23 @@ Sprite *Blitter_32bppOptimized::Encode(const SpriteLoader::Sprite *sprite, Alloc
 					*dst_n = src->m;
 					if (src->m != 0) {
 						/* Get brightest value */
-						uint8 rgb_max = max(src->r, max(src->g, src->b));
+						uint8_t rgb_max = std::max({ src->r, src->g, src->b });
 
 						/* Black pixel (8bpp or old 32bpp image), so use default value */
 						if (rgb_max == 0) rgb_max = DEFAULT_BRIGHTNESS;
 						*dst_n |= rgb_max << 8;
 
-						/* Pre-convert the mapping channel to a RGB value */
-						Colour colour = this->AdjustBrightness(this->LookupColourInPalette(src->m), rgb_max);
-						dst_px->r = colour.r;
-						dst_px->g = colour.g;
-						dst_px->b = colour.b;
+						if (Tpal_to_rgb) {
+							/* Pre-convert the mapping channel to a RGB value */
+							Colour colour = AdjustBrightness(this->LookupColourInPalette(src->m), rgb_max);
+							dst_px->r = colour.r;
+							dst_px->g = colour.g;
+							dst_px->b = colour.b;
+						} else {
+							dst_px->r = src->r;
+							dst_px->g = src->g;
+							dst_px->b = src->b;
+						}
 					} else {
 						dst_px->r = src->r;
 						dst_px->g = src->g;
@@ -356,44 +397,52 @@ Sprite *Blitter_32bppOptimized::Encode(const SpriteLoader::Sprite *sprite, Alloc
 			}
 
 			dst_px = (Colour *)AlignPtr(dst_px, 4);
-			dst_n  = (uint16 *)AlignPtr(dst_n, 4);
+			dst_n  = (uint16_t *)AlignPtr(dst_n, 4);
 
-			*dst_px_ln = (uint8 *)dst_px - (uint8 *)dst_px_ln;
-			*dst_n_ln  = (uint8 *)dst_n  - (uint8 *)dst_n_ln;
+			*dst_px_ln = (uint8_t *)dst_px - (uint8_t *)dst_px_ln;
+			*dst_n_ln  = (uint8_t *)dst_n  - (uint8_t *)dst_n_ln;
 
-			dst_px_ln = (uint32 *)dst_px;
-			dst_n_ln =  (uint32 *)dst_n;
+			dst_px_ln = (uint32_t *)dst_px;
+			dst_n_ln =  (uint32_t *)dst_n;
 		}
 
-		lengths[z][0] = (byte *)dst_px_ln - (byte *)dst_px_orig[z]; // all are aligned to 4B boundary
-		lengths[z][1] = (byte *)dst_n_ln  - (byte *)dst_n_orig[z];
+		lengths[0][z] = reinterpret_cast<uint8_t *>(dst_px_ln) - reinterpret_cast<uint8_t *>(dst_px_orig[z].get()); // all are aligned to 4B boundary
+		lengths[1][z] = reinterpret_cast<uint8_t *>(dst_n_ln) - reinterpret_cast<uint8_t *>(dst_n_orig[z].get());
 	}
 
 	uint len = 0; // total length of data
 	for (ZoomLevel z = zoom_min; z <= zoom_max; z++) {
-		len += lengths[z][0] + lengths[z][1];
+		len += lengths[0][z] + lengths[1][z];
 	}
 
-	Sprite *dest_sprite = (Sprite *)allocator(sizeof(*dest_sprite) + sizeof(SpriteData) + len);
+	Sprite *dest_sprite = allocator.Allocate<Sprite>(sizeof(*dest_sprite) + sizeof(SpriteData) + len);
 
-	dest_sprite->height = sprite->height;
-	dest_sprite->width  = sprite->width;
-	dest_sprite->x_offs = sprite->x_offs;
-	dest_sprite->y_offs = sprite->y_offs;
+	const auto &root_sprite = sprite.Root();
+	dest_sprite->height = root_sprite.height;
+	dest_sprite->width = root_sprite.width;
+	dest_sprite->x_offs = root_sprite.x_offs;
+	dest_sprite->y_offs = root_sprite.y_offs;
 
 	SpriteData *dst = (SpriteData *)dest_sprite->data;
-	memset(dst, 0, sizeof(*dst));
 
+	uint32_t offset = 0;
 	for (ZoomLevel z = zoom_min; z <= zoom_max; z++) {
-		dst->offset[z][0] = z == zoom_min ? 0 : lengths[z - 1][1] + dst->offset[z - 1][1];
-		dst->offset[z][1] = lengths[z][0] + dst->offset[z][0];
+		dst->offset[0][z] = offset;
+		offset += lengths[0][z];
+		dst->offset[1][z] = offset;
+		offset += lengths[1][z];
 
-		memcpy(dst->data + dst->offset[z][0], dst_px_orig[z], lengths[z][0]);
-		memcpy(dst->data + dst->offset[z][1], dst_n_orig[z],  lengths[z][1]);
-
-		free(dst_px_orig[z]);
-		free(dst_n_orig[z]);
+		std::copy_n(reinterpret_cast<uint8_t *>(dst_px_orig[z].get()), lengths[0][z], dst->data + dst->offset[0][z]);
+		std::copy_n(reinterpret_cast<uint8_t *>(dst_n_orig[z].get()), lengths[1][z], dst->data + dst->offset[1][z]);
 	}
 
 	return dest_sprite;
+}
+
+template Sprite *Blitter_32bppOptimized::EncodeInternal<true>(SpriteType sprite_type, const SpriteLoader::SpriteCollection &sprite, SpriteAllocator &allocator);
+template Sprite *Blitter_32bppOptimized::EncodeInternal<false>(SpriteType sprite_type, const SpriteLoader::SpriteCollection &sprite, SpriteAllocator &allocator);
+
+Sprite *Blitter_32bppOptimized::Encode(SpriteType sprite_type, const SpriteLoader::SpriteCollection &sprite, SpriteAllocator &allocator)
+{
+	return this->EncodeInternal<true>(sprite_type, sprite, allocator);
 }

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file newgrf_storage.h Functionality related to the temporary and persistent storage arrays for NewGRFs. */
@@ -11,17 +11,18 @@
 #define NEWGRF_STORAGE_H
 
 #include "core/pool_type.hpp"
+#include "newgrf.h"
 #include "tile_type.h"
 
 /**
  * Mode switches to the behaviour of persistent storage array.
  */
-enum PersistentStorageMode {
+enum PersistentStorageMode : uint8_t {
 	PSM_ENTER_GAMELOOP,   ///< Enter the gameloop, changes will be permanent.
 	PSM_LEAVE_GAMELOOP,   ///< Leave the gameloop, changes will be temporary.
 	PSM_ENTER_COMMAND,    ///< Enter command scope, changes will be permanent.
 	PSM_LEAVE_COMMAND,    ///< Leave command scope, revert to previous mode.
-	PSM_ENTER_TESTMODE,   ///< Enter command test mode, changes will be tempoary.
+	PSM_ENTER_TESTMODE,   ///< Enter command test mode, changes will be temporary.
 	PSM_LEAVE_TESTMODE,   ///< Leave command test mode, revert to previous mode.
 };
 
@@ -30,9 +31,9 @@ enum PersistentStorageMode {
  * so we have a generalised access to the virtual methods.
  */
 struct BasePersistentStorageArray {
-	uint32 grfid;    ///< GRFID associated to this persistent storage. A value of zero means "default".
-	byte feature;    ///< NOSAVE: Used to identify in the owner of the array in debug output.
-	TileIndex tile;  ///< NOSAVE: Used to identify in the owner of the array in debug output.
+	GrfID grfid{}; ///< GRFID associated to this persistent storage. A value of zero means "default".
+	GrfSpecFeature feature = GrfSpecFeature::Invalid; ///< NOSAVE: Used to identify in the owner of the array in debug output.
+	TileIndex tile = INVALID_TILE; ///< NOSAVE: Used to identify in the owner of the array in debug output.
 
 	virtual ~BasePersistentStorageArray();
 
@@ -47,6 +48,7 @@ protected:
 	/**
 	 * Check whether currently changes to the storage shall be persistent or
 	 * temporary till the next call to ClearChanges().
+	 * @return \c true iff the changes should be persisted or not. For example, when testing commands we do not persist the changes.
 	 */
 	static bool AreChangesPersistent() { return (gameloop || command) && !testmode; }
 
@@ -64,26 +66,10 @@ private:
  */
 template <typename TYPE, uint SIZE>
 struct PersistentStorageArray : BasePersistentStorageArray {
-	TYPE storage[SIZE]; ///< Memory to for the storage array
-	TYPE *prev_storage; ///< Memory to store "old" states so we can revert them on the performance of test cases for commands etc.
+	using StorageType = std::array<TYPE, SIZE>;
 
-	/** Simply construct the array */
-	PersistentStorageArray() : prev_storage(nullptr)
-	{
-		memset(this->storage, 0, sizeof(this->storage));
-	}
-
-	/** And free all data related to it */
-	~PersistentStorageArray()
-	{
-		free(this->prev_storage);
-	}
-
-	/** Resets all values to zero. */
-	void ResetToZero()
-	{
-		memset(this->storage, 0, sizeof(this->storage));
-	}
+	StorageType storage{}; ///< Memory for the storage array
+	std::unique_ptr<StorageType> prev_storage{}; ///< Temporary memory to store previous state so it can be reverted, e.g. for command tests.
 
 	/**
 	 * Stores some value at a given position.
@@ -92,7 +78,7 @@ struct PersistentStorageArray : BasePersistentStorageArray {
 	 * @param pos   the position to write at
 	 * @param value the value to write
 	 */
-	void StoreValue(uint pos, int32 value)
+	void StoreValue(uint pos, int32_t value)
 	{
 		/* Out of the scope of the array */
 		if (pos >= SIZE) return;
@@ -103,10 +89,9 @@ struct PersistentStorageArray : BasePersistentStorageArray {
 
 		/* We do not have made a backup; lets do so */
 		if (AreChangesPersistent()) {
-			assert(this->prev_storage == nullptr);
-		} else if (this->prev_storage == nullptr) {
-			this->prev_storage = MallocT<TYPE>(SIZE);
-			memcpy(this->prev_storage, this->storage, sizeof(this->storage));
+			assert(!this->prev_storage);
+		} else if (!this->prev_storage) {
+			this->prev_storage = std::make_unique<StorageType>(this->storage);
 
 			/* We only need to register ourselves when we made the backup
 			 * as that is the only time something will have changed */
@@ -129,12 +114,11 @@ struct PersistentStorageArray : BasePersistentStorageArray {
 		return this->storage[pos];
 	}
 
-	void ClearChanges()
+	void ClearChanges() override
 	{
-		if (this->prev_storage != nullptr) {
-			memcpy(this->storage, this->prev_storage, sizeof(this->storage));
-			free(this->prev_storage);
-			this->prev_storage = nullptr;
+		if (this->prev_storage) {
+			this->storage = *this->prev_storage;
+			this->prev_storage.reset();
 		}
 	}
 };
@@ -148,24 +132,19 @@ struct PersistentStorageArray : BasePersistentStorageArray {
  */
 template <typename TYPE, uint SIZE>
 struct TemporaryStorageArray {
-	TYPE storage[SIZE]; ///< Memory to for the storage array
-	uint16 init[SIZE];  ///< Storage has been assigned, if this equals 'init_key'.
-	uint16 init_key;    ///< Magic key to 'init'.
+	using StorageType = std::array<TYPE, SIZE>;
+	using StorageInitType = std::array<uint16_t, SIZE>;
 
-	/** Simply construct the array */
-	TemporaryStorageArray()
-	{
-		memset(this->storage, 0, sizeof(this->storage)); // not exactly needed, but makes code analysers happy
-		memset(this->init, 0, sizeof(this->init));
-		this->init_key = 1;
-	}
+	StorageType storage{}; ///< Memory for the storage array
+	StorageInitType init{}; ///< Storage has been assigned, if this equals 'init_key'.
+	uint16_t init_key = 1; ///< Magic key to 'init'.
 
 	/**
 	 * Stores some value at a given position.
 	 * @param pos   the position to write at
 	 * @param value the value to write
 	 */
-	void StoreValue(uint pos, int32 value)
+	void StoreValue(uint pos, int32_t value)
 	{
 		/* Out of the scope of the array */
 		if (pos >= SIZE) return;
@@ -198,7 +177,7 @@ struct TemporaryStorageArray {
 		this->init_key++;
 		if (this->init_key == 0) {
 			/* When init_key wraps around, we need to reset everything */
-			memset(this->init, 0, sizeof(this->init));
+			this->init = {};
 			this->init_key = 1;
 		}
 	}
@@ -206,28 +185,34 @@ struct TemporaryStorageArray {
 
 void AddChangedPersistentStorage(BasePersistentStorageArray *storage);
 
-typedef PersistentStorageArray<int32, 16> OldPersistentStorage;
+typedef PersistentStorageArray<int32_t, 16> OldPersistentStorage;
 
-typedef uint32 PersistentStorageID;
+using PersistentStorageID = PoolID<uint32_t, struct PersistentStorageIDTag, 0xFF000, 0xFFFFF>;
 
 struct PersistentStorage;
-typedef Pool<PersistentStorage, PersistentStorageID, 1, 0xFF000> PersistentStoragePool;
+using PersistentStoragePool = Pool<PersistentStorage, PersistentStorageID, 1>;
 
 extern PersistentStoragePool _persistent_storage_pool;
 
 /**
  * Class for pooled persistent storage of data.
  */
-struct PersistentStorage : PersistentStorageArray<int32, 256>, PersistentStoragePool::PoolItem<&_persistent_storage_pool> {
-	/** We don't want GCC to zero our struct! It already is zeroed and has an index! */
-	PersistentStorage(const uint32 new_grfid, byte feature, TileIndex tile)
+struct PersistentStorage : PersistentStorageArray<int32_t, 256>, PersistentStoragePool::PoolItem<&_persistent_storage_pool> {
+	/**
+	 * Create the pooled storage.
+	 * @param index The unique identifier of the pool item.
+	 * @param grfid The NewGRF this storage is of.
+	 * @param feature The feature associated with this storage.
+	 * @param tile The tile associated with this storage.
+	 */
+	PersistentStorage(PersistentStorageID index, GrfID grfid, GrfSpecFeature feature, TileIndex tile) : PersistentStoragePool::PoolItem<&_persistent_storage_pool>(index)
 	{
-		this->grfid = new_grfid;
+		this->grfid = grfid;
 		this->feature = feature;
 		this->tile = tile;
 	}
 };
 
-assert_compile(cpp_lengthof(OldPersistentStorage, storage) <= cpp_lengthof(PersistentStorage, storage));
+static_assert(std::tuple_size_v<decltype(OldPersistentStorage::storage)> <= std::tuple_size_v<decltype(PersistentStorage::storage)>);
 
 #endif /* NEWGRF_STORAGE_H */

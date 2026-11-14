@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.17)
 
 #
 # CMake script to automatically generate the enums in script_window.hpp
@@ -13,6 +13,7 @@ cmake_minimum_required(VERSION 3.5)
 # The parameter "enumname" specifies the enumeration to extract. This can also be a regular expression.
 # The parameter "filename" specifies the relative path to the file, where the enumeration is extracted from. This can also be a glob expression.
 #
+# All files where enumerations are extracted from are automatically added via #include
 #
 
 if(NOT GENERATE_SOURCE_FILE)
@@ -23,6 +24,13 @@ if(NOT GENERATE_BINARY_FILE)
 endif()
 
 file(STRINGS ${GENERATE_SOURCE_FILE} ENUM_LINES REGEX "@enum")
+
+function(remove_invalid_links VARIABLE)
+    string(REGEX REPLACE "#([A-Za-z0-9_]*Widgets)" "@hash \\1" VARIABLE "${VARIABLE}")
+    string(REPLACE "#" "" VARIABLE "${VARIABLE}")
+    string(REPLACE "@hash " "#" VARIABLE "${VARIABLE}")
+    set(NO_INVALID_LINKS ${VARIABLE} PARENT_SCOPE)
+endfunction()
 
 foreach(ENUM IN LISTS ENUM_LINES)
     string(REGEX REPLACE "^(	)// @enum ([^ ]+) ([^ ]+)@([^ ]+)@" "\\4" PLACE_HOLDER "${ENUM}")
@@ -41,23 +49,30 @@ foreach(ENUM IN LISTS ENUM_LINES)
 
         string(REPLACE "${CMAKE_CURRENT_SOURCE_DIR}/" "" FILE ${FILE})
         string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}/* automatically generated from ${FILE} */")
+        list(APPEND INCLUDES "#include \"${FILE}\"")
 
         foreach(LINE IN LISTS SOURCE_LINES)
             string(REPLACE "${RM_INDENT}" "" LINE "${LINE}")
 
             # Remember possible doxygen comment before enum declaration
             if((NOT ACTIVE) AND "${LINE}" MATCHES "/\\*\\*")
-                set(COMMENT "${ADD_INDENT}${LINE}")
+                remove_invalid_links("${LINE}")
+                set(COMMENT "${ADD_INDENT}${NO_INVALID_LINKS}")
                 set(ACTIVE_COMMENT 1)
             elseif(ACTIVE_COMMENT EQUAL 1)
-                string(APPEND COMMENT "\n${ADD_INDENT}${LINE}")
+                remove_invalid_links("${LINE}")
+                string(APPEND COMMENT "\n${ADD_INDENT}${NO_INVALID_LINKS}")
             endif()
 
             # Check for enum match
-            if("${LINE}" MATCHES "^	*enum *${ENUM_PATTERN} *\{")
+            if("${LINE}" MATCHES "^	*enum *(class)? *(${ENUM_PATTERN})( *: *[^ ]*)? *\{")
+                set(ENUM_NAME "${CMAKE_MATCH_2}")
                 # REGEX REPLACE does a REGEX MATCHALL and fails if an empty string is matched
                 string(REGEX MATCH "[^	]*" RESULT "${LINE}")
                 string(REPLACE "${RESULT}" "" RM_INDENT "${LINE}")
+
+                string(REGEX MATCH " *: *[^ ]*" RESULT "${LINE}")
+                string(REPLACE "${RESULT}" "" LINE "${LINE}")
 
                 set(ACTIVE 1)
                 if(ACTIVE_COMMENT GREATER 0)
@@ -95,25 +110,28 @@ foreach(ENUM IN LISTS ENUM_LINES)
                     endforeach()
 
                     if(CMAKE_MATCH_3)
-                        string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}${CMAKE_MATCH_1}${CMAKE_MATCH_2}${SPACES} = ::${CMAKE_MATCH_2},${SPACES}${CMAKE_MATCH_3}")
+                        # CMAKE_MATCH_3 contains inline comment.
+                        remove_invalid_links("${CMAKE_MATCH_3}")
+                        string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}${CMAKE_MATCH_1}${CMAKE_MATCH_2}${SPACES} = to_underlying(::${ENUM_NAME}::${CMAKE_MATCH_2}),${SPACES}${NO_INVALID_LINKS}")
                     else()
-                        string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}${CMAKE_MATCH_1}${CMAKE_MATCH_2}${SPACES} = ::${CMAKE_MATCH_2},")
+                        string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}${CMAKE_MATCH_1}${CMAKE_MATCH_2}${SPACES} = to_underlying(::${ENUM_NAME}::${CMAKE_MATCH_2}),")
                     endif()
                 elseif("${LINE}" STREQUAL "")
                     string(APPEND ${PLACE_HOLDER} "\n")
+                elseif("${LINE}" MATCHES "^	*\};")
+                    string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}${LINE}\n")
+                    unset(ACTIVE)
                 else()
-                    string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}${LINE}")
+                    # Line is not an enum member, so it might be a comment.
+                    remove_invalid_links("${LINE}")
+                    string(APPEND ${PLACE_HOLDER} "\n${ADD_INDENT}${NO_INVALID_LINKS}")
                 endif()
-            endif()
-
-            if("${LINE}" MATCHES "^	*\};")
-                if(ACTIVE)
-                    string(APPEND ${PLACE_HOLDER} "\n")
-                endif()
-                unset(ACTIVE)
             endif()
          endforeach()
     endforeach()
  endforeach()
+
+ list(REMOVE_DUPLICATES INCLUDES)
+ string(REPLACE ";" "\n" INCLUDES "${INCLUDES}")
 
 configure_file(${GENERATE_SOURCE_FILE} ${GENERATE_BINARY_FILE})

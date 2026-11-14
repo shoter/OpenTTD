@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file music_driver.hpp Base for all music playback. */
@@ -38,13 +38,15 @@ public:
 	 * Set the volume, if possible.
 	 * @param vol The new volume.
 	 */
-	virtual void SetVolume(byte vol) = 0;
+	virtual void SetVolume(uint8_t vol) = 0;
 
 	/**
 	 * Get the currently active instance of the music driver.
+	 * @return The instance.
 	 */
-	static MusicDriver *GetInstance() {
-		return static_cast<MusicDriver*>(*DriverFactoryBase::GetActiveDriver(Driver::DT_MUSIC));
+	static MusicDriver *GetInstance()
+	{
+		return static_cast<MusicDriver *>(DriverFactoryBase::GetActiveDriver(Driver::Type::Music).get());
 	}
 };
 

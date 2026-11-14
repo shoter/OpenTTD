@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file extmidi.cpp Playing music via an external player. */
@@ -10,7 +10,6 @@
 #include "../stdafx.h"
 #include "../debug.h"
 #include "../string_func.h"
-#include "../core/alloc_func.hpp"
 #include "../sound/sound_driver.hpp"
 #include "../video/video_driver.hpp"
 #include "../gfx_func.h"
@@ -24,7 +23,8 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/stat.h>
-#include <errno.h>
+
+#include "table/strings.h"
 
 #include "../safeguards.h"
 
@@ -36,51 +36,38 @@
 /** Factory for the midi player that uses external players. */
 static FMusicDriver_ExtMidi iFMusicDriver_ExtMidi;
 
-const char *MusicDriver_ExtMidi::Start(const StringList &parm)
+std::optional<std::string_view> MusicDriver_ExtMidi::Start(const StringList &parm)
 {
-	if (strcmp(VideoDriver::GetInstance()->GetName(), "allegro") == 0 ||
-			strcmp(SoundDriver::GetInstance()->GetName(), "allegro") == 0) {
+	if (VideoDriver::GetInstance()->GetName() == "allegro" ||
+			SoundDriver::GetInstance()->GetName() == "allegro") {
 		return "the extmidi driver does not work when Allegro is loaded.";
 	}
 
-	const char *command = GetDriverParam(parm, "cmd");
+	auto command = GetDriverParam(parm, "cmd");
 #ifndef MIDI_ARG
-	if (StrEmpty(command)) command = EXTERNAL_PLAYER;
+	if (!command.has_value() || command->empty()) command = EXTERNAL_PLAYER;
 #else
-	if (StrEmpty(command)) command = EXTERNAL_PLAYER " " MIDI_ARG;
+	if (!command.has_value() || command->empty()) command = EXTERNAL_PLAYER " " MIDI_ARG;
 #endif
 
-	/* Count number of arguments, but include 3 extra slots: 1st for command, 2nd for song title, and 3rd for terminating nullptr. */
-	uint num_args = 3;
-	for (const char *t = command; *t != '\0'; t++) if (*t == ' ') num_args++;
+	this->command_tokens.clear();
 
-	this->params = CallocT<char *>(num_args);
-	this->params[0] = stredup(command);
+	for (;;) {
+		auto pos = command->find(' ');
+		this->command_tokens.emplace_back(command->substr(0, pos));
 
-	/* Replace space with \0 and add next arg to params */
-	uint p = 1;
-	while (true) {
-		this->params[p] = strchr(this->params[p - 1], ' ');
-		if (this->params[p] == nullptr) break;
-
-		this->params[p][0] = '\0';
-		this->params[p]++;
-		p++;
+		if (pos == std::string_view::npos) break;
+		command->remove_prefix(pos + 1);
 	}
 
-	/* Last parameter is the song file. */
-	this->params[p] = this->song;
-
-	this->song[0] = '\0';
+	this->song.clear();
 	this->pid = -1;
-	return nullptr;
+	return std::nullopt;
 }
 
 void MusicDriver_ExtMidi::Stop()
 {
-	free(params[0]);
-	free(params);
-	this->song[0] = '\0';
+	this->song.clear();
 	this->DoStop();
 }
 
@@ -88,14 +75,14 @@ void MusicDriver_ExtMidi::PlaySong(const MusicSongInfo &song)
 {
 	std::string filename = MidiFile::GetSMFFile(song);
 	if (!filename.empty()) {
-		strecpy(this->song, filename.c_str(), lastof(this->song));
+		this->song = std::move(filename);
 		this->DoStop();
 	}
 }
 
 void MusicDriver_ExtMidi::StopSong()
 {
-	this->song[0] = '\0';
+	this->song.clear();
 	this->DoStop();
 }
 
@@ -104,13 +91,13 @@ bool MusicDriver_ExtMidi::IsSongPlaying()
 	if (this->pid != -1 && waitpid(this->pid, nullptr, WNOHANG) == this->pid) {
 		this->pid = -1;
 	}
-	if (this->pid == -1 && this->song[0] != '\0') this->DoPlay();
+	if (this->pid == -1 && !this->song.empty()) this->DoPlay();
 	return this->pid != -1;
 }
 
-void MusicDriver_ExtMidi::SetVolume(byte vol)
+void MusicDriver_ExtMidi::SetVolume(uint8_t)
 {
-	DEBUG(driver, 1, "extmidi: set volume not implemented");
+	Debug(Facility::Driver, Severity::Error, "extmidi: set volume not implemented");
 }
 
 void MusicDriver_ExtMidi::DoPlay()
@@ -121,39 +108,61 @@ void MusicDriver_ExtMidi::DoPlay()
 			close(0);
 			int d = open("/dev/null", O_RDONLY);
 			if (d != -1 && dup2(d, 1) != -1 && dup2(d, 2) != -1) {
-				execvp(this->params[0], this->params);
+				/* execvp is nasty as it *allows* the passed parameters to be written
+				 * for backward compatibility, however we are a fork so do not care. */
+				std::vector<char *> parameters;
+				for (auto &token : this->command_tokens) parameters.emplace_back(token.data());
+				parameters.emplace_back(this->song.data());
+				parameters.emplace_back(nullptr);
+
+				execvp(parameters[0], parameters.data());
 			}
-			_exit(1);
+			std::_Exit(1);
 		}
 
 		case -1:
-			DEBUG(driver, 0, "extmidi: couldn't fork: %s", strerror(errno));
-			FALLTHROUGH;
+			Debug(Facility::Driver, Severity::Critical, "extmidi: couldn't fork: {}", strerror(errno));
+			[[fallthrough]];
 
 		default:
-			this->song[0] = '\0';
+			this->song.clear();
 			break;
 	}
+}
+
+/**
+ * Try to end child process with kill/waitpid for up to 1 second.
+ * @param pid The process ID to end.
+ * @param signal The signal type to send.
+ * @return True if the process has been ended.
+ */
+static bool KillWait(pid_t &pid, int signal)
+{
+	/* First try to stop for about a second;
+	 * 1 seconds = 1000 milliseconds, 50 ms per cycle => 20 cycles. */
+	for (int i = 0; i < 20; i++) {
+		kill(pid, signal);
+		if (waitpid(pid, nullptr, WNOHANG) == pid) {
+			/* It has shut down, so we are done */
+			pid = -1;
+			return true;
+		}
+		/* Wait 50 milliseconds. */
+		CSleep(50);
+	}
+
+	return false;
 }
 
 void MusicDriver_ExtMidi::DoStop()
 {
 	if (this->pid <= 0) return;
 
-	/* First try to gracefully stop for about five seconds;
-	 * 5 seconds = 5000 milliseconds, 10 ms per cycle => 500 cycles. */
-	for (int i = 0; i < 500; i++) {
-		kill(this->pid, SIGTERM);
-		if (waitpid(this->pid, nullptr, WNOHANG) == this->pid) {
-			/* It has shut down, so we are done */
-			this->pid = -1;
-			return;
-		}
-		/* Wait 10 milliseconds. */
-		CSleep(10);
-	}
+	if (KillWait(this->pid, SIGINT)) return;
 
-	DEBUG(driver, 0, "extmidi: gracefully stopping failed, trying the hard way");
+	if (KillWait(this->pid, SIGTERM)) return;
+
+	Debug(Facility::Driver, Severity::Critical, "extmidi: gracefully stopping failed, trying the hard way");
 	/* Gracefully stopping failed. Do it the hard way
 	 * and wait till the process finally died. */
 	kill(this->pid, SIGKILL);

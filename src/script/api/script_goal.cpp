@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_goal.cpp Implementation of ScriptGoal. */
@@ -17,8 +17,7 @@
 #include "script_story_page.hpp"
 #include "../script_instance.hpp"
 #include "../../goal_base.h"
-#include "../../string_func.h"
-#include "../../network/network_base.h"
+#include "../../goal_cmd.h"
 
 #include "../../safeguards.h"
 
@@ -27,122 +26,137 @@
 	return ::Goal::IsValidID(goal_id);
 }
 
-/* static */ ScriptGoal::GoalID ScriptGoal::New(ScriptCompany::CompanyID company, Text *goal, GoalType type, uint32 destination)
+/* static */ bool ScriptGoal::IsValidGoalDestination(ScriptCompany::CompanyID company, GoalType type, SQInteger destination)
 {
-	CCountedPtr<Text> counter(goal);
+	switch (type) {
+		case GT_NONE: return destination == 0;
+		case GT_TILE: return ScriptMap::IsValidTile(::TileIndex(destination));
+		case GT_INDUSTRY: return ScriptIndustry::IsValidIndustry(static_cast<IndustryID>(destination));
+		case GT_TOWN: return ScriptTown::IsValidTown(static_cast<TownID>(destination));
+		case GT_COMPANY: return ScriptCompany::ResolveCompanyID(ScriptCompany::ToScriptCompanyID(static_cast<::CompanyID>(destination))) != ScriptCompany::COMPANY_INVALID;
+		case GT_STORY_PAGE: {
+			if (!ScriptStoryPage::IsValidStoryPage(static_cast<StoryPageID>(destination))) return false;
 
-	EnforcePrecondition(GOAL_INVALID, ScriptObject::GetCompany() == OWNER_DEITY);
+			StoryPage *story_page = ::StoryPage::Get(static_cast<StoryPageID>(destination));
+			if (story_page->company == CompanyID::Invalid()) return true;
+
+			::CompanyID c = ScriptCompany::FromScriptCompanyID(company);
+			return c != CompanyID::Invalid() && story_page->company == c;
+		}
+
+		default: return false;
+	}
+}
+
+/* static */ GoalID ScriptGoal::New(ScriptCompany::CompanyID company, Text *goal, GoalType type, SQInteger destination)
+{
+	ScriptObjectRef counter(goal);
+
+	EnforceDeityMode(GOAL_INVALID);
 	EnforcePrecondition(GOAL_INVALID, goal != nullptr);
-	const char *text = goal->GetEncodedText();
+	EncodedString text = goal->GetEncodedText();
 	EnforcePreconditionEncodedText(GOAL_INVALID, text);
 	EnforcePrecondition(GOAL_INVALID, company == ScriptCompany::COMPANY_INVALID || ScriptCompany::ResolveCompanyID(company) != ScriptCompany::COMPANY_INVALID);
+	EnforcePrecondition(GOAL_INVALID, IsValidGoalDestination(company, type, destination));
 
-	uint8 c = company;
-	if (company == ScriptCompany::COMPANY_INVALID) c = INVALID_COMPANY;
-	StoryPage *story_page = nullptr;
-	if (type == GT_STORY_PAGE && ScriptStoryPage::IsValidStoryPage((ScriptStoryPage::StoryPageID)destination)) story_page = ::StoryPage::Get((ScriptStoryPage::StoryPageID)destination);
-
-	EnforcePrecondition(GOAL_INVALID, (type == GT_NONE && destination == 0) ||
-			(type == GT_TILE && ScriptMap::IsValidTile(destination)) ||
-			(type == GT_INDUSTRY && ScriptIndustry::IsValidIndustry(destination)) ||
-			(type == GT_TOWN && ScriptTown::IsValidTown(destination)) ||
-			(type == GT_COMPANY && ScriptCompany::ResolveCompanyID((ScriptCompany::CompanyID)destination) != ScriptCompany::COMPANY_INVALID) ||
-			(type == GT_STORY_PAGE && story_page != nullptr && (c == INVALID_COMPANY ? story_page->company == INVALID_COMPANY : story_page->company == INVALID_COMPANY || story_page->company == c)));
-
-	if (!ScriptObject::DoCommand(0, type | (c << 8), destination, CMD_CREATE_GOAL, text, &ScriptInstance::DoCommandReturnGoalID)) return GOAL_INVALID;
+	if (!ScriptObject::Command<Commands::CreateGoal>::Do(&ScriptInstance::DoCommandReturnGoalID, ScriptCompany::FromScriptCompanyID(company), (::GoalType)type, destination, text)) return GOAL_INVALID;
 
 	/* In case of test-mode, we return GoalID 0 */
-	return (ScriptGoal::GoalID)0;
+	return GoalID::Begin();
 }
 
 /* static */ bool ScriptGoal::Remove(GoalID goal_id)
 {
-	EnforcePrecondition(false, ScriptObject::GetCompany() == OWNER_DEITY);
+	EnforceDeityMode(false);
 	EnforcePrecondition(false, IsValidGoal(goal_id));
 
-	return ScriptObject::DoCommand(0, goal_id, 0, CMD_REMOVE_GOAL);
+	return ScriptObject::Command<Commands::RemoveGoal>::Do(goal_id);
+}
+
+/* static */ bool ScriptGoal::SetDestination(GoalID goal_id, GoalType type, SQInteger destination)
+{
+	EnforceDeityMode(false);
+	EnforcePrecondition(false, IsValidGoal(goal_id));
+	const Goal *g = Goal::Get(goal_id);
+	EnforcePrecondition(false, IsValidGoalDestination(ScriptCompany::ToScriptCompanyID(g->company), type, destination));
+
+	return ScriptObject::Command<Commands::SetGoalDestination>::Do(goal_id, (::GoalType)type, destination);
 }
 
 /* static */ bool ScriptGoal::SetText(GoalID goal_id, Text *goal)
 {
-	CCountedPtr<Text> counter(goal);
+	ScriptObjectRef counter(goal);
 
 	EnforcePrecondition(false, IsValidGoal(goal_id));
-	EnforcePrecondition(false, ScriptObject::GetCompany() == OWNER_DEITY);
+	EnforceDeityMode(false);
 	EnforcePrecondition(false, goal != nullptr);
-	EnforcePrecondition(false, !StrEmpty(goal->GetEncodedText()));
+	EncodedString text = goal->GetEncodedText();
+	EnforcePreconditionEncodedText(false, text);
 
-	return ScriptObject::DoCommand(0, goal_id, 0, CMD_SET_GOAL_TEXT, goal->GetEncodedText());
+	return ScriptObject::Command<Commands::SetGoalText>::Do(goal_id, text);
 }
 
 /* static */ bool ScriptGoal::SetProgress(GoalID goal_id, Text *progress)
 {
-	CCountedPtr<Text> counter(progress);
+	ScriptObjectRef counter(progress);
 
 	EnforcePrecondition(false, IsValidGoal(goal_id));
-	EnforcePrecondition(false, ScriptObject::GetCompany() == OWNER_DEITY);
+	EnforceDeityMode(false);
 
-	/* Ensure null as used for empty string. */
-	if (progress != nullptr && StrEmpty(progress->GetEncodedText())) {
-		progress = nullptr;
-	}
-
-	return ScriptObject::DoCommand(0, goal_id, 0, CMD_SET_GOAL_PROGRESS, progress != nullptr ? progress->GetEncodedText() : nullptr);
+	return ScriptObject::Command<Commands::SetGoalProgress>::Do(goal_id, progress != nullptr ? progress->GetEncodedText() : EncodedString{});
 }
 
 /* static */ bool ScriptGoal::SetCompleted(GoalID goal_id, bool completed)
 {
 	EnforcePrecondition(false, IsValidGoal(goal_id));
-	EnforcePrecondition(false, ScriptObject::GetCompany() == OWNER_DEITY);
+	EnforceDeityMode(false);
 
-	return ScriptObject::DoCommand(0, goal_id, completed ? 1 : 0, CMD_SET_GOAL_COMPLETED);
+	return ScriptObject::Command<Commands::SetGoalCompleted>::Do(goal_id, completed);
 }
 
 /* static */ bool ScriptGoal::IsCompleted(GoalID goal_id)
 {
 	EnforcePrecondition(false, IsValidGoal(goal_id));
-	EnforcePrecondition(false, ScriptObject::GetCompany() == OWNER_DEITY);
+	EnforceDeityMode(false);
 
-	Goal *g = Goal::Get(goal_id);
+	const Goal *g = Goal::Get(goal_id);
 	return g != nullptr && g->completed;
 }
 
-/* static */ bool ScriptGoal::DoQuestion(uint16 uniqueid, uint32 target, bool is_client, Text *question, QuestionType type, uint32 buttons)
+/* static */ bool ScriptGoal::DoQuestion(SQInteger uniqueid, uint32_t target, bool is_client, Text *question, QuestionType type, SQInteger buttons)
 {
-	CCountedPtr<Text> counter(question);
+	ScriptObjectRef counter(question);
 
-	EnforcePrecondition(false, ScriptObject::GetCompany() == OWNER_DEITY);
+	EnforceDeityMode(false);
 	EnforcePrecondition(false, question != nullptr);
-	const char *text = question->GetEncodedText();
+	EncodedString text = question->GetEncodedText();
 	EnforcePreconditionEncodedText(false, text);
-	EnforcePrecondition(false, CountBits(buttons) >= 1 && CountBits(buttons) <= 3);
-	EnforcePrecondition(false, buttons < (1 << ::GOAL_QUESTION_BUTTON_COUNT));
-	EnforcePrecondition(false, (int)type < ::GOAL_QUESTION_TYPE_COUNT);
+	uint min_buttons = (type == QT_QUESTION ? 1 : 0);
+	EnforcePrecondition(false, CountBits<uint64_t>(buttons) >= min_buttons && CountBits<uint64_t>(buttons) <= 3);
+	EnforcePrecondition(false, buttons >= 0 && static_cast<::GoalQuestionButtons>(buttons).IsValid());
+	EnforcePrecondition(false, static_cast<::GoalQuestionType>(type) < ::GoalQuestionType::End);
+	EnforcePrecondition(false, uniqueid >= 0 && uniqueid <= UINT16_MAX);
 
-	return ScriptObject::DoCommand(0, uniqueid | (target << 16), buttons | (type << 29) | (is_client ? (1 << 31) : 0), CMD_GOAL_QUESTION, text);
+	return ScriptObject::Command<Commands::GoalQuestion>::Do(uniqueid, target, is_client, static_cast<::GoalQuestionButtons>(buttons), static_cast<::GoalQuestionType>(type), text);
 }
 
-/* static */ bool ScriptGoal::Question(uint16 uniqueid, ScriptCompany::CompanyID company, Text *question, QuestionType type, int buttons)
+/* static */ bool ScriptGoal::Question(SQInteger uniqueid, ScriptCompany::CompanyID company, Text *question, QuestionType type, SQInteger buttons)
 {
 	EnforcePrecondition(false, company == ScriptCompany::COMPANY_INVALID || ScriptCompany::ResolveCompanyID(company) != ScriptCompany::COMPANY_INVALID);
-	uint8 c = company;
-	if (company == ScriptCompany::COMPANY_INVALID) c = INVALID_COMPANY;
-
-	return DoQuestion(uniqueid, c, false, question, type, buttons);
+	return DoQuestion(uniqueid, ScriptCompany::FromScriptCompanyID(company).base(), false, question, type, buttons);
 }
 
-/* static */ bool ScriptGoal::QuestionClient(uint16 uniqueid, ScriptClient::ClientID client, Text *question, QuestionType type, int buttons)
+/* static */ bool ScriptGoal::QuestionClient(SQInteger uniqueid, ScriptClient::ClientID client, Text *question, QuestionType type, SQInteger buttons)
 {
 	EnforcePrecondition(false, ScriptGame::IsMultiplayer());
 	EnforcePrecondition(false, ScriptClient::ResolveClientID(client) != ScriptClient::CLIENT_INVALID);
-	/* Can only send 16 bits of client_id before proper fix is implemented */
-	EnforcePrecondition(false, client < (1 << 16));
 	return DoQuestion(uniqueid, client, true, question, type, buttons);
 }
 
-/* static */ bool ScriptGoal::CloseQuestion(uint16 uniqueid)
+/* static */ bool ScriptGoal::CloseQuestion(SQInteger uniqueid)
 {
-	EnforcePrecondition(false, ScriptObject::GetCompany() == OWNER_DEITY);
+	EnforceDeityMode(false);
+	EnforcePrecondition(false, uniqueid >= 0 && uniqueid <= UINT16_MAX);
 
-	return ScriptObject::DoCommand(0, uniqueid, 0, CMD_GOAL_QUESTION_ANSWER);
+	return ScriptObject::Command<Commands::GoalQuestionAnswer>::Do(uniqueid, ::GoalQuestionButton::Cancel);
 }

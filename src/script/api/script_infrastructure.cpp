@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_infrastructure.cpp Implementation of ScriptInfrastructure. */
@@ -18,47 +18,37 @@
 #include "../../safeguards.h"
 
 
-/* static */ uint32 ScriptInfrastructure::GetRailPieceCount(ScriptCompany::CompanyID company, ScriptRail::RailType railtype)
+/* static */ SQInteger ScriptInfrastructure::GetRailPieceCount(ScriptCompany::CompanyID company, ScriptRail::RailType railtype)
 {
 	company = ScriptCompany::ResolveCompanyID(company);
 	if (company == ScriptCompany::COMPANY_INVALID || (::RailType)railtype >= RAILTYPE_END) return 0;
 
-	return ::Company::Get((::CompanyID)company)->infrastructure.rail[railtype];
+	return ::Company::Get(ScriptCompany::FromScriptCompanyID(company))->infrastructure.rail[railtype];
 }
 
-/* static */ uint32 ScriptInfrastructure::GetRoadPieceCount(ScriptCompany::CompanyID company, ScriptRoad::RoadType roadtype)
+/* static */ SQInteger ScriptInfrastructure::GetRoadPieceCount(ScriptCompany::CompanyID company, ScriptRoad::RoadType roadtype)
 {
 	company = ScriptCompany::ResolveCompanyID(company);
 	if (company == ScriptCompany::COMPANY_INVALID || (::RoadType)roadtype >= ROADTYPE_END) return 0;
 
-	return ::Company::Get((::CompanyID)company)->infrastructure.road[roadtype];
+	return ::Company::Get(ScriptCompany::FromScriptCompanyID(company))->infrastructure.road[roadtype];
 }
 
-/* static */ uint32 ScriptInfrastructure::GetInfrastructurePieceCount(ScriptCompany::CompanyID company, Infrastructure infra_type)
+/* static */ SQInteger ScriptInfrastructure::GetInfrastructurePieceCount(ScriptCompany::CompanyID company, Infrastructure infra_type)
 {
 	company = ScriptCompany::ResolveCompanyID(company);
 	if (company == ScriptCompany::COMPANY_INVALID) return 0;
 
-	::Company *c = ::Company::Get((::CompanyID)company);
+	const ::Company *c = ::Company::Get(ScriptCompany::FromScriptCompanyID(company));
 	switch (infra_type) {
-		case INFRASTRUCTURE_RAIL: {
-			uint32 count = 0;
-			for (::RailType rt = ::RAILTYPE_BEGIN; rt != ::RAILTYPE_END; rt++) {
-				count += c->infrastructure.rail[rt];
-			}
-			return count;
-		}
+		case INFRASTRUCTURE_RAIL:
+			return c->infrastructure.GetRailTotal();
 
 		case INFRASTRUCTURE_SIGNALS:
 			return c->infrastructure.signal;
 
-		case INFRASTRUCTURE_ROAD: {
-			uint32 count = 0;
-			for (::RoadType rt = ::ROADTYPE_BEGIN; rt != ::ROADTYPE_END; rt++) {
-				count += c->infrastructure.road[rt];
-			}
-			return count;
-		}
+		case INFRASTRUCTURE_ROAD:
+			return c->infrastructure.GetRoadTotal() + c->infrastructure.GetTramTotal();
 
 		case INFRASTRUCTURE_CANAL:
 			return c->infrastructure.water;
@@ -79,7 +69,7 @@
 	company = ScriptCompany::ResolveCompanyID(company);
 	if (company == ScriptCompany::COMPANY_INVALID || (::RailType)railtype >= RAILTYPE_END || !_settings_game.economy.infrastructure_maintenance) return 0;
 
-	const ::Company *c = ::Company::Get((::CompanyID)company);
+	const ::Company *c = ::Company::Get(ScriptCompany::FromScriptCompanyID(company));
 	return ::RailMaintenanceCost((::RailType)railtype, c->infrastructure.rail[railtype], c->infrastructure.GetRailTotal());
 }
 
@@ -88,7 +78,7 @@
 	company = ScriptCompany::ResolveCompanyID(company);
 	if (company == ScriptCompany::COMPANY_INVALID || (::RoadType)roadtype >= ROADTYPE_END || !_settings_game.economy.infrastructure_maintenance) return 0;
 
-	const ::Company *c = ::Company::Get((::CompanyID)company);
+	const ::Company *c = ::Company::Get(ScriptCompany::FromScriptCompanyID(company));
 	return ::RoadMaintenanceCost((::RoadType)roadtype, c->infrastructure.road[roadtype], RoadTypeIsRoad((::RoadType)roadtype) ? c->infrastructure.GetRoadTotal() : c->infrastructure.GetTramTotal());
 }
 
@@ -97,12 +87,12 @@
 	company = ScriptCompany::ResolveCompanyID(company);
 	if (company == ScriptCompany::COMPANY_INVALID || !_settings_game.economy.infrastructure_maintenance) return 0;
 
-	::Company *c = ::Company::Get((::CompanyID)company);
+	const ::Company *c = ::Company::Get(ScriptCompany::FromScriptCompanyID(company));
 	switch (infra_type) {
 		case INFRASTRUCTURE_RAIL: {
 			Money cost;
-			uint32 rail_total = c->infrastructure.GetRailTotal();
-			for (::RailType rt = ::RAILTYPE_BEGIN; rt != ::RAILTYPE_END; rt++) {
+			uint32_t rail_total = c->infrastructure.GetRailTotal();
+			for (::RailType rt : EnumRange(::RAILTYPE_END)) {
 				cost += RailMaintenanceCost(rt, c->infrastructure.rail[rt], rail_total);
 			}
 			return cost;
@@ -113,9 +103,10 @@
 
 		case INFRASTRUCTURE_ROAD: {
 			Money cost;
-			uint32 road_total = c->infrastructure.GetRoadTotal();
-			for (::RoadType rt = ::ROADTYPE_BEGIN; rt != ::ROADTYPE_END; rt++) {
-				cost += RoadMaintenanceCost(rt, c->infrastructure.road[rt], road_total);
+			uint32_t road_total = c->infrastructure.GetRoadTotal();
+			uint32_t tram_total = c->infrastructure.GetTramTotal();
+			for (::RoadType rt : EnumRange(::ROADTYPE_END)) {
+				cost += RoadMaintenanceCost(rt, c->infrastructure.road[rt], RoadTypeIsRoad(rt) ? road_total : tram_total);
 			}
 			return cost;
 		}

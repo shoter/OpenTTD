@@ -2,10 +2,10 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file src/roadveh.h Road vehicle states */
+/** @file roadveh.h Road vehicle states. */
 
 #ifndef ROADVEH_H
 #define ROADVEH_H
@@ -17,12 +17,11 @@
 #include "road.h"
 #include "road_map.h"
 #include "newgrf_engine.h"
-#include <deque>
 
 struct RoadVehicle;
 
 /** Road vehicle states */
-enum RoadVehicleStates {
+enum RoadVehicleStates : uint8_t {
 	/*
 	 * Lower 4 bits are used for vehicle track direction. (Trackdirs)
 	 * When in a road stop (bit 5 or bit 6 set) these bits give the
@@ -48,9 +47,9 @@ enum RoadVehicleStates {
 
 	/* Bit sets of the above specified bits */
 	RVSB_IN_ROAD_STOP            = 1 << RVS_IN_ROAD_STOP,     ///< The vehicle is in a road stop
-	RVSB_IN_ROAD_STOP_END        = RVSB_IN_ROAD_STOP + TRACKDIR_END,
+	RVSB_IN_ROAD_STOP_END        = RVSB_IN_ROAD_STOP + to_underlying(Trackdir::End),
 	RVSB_IN_DT_ROAD_STOP         = 1 << RVS_IN_DT_ROAD_STOP,  ///< The vehicle is in a drive-through road stop
-	RVSB_IN_DT_ROAD_STOP_END     = RVSB_IN_DT_ROAD_STOP + TRACKDIR_END,
+	RVSB_IN_DT_ROAD_STOP_END     = RVSB_IN_DT_ROAD_STOP + to_underlying(Trackdir::End),
 
 	RVSB_DRIVE_SIDE              = 1 << RVS_DRIVE_SIDE,       ///< The vehicle is at the opposite side of the road
 
@@ -58,94 +57,94 @@ enum RoadVehicleStates {
 	RVSB_ROAD_STOP_TRACKDIR_MASK = 0x09,                      ///< Only bits 0 and 3 are used to encode the trackdir for road stops
 };
 
-/** State information about the Road Vehicle controller */
+/** @name State information about the Road Vehicle controller.
+ * @{ */
 static const uint RDE_NEXT_TILE = 0x80; ///< We should enter the next tile
 static const uint RDE_TURNED    = 0x40; ///< We just finished turning
+/** @} */
 
-/* Start frames for when a vehicle enters a tile/changes its state.
+/**
+ * @name Start frames for when a vehicle enters a tile/changes its state.
  * The start frame is different for vehicles that turned around or
  * are leaving the depot as the do not start at the edge of the tile.
  * For trams there are a few different start frames as there are two
- * places where trams can turn. */
+ * places where trams can turn.
+ * @{
+ */
 static const uint RVC_DEFAULT_START_FRAME                =  0;
 static const uint RVC_TURN_AROUND_START_FRAME            =  1;
 static const uint RVC_DEPOT_START_FRAME                  =  6;
 static const uint RVC_START_FRAME_AFTER_LONG_TRAM        = 21;
 static const uint RVC_TURN_AROUND_START_FRAME_SHORT_TRAM = 16;
-/* Stop frame for a vehicle in a drive-through stop */
+/** @} */
+
+/** Stop frame for a vehicle in a drive-through stop. */
 static const uint RVC_DRIVE_THROUGH_STOP_FRAME           = 11;
 static const uint RVC_DEPOT_STOP_FRAME                   = 11;
 
 /** The number of ticks a vehicle has for overtaking. */
-static const byte RV_OVERTAKE_TIMEOUT = 35;
+static const uint8_t RV_OVERTAKE_TIMEOUT = 35;
 
 void RoadVehUpdateCache(RoadVehicle *v, bool same_length = false);
 void GetRoadVehSpriteSize(EngineID engine, uint &width, uint &height, int &xoffs, int &yoffs, EngineImageType image_type);
 
-struct RoadVehPathCache {
-	std::deque<Trackdir> td;
-	std::deque<TileIndex> tile;
+/** Element of the RoadVehPathCache. */
+struct RoadVehPathElement {
+	Trackdir trackdir = Trackdir::Invalid; ///< Trackdir for this element.
+	TileIndex tile = INVALID_TILE; ///< Tile for this element.
 
-	inline bool empty() const { return this->td.empty(); }
-
-	inline size_t size() const
-	{
-		assert(this->td.size() == this->tile.size());
-		return this->td.size();
-	}
-
-	inline void clear()
-	{
-		this->td.clear();
-		this->tile.clear();
-	}
+	constexpr RoadVehPathElement() {}
+	constexpr RoadVehPathElement(Trackdir trackdir, TileIndex tile) : trackdir(trackdir), tile(tile) {}
 };
+
+using RoadVehPathCache = std::vector<RoadVehPathElement>;
 
 /**
  * Buses, trucks and trams belong to this class.
  */
-struct RoadVehicle FINAL : public GroundVehicle<RoadVehicle, VEH_ROAD> {
-	RoadVehPathCache path;  ///< Cached path.
-	byte state;             ///< @see RoadVehicleStates
-	byte frame;
-	uint16 blocked_ctr;
-	byte overtaking;        ///< Set to #RVSB_DRIVE_SIDE when overtaking, otherwise 0.
-	byte overtaking_ctr;    ///< The length of the current overtake attempt.
-	uint16 crashed_ctr;     ///< Animation counter when the vehicle has crashed. @see RoadVehIsCrashed
-	byte reverse_ctr;
+struct RoadVehicle final : public GroundVehicle<RoadVehicle, VehicleType::Road> {
+	RoadVehPathCache path{};  ///< Cached path.
+	uint8_t state = 0; ///< @see RoadVehicleStates
+	uint8_t frame = 0;
+	uint16_t blocked_ctr = 0;
+	uint8_t overtaking = 0; ///< Set to #RVSB_DRIVE_SIDE when overtaking, otherwise 0.
+	uint8_t overtaking_ctr = 0; ///< The length of the current overtake attempt.
+	uint16_t crashed_ctr = 0; ///< Animation counter when the vehicle has crashed. @see RoadVehIsCrashed
+	uint8_t reverse_ctr = 0;
 
-	RoadType roadtype;              //!< Roadtype of this vehicle.
-	RoadTypes compatible_roadtypes; //!< Roadtypes this consist is powered on.
+	RoadType roadtype = INVALID_ROADTYPE; ///< NOSAVE: Roadtype of this vehicle.
+	VehicleID disaster_vehicle = VehicleID::Invalid(); ///< NOSAVE: Disaster vehicle targetting this vehicle.
+	RoadTypes compatible_roadtypes{}; ///< NOSAVE: Roadtypes this consist is powered on.
 
-	/** We don't want GCC to zero our struct! It already is zeroed and has an index! */
-	RoadVehicle() : GroundVehicleBase() {}
+	RoadVehicle(VehicleID index) : GroundVehicleBase(index) {}
 	/** We want to 'destruct' the right class. */
-	virtual ~RoadVehicle() { this->PreDestructor(); }
+	~RoadVehicle() override { this->PreDestructor(); }
 
-	friend struct GroundVehicle<RoadVehicle, VEH_ROAD>; // GroundVehicle needs to use the acceleration functions defined at RoadVehicle.
+	friend struct GroundVehicle<RoadVehicle, VehicleType::Road>; // GroundVehicle needs to use the acceleration functions defined at RoadVehicle.
 
-	void MarkDirty();
-	void UpdateDeltaXY();
-	ExpensesType GetExpenseType(bool income) const { return income ? EXPENSES_ROADVEH_INC : EXPENSES_ROADVEH_RUN; }
-	bool IsPrimaryVehicle() const { return this->IsFrontEngine(); }
-	void GetImage(Direction direction, EngineImageType image_type, VehicleSpriteSeq *result) const;
-	int GetDisplaySpeed() const { return this->gcache.last_speed / 2; }
-	int GetDisplayMaxSpeed() const { return this->vcache.cached_max_speed / 2; }
-	Money GetRunningCost() const;
+	void MarkDirty() override;
+	void UpdateDeltaXY() override;
+	ExpensesType GetExpenseType(bool income) const override { return income ? ExpensesType::RoadVehRevenue : ExpensesType::RoadVehRun; }
+	bool IsPrimaryVehicle() const override { return this->IsFrontEngine(); }
+	void GetImage(Direction direction, EngineImageType image_type, VehicleSpriteSeq *result) const override;
+	int GetDisplaySpeed() const override { return this->gcache.last_speed / 2; }
+	int GetDisplayMaxSpeed() const override { return this->vcache.cached_max_speed / 2; }
+	Money GetRunningCost() const override;
 	int GetDisplayImageWidth(Point *offset = nullptr) const;
-	bool IsInDepot() const { return this->state == RVSB_IN_DEPOT; }
-	bool Tick();
-	void OnNewDay();
-	uint Crash(bool flooded = false);
-	Trackdir GetVehicleTrackdir() const;
-	TileIndex GetOrderStationLocation(StationID station);
-	bool FindClosestDepot(TileIndex *location, DestinationID *destination, bool *reverse);
+	bool IsInDepot() const override { return this->state == RVSB_IN_DEPOT; }
+	bool Tick() override;
+	void OnNewCalendarDay() override;
+	void OnNewEconomyDay() override;
+	uint Crash(bool flooded = false) override;
+	Trackdir GetVehicleTrackdir() const override;
+	TileIndex GetOrderStationLocation(StationID station) override;
+	ClosestDepot FindClosestDepot() override;
 
 	bool IsBus() const;
 
-	int GetCurrentMaxSpeed() const;
+	int GetCurrentMaxSpeed() const override;
 	int UpdateSpeed();
-	void SetDestTile(TileIndex tile);
+	void SetDestTile(TileIndex tile) override;
 
 protected: // These functions should not be called outside acceleration code.
 
@@ -153,7 +152,7 @@ protected: // These functions should not be called outside acceleration code.
 	 * Allows to know the power value that this vehicle will use.
 	 * @return Power value from the engine in HP, or zero if the vehicle is not powered.
 	 */
-	inline uint16 GetPower() const
+	inline uint16_t GetPower() const
 	{
 		/* Power is not added for articulated parts */
 		if (!this->IsArticulatedPart()) {
@@ -167,7 +166,7 @@ protected: // These functions should not be called outside acceleration code.
 	 * Returns a value if this articulated part is powered.
 	 * @return Zero, because road vehicles don't have powered parts.
 	 */
-	inline uint16 GetPoweredPartPower(const RoadVehicle *head) const
+	inline uint16_t GetPoweredPartPower() const
 	{
 		return 0;
 	}
@@ -176,9 +175,9 @@ protected: // These functions should not be called outside acceleration code.
 	 * Allows to know the weight value that this vehicle will use.
 	 * @return Weight value from the engine in tonnes.
 	 */
-	inline uint16 GetWeight() const
+	inline uint16_t GetWeight() const
 	{
-		uint16 weight = (CargoSpec::Get(this->cargo_type)->weight * this->cargo.StoredCount()) / 16;
+		uint16_t weight = CargoSpec::Get(this->cargo_type)->WeightOfNUnits(this->cargo.StoredCount());
 
 		/* Vehicle weight is not added for articulated parts. */
 		if (!this->IsArticulatedPart()) {
@@ -190,10 +189,16 @@ protected: // These functions should not be called outside acceleration code.
 	}
 
 	/**
+	 * Calculates the weight value that this vehicle will have when fully loaded with its current cargo.
+	 * @return Weight value in tonnes.
+	 */
+	uint16_t GetMaxWeight() const override;
+
+	/**
 	 * Allows to know the tractive effort value that this vehicle will use.
 	 * @return Tractive effort value from the engine.
 	 */
-	inline byte GetTractiveEffort() const
+	inline uint8_t GetTractiveEffort() const
 	{
 		/* The tractive effort coefficient is in units of 1/256.  */
 		return GetVehicleProperty(this, PROP_ROADVEH_TRACTIVE_EFFORT, RoadVehInfo(this->engine_type)->tractive_effort);
@@ -203,7 +208,7 @@ protected: // These functions should not be called outside acceleration code.
 	 * Gets the area used for calculating air drag.
 	 * @return Area of the engine in m^2.
 	 */
-	inline byte GetAirDragArea() const
+	inline uint8_t GetAirDragArea() const
 	{
 		return 6;
 	}
@@ -212,7 +217,7 @@ protected: // These functions should not be called outside acceleration code.
 	 * Gets the air drag coefficient of this vehicle.
 	 * @return Air drag value from the engine.
 	 */
-	inline byte GetAirDrag() const
+	inline uint8_t GetAirDrag() const
 	{
 		return RoadVehInfo(this->engine_type)->air_drag;
 	}
@@ -223,14 +228,14 @@ protected: // These functions should not be called outside acceleration code.
 	 */
 	inline AccelStatus GetAccelerationStatus() const
 	{
-		return (this->vehstatus & VS_STOPPED) ? AS_BRAKE : AS_ACCEL;
+		return this->vehstatus.Test(VehState::Stopped) ? AS_BRAKE : AS_ACCEL;
 	}
 
 	/**
 	 * Calculates the current speed of this vehicle.
 	 * @return Current speed in km/h-ish.
 	 */
-	inline uint16 GetCurrentSpeed() const
+	inline uint16_t GetCurrentSpeed() const
 	{
 		return this->cur_speed / 2;
 	}
@@ -239,11 +244,11 @@ protected: // These functions should not be called outside acceleration code.
 	 * Returns the rolling friction coefficient of this vehicle.
 	 * @return Rolling friction coefficient in [1e-4].
 	 */
-	inline uint32 GetRollingFriction() const
+	inline uint32_t GetRollingFriction() const
 	{
 		/* Trams have a slightly greater friction coefficient than trains.
 		 * The rest of road vehicles have bigger values. */
-		uint32 coeff = RoadTypeIsTram(this->roadtype) ? 40 : 75;
+		uint32_t coeff = RoadTypeIsTram(this->roadtype) ? 40 : 75;
 		/* The friction coefficient increases with speed in a way that
 		 * it doubles at 128 km/h, triples at 256 km/h and so on. */
 		return coeff * (128 + this->GetCurrentSpeed()) / 128;
@@ -251,18 +256,18 @@ protected: // These functions should not be called outside acceleration code.
 
 	/**
 	 * Allows to know the acceleration type of a vehicle.
-	 * @return Zero, road vehicles always use a normal acceleration method.
+	 * @return \c VehicleAccelerationModel::Normal, road vehicles always use a normal acceleration method.
 	 */
-	inline int GetAccelerationType() const
+	inline VehicleAccelerationModel GetAccelerationType() const
 	{
-		return 0;
+		return VehicleAccelerationModel::Normal;
 	}
 
 	/**
 	 * Returns the slope steepness used by this vehicle.
 	 * @return Slope steepness used by the vehicle.
 	 */
-	inline uint32 GetSlopeSteepness() const
+	inline uint32_t GetSlopeSteepness() const
 	{
 		return _settings_game.vehicle.roadveh_slope_steepness;
 	}
@@ -271,7 +276,7 @@ protected: // These functions should not be called outside acceleration code.
 	 * Gets the maximum speed allowed by the track for this vehicle.
 	 * @return Since roads don't limit road vehicle speed, it returns always zero.
 	 */
-	inline uint16 GetMaxTrackSpeed() const
+	inline uint16_t GetMaxTrackSpeed() const
 	{
 		return GetRoadTypeInfo(GetRoadType(this->tile, GetRoadTramType(this->roadtype)))->max_speed;
 	}
@@ -282,10 +287,10 @@ protected: // These functions should not be called outside acceleration code.
 	 */
 	inline bool TileMayHaveSlopedTrack() const
 	{
-		TrackStatus ts = GetTileTrackStatus(this->tile, TRANSPORT_ROAD, GetRoadTramType(this->roadtype));
-		TrackBits trackbits = TrackStatusToTrackBits(ts);
+		TrackStatus ts = GetTileTrackStatus(this->tile, TransportType::Road, GetRoadTramType(this->roadtype));
+		TrackBits trackbits = TrackdirBitsToTrackBits(ts.trackdirs);
 
-		return trackbits == TRACK_BIT_X || trackbits == TRACK_BIT_Y;
+		return trackbits == Track::X || trackbits == Track::Y;
 	}
 
 	/**
@@ -300,9 +305,9 @@ protected: // These functions should not be called outside acceleration code.
 		const RoadVehicle *rv = this->First();
 
 		/* Check if this vehicle is in the same direction as the road under.
-		 * We already know it has either GVF_GOINGUP_BIT or GVF_GOINGDOWN_BIT set. */
+		 * We already know it has either GroundVehicleFlag::GoingUp or GroundVehicleFlag::GoingDown set. */
 
-		if (rv->state <= RVSB_TRACKDIR_MASK && IsReversingRoadTrackdir((Trackdir)rv->state)) {
+		if (rv->state <= RVSB_TRACKDIR_MASK && IsReversingRoadTrackdir(static_cast<Trackdir>(rv->state))) {
 			/* If the first vehicle is reversing, this vehicle may be reversing too
 			 * (especially if this is the first, and maybe the only, vehicle).*/
 			return true;

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file error.h Functions related to errors. */
@@ -12,49 +12,47 @@
 
 #include "strings_type.h"
 #include "company_type.h"
+#include "command_type.h"
 #include "core/geometry_type.hpp"
 
 struct GRFFile;
 
 /** Message severity/type */
-enum WarningLevel {
-	WL_INFO,     ///< Used for DoCommand-like (and some non-fatal AI GUI) errors/information
-	WL_WARNING,  ///< Other information
-	WL_ERROR,    ///< Errors (eg. saving/loading failed)
-	WL_CRITICAL, ///< Critical errors, the MessageBox is shown in all cases
+enum class WarningLevel : uint8_t {
+	Info, ///< Used for DoCommand-like (and some non-fatal AI GUI) errors/information
+	Warning, ///< Other information
+	Error, ///< Errors (eg. saving/loading failed)
+	Critical, ///< Critical errors, the MessageBox is shown in all cases
 };
 
 /** The data of the error message. */
 class ErrorMessageData {
 protected:
-	uint duration;                  ///< Length of display of the message. 0 means forever,
-	uint64 decode_params[20];       ///< Parameters of the message strings.
-	const char *strings[20];        ///< Copies of raw strings that were used.
-	const GRFFile *textref_stack_grffile; ///< NewGRF that filled the #TextRefStack for the error message.
-	uint textref_stack_size;        ///< Number of uint32 values to put on the #TextRefStack for the error message.
-	uint32 textref_stack[16];       ///< Values to put on the #TextRefStack for the error message.
-	StringID summary_msg;           ///< General error message showed in first line. Must be valid.
-	StringID detailed_msg;          ///< Detailed error message showed in second line. Can be #INVALID_STRING_ID.
+	bool is_critical;               ///< Whether the error message is critical.
+	EncodedString summary_msg; ///< General error message showed in first line. Must be valid.
+	EncodedString detailed_msg; ///< Detailed error message showed in second line. Can be #INVALID_STRING_ID.
+	EncodedString extra_msg; ///< Extra error message shown in third line. Can be #INVALID_STRING_ID.
 	Point position;                 ///< Position of the error message window.
-	CompanyID face;                 ///< Company belonging to the face being shown. #INVALID_COMPANY if no face present.
+	CompanyID company; ///< Company belonging to the face being shown. #CompanyID::Invalid() if no face present.
 
 public:
-	ErrorMessageData(const ErrorMessageData &data);
-	~ErrorMessageData();
-	ErrorMessageData(StringID summary_msg, StringID detailed_msg, uint duration = 0, int x = 0, int y = 0, const GRFFile *textref_stack_grffile = nullptr, uint textref_stack_size = 0, const uint32 *textref_stack = nullptr);
+	ErrorMessageData(EncodedString &&summary_msg, EncodedString &&detailed_msg, bool is_critical = false, int x = 0, int y = 0, EncodedString &&extra_msg = {}, CompanyID company = CompanyID::Invalid());
 
-	/** Check whether error window shall display a company manager face */
-	bool HasFace() const { return face != INVALID_COMPANY; }
-
-	void SetDParam(uint n, uint64 v);
-	void SetDParamStr(uint n, const char *str);
-
-	void CopyOutDParams();
+	/**
+	 * Check whether error window shall display a company manager face.
+	 * @return \c true if the company of this error message is valid.
+	 */
+	bool HasFace() const { return company != CompanyID::Invalid(); }
 };
 
+/** Define a queue with errors. */
+typedef std::list<ErrorMessageData> ErrorList;
+
+void ScheduleErrorMessage(ErrorList &datas);
 void ScheduleErrorMessage(const ErrorMessageData &data);
 
-void ShowErrorMessage(StringID summary_msg, StringID detailed_msg, WarningLevel wl, int x = 0, int y = 0, const GRFFile *textref_stack_grffile = nullptr, uint textref_stack_size = 0, const uint32 *textref_stack = nullptr);
+void ShowErrorMessage(EncodedString &&summary_msg, int x, int y, CommandCost &cc);
+void ShowErrorMessage(EncodedString &&summary_msg, EncodedString &&detailed_msg, WarningLevel wl, int x = 0, int y = 0, EncodedString &&extra_msg = {}, CompanyID company = CompanyID::Invalid());
 bool HideActiveErrorMessage();
 
 void ClearErrorMessages();

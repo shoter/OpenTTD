@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file ai.hpp Base functions for all AIs. */
@@ -10,31 +10,14 @@
 #ifndef AI_HPP
 #define AI_HPP
 
-#include "../script/api/script_event_types.hpp"
-#include "../core/string_compare_type.hpp"
+#include "../script/api/script_event.hpp"
 #include "ai_scanner.hpp"
-#include <map>
-
-/** A list that maps AI names to their AIInfo object. */
-typedef std::map<const char *, class ScriptInfo *, StringCompare> ScriptInfoList;
 
 /**
  * Main AI class. Contains all functions needed to start, stop, save and load AIs.
  */
 class AI {
 public:
-	/**
-	 * The default months AIs start after each other.
-	 */
-	enum StartNext {
-		START_NEXT_EASY   = DAYS_IN_YEAR * 2,
-		START_NEXT_MEDIUM = DAYS_IN_YEAR,
-		START_NEXT_HARD   = DAYS_IN_YEAR / 2,
-		START_NEXT_MIN    = 0,
-		START_NEXT_MAX    = 3600,
-		START_NEXT_DEVIATION = 60,
-	};
-
 	/**
 	 * Is it possible to start a new AI company?
 	 * @return True if a new AI company can be started.
@@ -44,9 +27,8 @@ public:
 	/**
 	 * Start a new AI company.
 	 * @param company At which slot the AI company should start.
-	 * @param rerandomise_ai Whether to rerandomise the configured AI.
 	 */
-	static void StartNew(CompanyID company, bool rerandomise_ai = true);
+	static void StartNew(CompanyID company);
 
 	/**
 	 * Called every game-tick to let AIs do something.
@@ -55,6 +37,7 @@ public:
 
 	/**
 	 * Get the current AI tick.
+	 * @return The tick number.
 	 */
 	static uint GetTick();
 
@@ -115,41 +98,36 @@ public:
 
 	/**
 	 * Queue a new event for an AI.
+	 * @param company The company to receive the event.
+	 * @param event The event.
 	 */
 	static void NewEvent(CompanyID company, ScriptEvent *event);
 
 	/**
 	 * Broadcast a new event to all active AIs.
+	 * @param event The event to broadcast.
+	 * @param skip_company The optional company not to send the event to.
 	 */
-	static void BroadcastNewEvent(ScriptEvent *event, CompanyID skip_company = MAX_COMPANIES);
+	static void BroadcastNewEvent(ScriptEvent *event, CompanyID skip_company = CompanyID::Invalid());
 
 	/**
 	 * Save data from an AI to a savegame.
+	 * @param company To company to save.
 	 */
 	static void Save(CompanyID company);
 
-	/**
-	 * Load data for an AI from a savegame.
-	 */
-	static void Load(CompanyID company, int version);
-
-	/**
-	 * Get the number of days before the next AI should start.
-	 */
-	static int GetStartNextTime();
-
-	/** Wrapper function for AIScanner::GetAIConsoleList */
-	static char *GetConsoleList(char *p, const char *last, bool newest_only = false);
-	/** Wrapper function for AIScanner::GetAIConsoleLibraryList */
-	static char *GetConsoleLibraryList(char *p, const char *last);
-	/** Wrapper function for AIScanner::GetAIInfoList */
+	/** @copydoc ScriptScanner::GetConsoleList */
+	static void GetConsoleList(std::back_insert_iterator<std::string> &output_iterator, bool newest_only);
+	/** @copydoc ScriptScanner::GetConsoleList */
+	static void GetConsoleLibraryList(std::back_insert_iterator<std::string> &output_iterator, bool newest_only);
+	/** @copydoc ScriptScanner::GetInfoList */
 	static const ScriptInfoList *GetInfoList();
-	/** Wrapper function for AIScanner::GetUniqueAIInfoList */
+	/** @copydoc ScriptScanner::GetUniqueInfoList */
 	static const ScriptInfoList *GetUniqueInfoList();
-	/** Wrapper function for AIScanner::FindInfo */
-	static class AIInfo *FindInfo(const char *name, int version, bool force_exact_match);
-	/** Wrapper function for AIScanner::FindLibrary */
-	static class AILibrary *FindLibrary(const char *library, int version);
+	/** @copydoc ScriptConfig::FindInfo */
+	static class AIInfo *FindInfo(const std::string &name, int version, bool force_exact_match);
+	/** @copydoc ScriptInstance::FindLibrary */
+	static class AILibrary *FindLibrary(const std::string &library, int version);
 
 	/**
 	 * Rescans all searchpaths for available AIs. If a used AI is no longer
@@ -163,12 +141,12 @@ public:
 	static AIScannerLibrary *GetScannerLibrary();
 
 	/** Wrapper function for AIScanner::HasAI */
-	static bool HasAI(const struct ContentInfo *ci, bool md5sum);
-	static bool HasAILibrary(const ContentInfo *ci, bool md5sum);
+	static bool HasAI(const ContentInfo &ci, bool md5sum);
+	static bool HasAILibrary(const ContentInfo &ci, bool md5sum);
 private:
-	static uint frame_counter;                      ///< Tick counter for the AI code
-	static class AIScannerInfo *scanner_info;       ///< ScriptScanner instance that is used to find AIs
-	static class AIScannerLibrary *scanner_library; ///< ScriptScanner instance that is used to find AI Libraries
+	static uint frame_counter; ///< Tick counter for the AI code
+	static std::unique_ptr<AIScannerInfo> scanner_info; ///< ScriptScanner instance that is used to find AIs
+	static std::unique_ptr<AIScannerLibrary> scanner_library; ///< ScriptScanner instance that is used to find AI Libraries
 };
 
 #endif /* AI_HPP */

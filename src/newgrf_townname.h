@@ -2,52 +2,53 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/**
- * @file newgrf_townname.h
- * Header of Action 0F "universal holder" structure and functions
- */
+/** @file newgrf_townname.h Header of Action 0F "universal holder" structure and functions. */
 
 #ifndef NEWGRF_TOWNNAME_H
 #define NEWGRF_TOWNNAME_H
 
+#include "newgrf_type.h"
 #include "strings_type.h"
 
 struct NamePart {
-	byte prob;     ///< The relative probability of the following name to appear in the bottom 7 bits.
-	union {
-		char *text;    ///< If probability bit 7 is clear
-		byte id;       ///< If probability bit 7 is set
-	} data;
+	std::string text; ///< If probability bit 7 is clear
+	uint8_t id;          ///< If probability bit 7 is set
+	uint8_t prob;        ///< The relative probability of the following name to appear in the bottom 7 bits.
 };
 
 struct NamePartList {
-	byte partcount;
-	byte bitstart;
-	byte bitcount;
-	uint16 maxprob;
-	NamePart *parts;
+	uint8_t bitstart;  ///< Start of random seed bits to use.
+	uint8_t bitcount;  ///< Number of bits of random seed to use.
+	uint16_t maxprob; ///< Total probability of all parts.
+	std::vector<NamePart> parts; ///< List of parts to choose from.
+};
+
+struct TownNameStyle {
+	StringID name; ///< String ID of this town name style.
+	uint8_t id;       ///< Index within partlist for this town name style.
+
+	TownNameStyle(StringID name, uint8_t id) : name(name), id(id) { }
 };
 
 struct GRFTownName {
-	uint32 grfid;
-	byte nb_gen;
-	byte id[128];
-	StringID name[128];
-	byte nbparts[128];
-	NamePartList *partlist[128];
-	GRFTownName *next;
+	static const uint MAX_LISTS = 128; ///< Maximum number of town name lists that can be defined per GRF.
+
+	GrfID grfid; ///< GRF ID of NewGRF.
+	std::vector<TownNameStyle> styles;              ///< Style names defined by the Town Name NewGRF.
+	std::vector<NamePartList> partlists[MAX_LISTS]; ///< Lists of town name parts.
 };
 
-GRFTownName *AddGRFTownName(uint32 grfid);
-GRFTownName *GetGRFTownName(uint32 grfid);
-void DelGRFTownName(uint32 grfid);
+GRFTownName *AddGRFTownName(GrfID grfid);
+GRFTownName *GetGRFTownName(GrfID grfid);
+void DelGRFTownName(GrfID grfid);
 void CleanUpGRFTownNames();
-StringID *GetGRFTownNameList();
-char *GRFTownNameGenerate(char *buf, uint32 grfid, uint16 gen, uint32 seed, const char *last);
-uint32 GetGRFTownNameId(int gen);
-uint16 GetGRFTownNameType(int gen);
+GrfID GetGRFTownNameId(uint16_t gen);
+uint16_t GetGRFTownNameType(uint16_t gen);
+StringID GetGRFTownNameName(uint16_t gen);
+
+const std::vector<StringID> &GetGRFTownNameList();
 
 #endif /* NEWGRF_TOWNNAME_H */

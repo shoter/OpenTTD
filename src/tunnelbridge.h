@@ -2,10 +2,10 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file tunnelbridge.h Header file for things common for tunnels and bridges */
+/** @file tunnelbridge.h Header file for things common for tunnels and bridges. */
 
 #ifndef TUNNELBRIDGE_H
 #define TUNNELBRIDGE_H
@@ -22,7 +22,7 @@ void MarkBridgeDirty(TileIndex tile);
  * @param end   The end of the tunnel or bridge.
  * @return length of bridge/tunnel middle
  */
-static inline uint GetTunnelBridgeLength(TileIndex begin, TileIndex end)
+inline uint GetTunnelBridgeLength(TileIndex begin, TileIndex end)
 {
 	int x1 = TileX(begin);
 	int y1 = TileY(begin);
@@ -38,7 +38,7 @@ static inline uint GetTunnelBridgeLength(TileIndex begin, TileIndex end)
  * @param end   The end of the tunnel or bridge.
  * @param owner The new owner to set
  */
-static inline void SetTunnelBridgeOwner(TileIndex begin, TileIndex end, Owner owner)
+inline void SetTunnelBridgeOwner(TileIndex begin, TileIndex end, Owner owner)
 {
 	SetTileOwner(begin, owner);
 	SetTileOwner(end, owner);

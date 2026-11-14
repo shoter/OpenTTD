@@ -2,103 +2,134 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file economy_sl.cpp Code handling saving and loading of economy data */
+/** @file economy_sl.cpp Code handling saving and loading of economy data. */
 
 #include "../stdafx.h"
-#include "../economy_func.h"
-#include "../economy_base.h"
 
 #include "saveload.h"
+#include "saveload_error.hpp"
+#include "compat/economy_sl_compat.h"
+
+#include "../economy_func.h"
+#include "../economy_base.h"
+#include "../vehicle_base.h"
 
 #include "../safeguards.h"
 
 /** Prices in pre 126 savegames */
-static void Load_PRIC()
-{
-	/* Old games store 49 base prices, very old games store them as int32 */
-	int vt = IsSavegameVersionBefore(SLV_65) ? SLE_FILE_I32 : SLE_FILE_I64;
-	SlArray(nullptr, 49, vt | SLE_VAR_NULL);
-	SlArray(nullptr, 49, SLE_FILE_U16 | SLE_VAR_NULL);
-}
+struct PRICChunkHandler : ChunkHandler {
+	PRICChunkHandler() : ChunkHandler("PRIC", ChunkType::ReadOnly) {}
+
+	void Load() const override
+	{
+		size_t num_prices = 49;
+		size_t record_size = (IsSavegameVersionBefore(SaveLoadVersion::UnifyCurrency) ? sizeof(uint32_t) : sizeof(uint64_t)) + sizeof(uint16_t);
+		SlSkipBytes(num_prices * record_size);
+	}
+};
 
 /** Cargo payment rates in pre 126 savegames */
-static void Load_CAPR()
-{
-	uint num_cargo = IsSavegameVersionBefore(SLV_55) ? 12 : IsSavegameVersionBefore(SLV_EXTEND_CARGOTYPES) ? 32 : NUM_CARGO;
-	int vt = IsSavegameVersionBefore(SLV_65) ? SLE_FILE_I32 : SLE_FILE_I64;
-	SlArray(nullptr, num_cargo, vt | SLE_VAR_NULL);
-	SlArray(nullptr, num_cargo, SLE_FILE_U16 | SLE_VAR_NULL);
-}
+struct CAPRChunkHandler : ChunkHandler {
+	CAPRChunkHandler() : ChunkHandler("CAPR", ChunkType::ReadOnly) {}
+
+	void Load() const override
+	{
+		size_t num_cargo = IsSavegameVersionBefore(SaveLoadVersion::NewGRFCargo) ? 12 : IsSavegameVersionBefore(SaveLoadVersion::ExtendCargotypes) ? 32 : NUM_CARGO;
+		size_t record_size = sizeof(uint16_t) + (IsSavegameVersionBefore(SaveLoadVersion::UnifyCurrency) ? sizeof(uint32_t) : sizeof(uint64_t));
+		SlSkipBytes(num_cargo * record_size);
+	}
+};
 
 static const SaveLoad _economy_desc[] = {
-	SLE_CONDNULL(4,                                                                  SL_MIN_VERSION, SLV_65),             // max_loan
-	SLE_CONDNULL(8,                                                                 SLV_65, SLV_144), // max_loan
-	SLE_CONDVAR(Economy, old_max_loan_unround,          SLE_FILE_I32 | SLE_VAR_I64,  SL_MIN_VERSION, SLV_65),
-	SLE_CONDVAR(Economy, old_max_loan_unround,          SLE_INT64,                  SLV_65, SLV_126),
-	SLE_CONDVAR(Economy, old_max_loan_unround_fract,    SLE_UINT16,                 SLV_70, SLV_126),
-	SLE_CONDVAR(Economy, inflation_prices,              SLE_UINT64,                SLV_126, SL_MAX_VERSION),
-	SLE_CONDVAR(Economy, inflation_payment,             SLE_UINT64,                SLV_126, SL_MAX_VERSION),
-	    SLE_VAR(Economy, fluct,                         SLE_INT16),
-	    SLE_VAR(Economy, interest_rate,                 SLE_UINT8),
-	    SLE_VAR(Economy, infl_amount,                   SLE_UINT8),
-	    SLE_VAR(Economy, infl_amount_pr,                SLE_UINT8),
-	SLE_CONDVAR(Economy, industry_daily_change_counter, SLE_UINT32,                SLV_102, SL_MAX_VERSION),
-	    SLE_END()
+	SaveLoad::Variable<VarFileType::I32>("old_max_loan_unround", SLE_OBJECT_ADDRESS(Economy, old_max_loan_unround), SaveLoadVersion::MinVersion, SaveLoadVersion::UnifyCurrency),
+	SaveLoad::Variable<VarFileType::I64>("old_max_loan_unround", SLE_OBJECT_ADDRESS(Economy, old_max_loan_unround), SaveLoadVersion::UnifyCurrency, SaveLoadVersion::CumulatedInflation),
+	SaveLoad::Variable<VarFileType::U16>("old_max_loan_unround_fract", SLE_OBJECT_ADDRESS(Economy, old_max_loan_unround_fract), SaveLoadVersion::CargoPaymentOverflow, SaveLoadVersion::CumulatedInflation),
+	SaveLoad::Variable<VarFileType::U64>("inflation_prices", SLE_OBJECT_ADDRESS(Economy, inflation_prices), SaveLoadVersion::CumulatedInflation),
+	SaveLoad::Variable<VarFileType::U64>("inflation_payment", SLE_OBJECT_ADDRESS(Economy, inflation_payment), SaveLoadVersion::CumulatedInflation),
+	SaveLoad::Variable<VarFileType::I16>("fluct", SLE_OBJECT_ADDRESS(Economy, fluct)),
+	SaveLoad::Variable<VarFileType::U8>("interest_rate", SLE_OBJECT_ADDRESS(Economy, interest_rate)),
+	SaveLoad::Variable<VarFileType::U8>("infl_amount", SLE_OBJECT_ADDRESS(Economy, infl_amount)),
+	SaveLoad::Variable<VarFileType::U8>("infl_amount_pr", SLE_OBJECT_ADDRESS(Economy, infl_amount_pr)),
+	SaveLoad::Variable<VarFileType::U32>("industry_daily_change_counter", SLE_OBJECT_ADDRESS(Economy, industry_daily_change_counter), SaveLoadVersion::SpreadIndustryProductionChanges),
 };
 
 /** Economy variables */
-static void Save_ECMY()
-{
-	SlObject(&_economy, _economy_desc);
-}
+struct ECMYChunkHandler : ChunkHandler {
+	ECMYChunkHandler() : ChunkHandler("ECMY", ChunkType::Table) {}
 
-/** Economy variables */
-static void Load_ECMY()
-{
-	SlObject(&_economy, _economy_desc);
-	StartupIndustryDailyChanges(IsSavegameVersionBefore(SLV_102));  // old savegames will need to be initialized
-}
+	void Save() const override
+	{
+		SlTableHeader(_economy_desc);
+
+		SlSetArrayIndex(0);
+		SlObject(&_economy, _economy_desc);
+	}
+
+
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_economy_desc, _economy_sl_compat);
+
+		if (!IsSavegameVersionBefore(SaveLoadVersion::RiffToArray) && SlIterateArray() == -1) return;
+		SlObject(&_economy, slt);
+		if (!IsSavegameVersionBefore(SaveLoadVersion::RiffToArray) && SlIterateArray() != -1) SlErrorCorrupt("Too many ECMY entries");
+
+		StartupIndustryDailyChanges(IsSavegameVersionBefore(SaveLoadVersion::SpreadIndustryProductionChanges)); // old savegames will need to be initialized
+	}
+};
 
 static const SaveLoad _cargopayment_desc[] = {
-	    SLE_REF(CargoPayment, front,           REF_VEHICLE),
-	    SLE_VAR(CargoPayment, route_profit,    SLE_INT64),
-	    SLE_VAR(CargoPayment, visual_profit,   SLE_INT64),
-	SLE_CONDVAR(CargoPayment, visual_transfer, SLE_INT64, SLV_181, SL_MAX_VERSION),
-	    SLE_END()
+	SaveLoad::Reference<SLRefType::Vehicle>("front", SLE_OBJECT_ADDRESS(CargoPayment, front)),
+	SaveLoad::Variable<VarFileType::I64>("route_profit", SLE_OBJECT_ADDRESS(CargoPayment, route_profit)),
+	SaveLoad::Variable<VarFileType::I64>("visual_profit", SLE_OBJECT_ADDRESS(CargoPayment, visual_profit)),
+	SaveLoad::Variable<VarFileType::I64>("visual_transfer", SLE_OBJECT_ADDRESS(CargoPayment, visual_transfer), SaveLoadVersion::CargoReservation),
 };
 
-static void Save_CAPY()
-{
-	for (CargoPayment *cp : CargoPayment::Iterate()) {
-		SlSetArrayIndex(cp->index);
-		SlObject(cp, _cargopayment_desc);
+struct CAPYChunkHandler : ChunkHandler {
+	CAPYChunkHandler() : ChunkHandler("CAPY", ChunkType::Table) {}
+
+	void Save() const override
+	{
+		SlTableHeader(_cargopayment_desc);
+
+		for (CargoPayment *cp : CargoPayment::Iterate()) {
+			SlSetArrayIndex(cp->index);
+			SlObject(cp, _cargopayment_desc);
+		}
 	}
-}
 
-static void Load_CAPY()
-{
-	int index;
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_cargopayment_desc, _cargopayment_sl_compat);
 
-	while ((index = SlIterateArray()) != -1) {
-		CargoPayment *cp = new (index) CargoPayment();
-		SlObject(cp, _cargopayment_desc);
+		int index;
+
+		while ((index = SlIterateArray()) != -1) {
+			CargoPayment *cp = CargoPayment::CreateAtIndex(CargoPaymentID(index));
+			SlObject(cp, slt);
+		}
 	}
-}
 
-static void Ptrs_CAPY()
-{
-	for (CargoPayment *cp : CargoPayment::Iterate()) {
-		SlObject(cp, _cargopayment_desc);
+	void FixPointers() const override
+	{
+		for (CargoPayment *cp : CargoPayment::Iterate()) {
+			SlObject(cp, _cargopayment_desc);
+		}
 	}
-}
-
-
-extern const ChunkHandler _economy_chunk_handlers[] = {
-	{ 'CAPY', Save_CAPY,     Load_CAPY,     Ptrs_CAPY, nullptr, CH_ARRAY},
-	{ 'PRIC', nullptr,       Load_PRIC,     nullptr,   nullptr, CH_RIFF | CH_AUTO_LENGTH},
-	{ 'CAPR', nullptr,       Load_CAPR,     nullptr,   nullptr, CH_RIFF | CH_AUTO_LENGTH},
-	{ 'ECMY', Save_ECMY,     Load_ECMY,     nullptr,   nullptr, CH_RIFF | CH_LAST},
 };
+
+static const CAPYChunkHandler CAPY;
+static const PRICChunkHandler PRIC;
+static const CAPRChunkHandler CAPR;
+static const ECMYChunkHandler ECMY;
+static const ChunkHandlerRef economy_chunk_handlers[] = {
+	CAPY,
+	PRIC,
+	CAPR,
+	ECMY,
+};
+
+extern const ChunkHandlerTable _economy_chunk_handlers(economy_chunk_handlers);

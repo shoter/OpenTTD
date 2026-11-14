@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file tilehighlight_type.h Types related to highlighting tiles. */
@@ -16,7 +16,7 @@
 #include "viewport_type.h"
 
 /** Highlighting draw styles */
-enum HighLightStyle {
+enum HighLightStyle : uint16_t {
 	HT_NONE      = 0x000, ///< default
 	HT_RECT      = 0x010, ///< rectangle (stations, depots, ...)
 	HT_POINT     = 0x020, ///< point (lower land, raise land, level land, ...)
@@ -55,11 +55,11 @@ struct TileHighlightData {
 	Point new_pos;       ///< New value for \a pos; used to determine whether to redraw the selection.
 	Point new_size;      ///< New value for \a size; used to determine whether to redraw the selection.
 	Point new_outersize; ///< New value for \a outersize; used to determine whether to redraw the selection.
-	byte dirty;          ///< Whether the build station window needs to redraw due to the changed selection.
+	uint8_t dirty;          ///< Whether the build station window needs to redraw due to the changed selection.
 
 	Point selstart;      ///< The location where the dragging started.
 	Point selend;        ///< The location where the drag currently ends.
-	byte sizelimit;      ///< Whether the selection is limited in length, and what the maximum length is.
+	uint8_t sizelimit;      ///< Whether the selection is limited in length, and what the maximum length is.
 
 	HighLightStyle drawstyle;      ///< Lower bits 0-3 are reserved for detailed highlight information.
 	HighLightStyle next_drawstyle; ///< Queued, but not yet drawn style.

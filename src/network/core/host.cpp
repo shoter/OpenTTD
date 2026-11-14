@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file host.cpp Functions related to getting host specific data (IPs). */
@@ -10,6 +10,7 @@
 #include "../../stdafx.h"
 #include "../../debug.h"
 #include "address.h"
+#include "config.h"
 
 #include "../../safeguards.h"
 
@@ -20,73 +21,45 @@
  */
 static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast);
 
-#if defined(__HAIKU__) /* doesn't have neither getifaddrs or net/if.h */
-/* Based on Andrew Bachmann's netstat+.c. Big thanks to him! */
-extern "C" int _netstat(int fd, char **output, int verbose);
-
-int seek_past_header(char **pos, const char *header)
+#ifdef _WIN32
+static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast) // Win32 implementation
 {
-	char *new_pos = strstr(*pos, header);
-	if (new_pos == 0) {
-		return B_ERROR;
-	}
-	*pos += strlen(header) + new_pos - *pos + 1;
-	return B_OK;
-}
+	SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock == INVALID_SOCKET) return;
 
-static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast) // BEOS implementation
-{
-	int sock = socket(AF_INET, SOCK_DGRAM, 0);
+	std::vector<INTERFACE_INFO> ifos;
+	ifos.resize(2);
 
-	if (sock < 0) {
-		DEBUG(net, 0, "[core] error creating socket");
-		return;
-	}
-
-	char *output_pointer = nullptr;
-	int output_length = _netstat(sock, &output_pointer, 1);
-	if (output_length < 0) {
-		DEBUG(net, 0, "[core] error running _netstat");
-		return;
-	}
-
-	char **output = &output_pointer;
-	if (seek_past_header(output, "IP Interfaces:") == B_OK) {
-		for (;;) {
-			uint32 n;
-			int fields, read;
-			uint8 i1, i2, i3, i4, j1, j2, j3, j4;
-			uint32 ip;
-			uint32 netmask;
-
-			fields = sscanf(*output, "%u: %hhu.%hhu.%hhu.%hhu, netmask %hhu.%hhu.%hhu.%hhu%n",
-												&n, &i1, &i2, &i3, &i4, &j1, &j2, &j3, &j4, &read);
-			read += 1;
-			if (fields != 9) {
-				break;
-			}
-
-			ip      = (uint32)i1 << 24 | (uint32)i2 << 16 | (uint32)i3 << 8 | (uint32)i4;
-			netmask = (uint32)j1 << 24 | (uint32)j2 << 16 | (uint32)j3 << 8 | (uint32)j4;
-
-			if (ip != INADDR_LOOPBACK && ip != INADDR_ANY) {
-				sockaddr_storage address;
-				memset(&address, 0, sizeof(address));
-				((sockaddr_in*)&address)->sin_addr.s_addr = htonl(ip | ~netmask);
-				NetworkAddress addr(address, sizeof(sockaddr));
-				if (std::none_of(broadcast->begin(), broadcast->end(), [&addr](NetworkAddress const& elem) -> bool { return elem == addr; })) broadcast->push_back(addr);
-			}
-			if (read < 0) {
-				break;
-			}
-			*output += read;
+	for (;;) {
+		DWORD len = 0;
+		if (WSAIoctl(sock, SIO_GET_INTERFACE_LIST, nullptr, 0, ifos.data(), static_cast<DWORD>(ifos.size() * sizeof(INTERFACE_INFO)), &len, nullptr, nullptr) == 0) {
+			ifos.resize(len / sizeof(INTERFACE_INFO));
+			break;
 		}
-		closesocket(sock);
+		if (WSAGetLastError() != WSAEFAULT) {
+			closesocket(sock);
+			return;
+		}
+		ifos.resize(ifos.size() * 2);
 	}
+
+	for (auto &ifo : ifos) {
+		if (ifo.iiFlags & IFF_LOOPBACK) continue;
+		if (!(ifo.iiFlags & IFF_BROADCAST)) continue;
+
+		sockaddr_storage address{};
+		/* iiBroadcast is unusable, because it always seems to be set to 255.255.255.255. */
+		std::copy_n(reinterpret_cast<const std::byte *>(&ifo.iiAddress.Address), sizeof(sockaddr), reinterpret_cast<std::byte *>(&address));
+		reinterpret_cast<sockaddr_in*>(&address)->sin_addr.s_addr = ifo.iiAddress.AddressIn.sin_addr.s_addr | ~ifo.iiNetmask.AddressIn.sin_addr.s_addr;
+		NetworkAddress addr(address, sizeof(sockaddr));
+		if (std::none_of(broadcast->begin(), broadcast->end(), [&addr](NetworkAddress const &elem) -> bool { return elem == addr; })) broadcast->push_back(addr);
+	}
+
+	closesocket(sock);
 }
 
-#elif defined(HAVE_GETIFADDRS)
-static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast) // GETIFADDRS implementation
+#else /* not WIN32 */
+static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast)
 {
 	struct ifaddrs *ifap, *ifa;
 
@@ -98,91 +71,9 @@ static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast) // GE
 		if (ifa->ifa_broadaddr->sa_family != AF_INET) continue;
 
 		NetworkAddress addr(ifa->ifa_broadaddr, sizeof(sockaddr));
-		if (std::none_of(broadcast->begin(), broadcast->end(), [&addr](NetworkAddress const& elem) -> bool { return elem == addr; })) broadcast->push_back(addr);
+		if (std::none_of(broadcast->begin(), broadcast->end(), [&addr](NetworkAddress const &elem) -> bool { return elem == addr; })) broadcast->push_back(std::move(addr));
 	}
 	freeifaddrs(ifap);
-}
-
-#elif defined(_WIN32)
-static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast) // Win32 implementation
-{
-	SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock == INVALID_SOCKET) return;
-
-	DWORD len = 0;
-	int num = 2;
-	INTERFACE_INFO *ifo = CallocT<INTERFACE_INFO>(num);
-
-	for (;;) {
-		if (WSAIoctl(sock, SIO_GET_INTERFACE_LIST, nullptr, 0, ifo, num * sizeof(*ifo), &len, nullptr, nullptr) == 0) break;
-		free(ifo);
-		if (WSAGetLastError() != WSAEFAULT) {
-			closesocket(sock);
-			return;
-		}
-		num *= 2;
-		ifo = CallocT<INTERFACE_INFO>(num);
-	}
-
-	for (uint j = 0; j < len / sizeof(*ifo); j++) {
-		if (ifo[j].iiFlags & IFF_LOOPBACK) continue;
-		if (!(ifo[j].iiFlags & IFF_BROADCAST)) continue;
-
-		sockaddr_storage address;
-		memset(&address, 0, sizeof(address));
-		/* iiBroadcast is unusable, because it always seems to be set to 255.255.255.255. */
-		memcpy(&address, &ifo[j].iiAddress.Address, sizeof(sockaddr));
-		((sockaddr_in*)&address)->sin_addr.s_addr = ifo[j].iiAddress.AddressIn.sin_addr.s_addr | ~ifo[j].iiNetmask.AddressIn.sin_addr.s_addr;
-		NetworkAddress addr(address, sizeof(sockaddr));
-		if (std::none_of(broadcast->begin(), broadcast->end(), [&addr](NetworkAddress const& elem) -> bool { return elem == addr; })) broadcast->push_back(addr);
-	}
-
-	free(ifo);
-	closesocket(sock);
-}
-
-#else /* not HAVE_GETIFADDRS */
-
-#include "../../string_func.h"
-
-static void NetworkFindBroadcastIPsInternal(NetworkAddressList *broadcast) // !GETIFADDRS implementation
-{
-	SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock == INVALID_SOCKET) return;
-
-	char buf[4 * 1024]; // Arbitrary buffer size
-	struct ifconf ifconf;
-
-	ifconf.ifc_len = sizeof(buf);
-	ifconf.ifc_buf = buf;
-	if (ioctl(sock, SIOCGIFCONF, &ifconf) == -1) {
-		closesocket(sock);
-		return;
-	}
-
-	const char *buf_end = buf + ifconf.ifc_len;
-	for (const char *p = buf; p < buf_end;) {
-		const struct ifreq *req = (const struct ifreq*)p;
-
-		if (req->ifr_addr.sa_family == AF_INET) {
-			struct ifreq r;
-
-			strecpy(r.ifr_name, req->ifr_name, lastof(r.ifr_name));
-			if (ioctl(sock, SIOCGIFFLAGS, &r) != -1 &&
-					(r.ifr_flags & IFF_BROADCAST) &&
-					ioctl(sock, SIOCGIFBRDADDR, &r) != -1) {
-				NetworkAddress addr(&r.ifr_broadaddr, sizeof(sockaddr));
-				if (std::none_of(broadcast->begin(), broadcast->end(), [&addr](NetworkAddress const& elem) -> bool { return elem == addr; })) broadcast->push_back(addr);
-			}
-		}
-
-		p += sizeof(struct ifreq);
-#if defined(AF_LINK) && !defined(SUNOS)
-		p += req->ifr_addr.sa_len - sizeof(struct sockaddr);
-#endif
-	}
-
-	closesocket(sock);
 }
 #endif /* all NetworkFindBroadcastIPsInternals */
 
@@ -196,10 +87,10 @@ void NetworkFindBroadcastIPs(NetworkAddressList *broadcast)
 	NetworkFindBroadcastIPsInternal(broadcast);
 
 	/* Now display to the debug all the detected ips */
-	DEBUG(net, 3, "Detected broadcast addresses:");
+	Debug(Facility::Net, Severity::Notice, "Detected broadcast addresses:");
 	int i = 0;
 	for (NetworkAddress &addr : *broadcast) {
 		addr.SetPort(NETWORK_DEFAULT_PORT);
-		DEBUG(net, 3, "%d) %s", i++, addr.GetHostname());
+		Debug(Facility::Net, Severity::Notice, "  {}) {}", i++, addr.GetHostname());
 	}
 }

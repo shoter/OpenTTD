@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file yapf_node.hpp Node in the pathfinder's graph. */
@@ -10,47 +10,49 @@
 #ifndef YAPF_NODE_HPP
 #define YAPF_NODE_HPP
 
+#include "../../track_func.h"
+#include "../../misc/dbg_helpers.h"
+
 /** Yapf Node Key that evaluates hash from (and compares) tile & exit dir. */
 struct CYapfNodeKeyExitDir {
-	TileIndex      m_tile;
-	Trackdir       m_td;
-	DiagDirection  m_exitdir;
+	TileIndex tile;
+	Trackdir td;
+	DiagDirection exitdir;
 
 	inline void Set(TileIndex tile, Trackdir td)
 	{
-		m_tile = tile;
-		m_td = td;
-		m_exitdir = (m_td == INVALID_TRACKDIR) ? INVALID_DIAGDIR : TrackdirToExitdir(m_td);
+		this->tile = tile;
+		this->td = td;
+		this->exitdir = (this->td == Trackdir::Invalid) ? DiagDirection::Invalid : TrackdirToExitdir(this->td);
 	}
 
 	inline int CalcHash() const
 	{
-		return m_exitdir | (m_tile << 2);
+		return to_underlying(this->exitdir) | (this->tile.base() << 2);
 	}
 
 	inline bool operator==(const CYapfNodeKeyExitDir &other) const
 	{
-		return m_tile == other.m_tile && m_exitdir == other.m_exitdir;
+		return this->tile == other.tile && this->exitdir == other.exitdir;
 	}
 
 	void Dump(DumpTarget &dmp) const
 	{
-		dmp.WriteTile("m_tile", m_tile);
-		dmp.WriteEnumT("m_td", m_td);
-		dmp.WriteEnumT("m_exitdir", m_exitdir);
+		dmp.WriteTile("tile", this->tile);
+		dmp.WriteEnumT("td", this->td);
+		dmp.WriteEnumT("exitdir", this->exitdir);
 	}
 };
 
-struct CYapfNodeKeyTrackDir : public CYapfNodeKeyExitDir
-{
+struct CYapfNodeKeyTrackDir : public CYapfNodeKeyExitDir {
 	inline int CalcHash() const
 	{
-		return m_td | (m_tile << 4);
+		return to_underlying(this->td) | (this->tile.base() << 4);
 	}
 
 	inline bool operator==(const CYapfNodeKeyTrackDir &other) const
 	{
-		return m_tile == other.m_tile && m_td == other.m_td;
+		return this->tile == other.tile && this->td == other.td;
 	}
 };
 
@@ -60,74 +62,79 @@ struct CYapfNodeT {
 	typedef Tkey_ Key;
 	typedef Tnode Node;
 
-	Tkey_       m_key;
-	Node       *m_hash_next;
-	Node       *m_parent;
-	int         m_cost;
-	int         m_estimate;
-	bool        m_is_choice;
+	Tkey_ key;
+	Node *hash_next;
+	Node *parent;
+	int cost;
+	int estimate;
+	bool is_choice;
 
 	inline void Set(Node *parent, TileIndex tile, Trackdir td, bool is_choice)
 	{
-		m_key.Set(tile, td);
-		m_hash_next = nullptr;
-		m_parent = parent;
-		m_cost = 0;
-		m_estimate = 0;
-		m_is_choice = is_choice;
+		this->key.Set(tile, td);
+		this->hash_next = nullptr;
+		this->parent = parent;
+		this->cost = 0;
+		this->estimate = 0;
+		this->is_choice = is_choice;
 	}
 
 	inline Node *GetHashNext()
 	{
-		return m_hash_next;
+		return this->hash_next;
 	}
 
 	inline void SetHashNext(Node *pNext)
 	{
-		m_hash_next = pNext;
+		this->hash_next = pNext;
 	}
 
 	inline TileIndex GetTile() const
 	{
-		return m_key.m_tile;
+		return this->key.tile;
 	}
 
 	inline Trackdir GetTrackdir() const
 	{
-		return m_key.m_td;
+		return this->key.td;
 	}
 
-	inline const Tkey_& GetKey() const
+	inline const Tkey_ &GetKey() const
 	{
-		return m_key;
+		return this->key;
 	}
 
 	inline int GetCost() const
 	{
-		return m_cost;
+		return this->cost;
 	}
 
 	inline int GetCostEstimate() const
 	{
-		return m_estimate;
+		return this->estimate;
 	}
 
 	inline bool GetIsChoice() const
 	{
-		return m_is_choice;
+		return this->is_choice;
 	}
 
-	inline bool operator<(const Node &other) const
+	/**
+	 * Compare with another instance of this class.
+	 * @param other The other instance.
+	 * @return The std::strong_ordering of the comparison.
+	 */
+	inline auto operator<=>(const CYapfNodeT &other) const noexcept
 	{
-		return m_estimate < other.m_estimate;
+		return this->estimate <=> other.estimate;
 	}
 
 	void Dump(DumpTarget &dmp) const
 	{
-		dmp.WriteStructT("m_key", &m_key);
-		dmp.WriteStructT("m_parent", m_parent);
-		dmp.WriteLine("m_cost = %d", m_cost);
-		dmp.WriteLine("m_estimate = %d", m_estimate);
+		dmp.WriteStructT("key", &this->key);
+		dmp.WriteStructT("parent", this->parent);
+		dmp.WriteValue("cost", this->cost);
+		dmp.WriteValue("estimate", this->estimate);
 	}
 };
 

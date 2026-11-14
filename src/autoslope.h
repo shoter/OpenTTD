@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file autoslope.h Functions related to autoslope. */
@@ -16,7 +16,7 @@
 
 /**
  * Autoslope check for tiles with an entrance on an edge.
- * E.g. depots and non-drive-through-road-stops.
+ * E.g. depots and bay road-stops.
  *
  * The test succeeds if the slope is not steep and at least one corner of the entrance edge is on the TileMaxZ() level.
  *
@@ -28,10 +28,31 @@
  * @param entrance Entrance edge.
  * @return true iff terraforming is allowed.
  */
-static inline bool AutoslopeCheckForEntranceEdge(TileIndex tile, int z_new, Slope tileh_new, DiagDirection entrance)
+inline bool AutoslopeCheckForEntranceEdge(TileIndex tile, int z_new, Slope tileh_new, DiagDirection entrance)
 {
 	if (GetTileMaxZ(tile) != z_new + GetSlopeMaxZ(tileh_new)) return false;
 	return ((tileh_new == SLOPE_FLAT) || CanBuildDepotByTileh(entrance, tileh_new));
+}
+
+/**
+ * Autoslope check for tiles with something built along an axis.
+ * E.g. railway stations and drive through road stops.
+ *
+ * The test succeeds if the slope is not steep and at least one corner at either of the entrance edges is on the TileMaxZ() level.
+ *
+ * @note The test does not check if autoslope is enabled at all.
+ *
+ * @param tile The tile.
+ * @param z_new New TileZ.
+ * @param tileh_new New TileSlope.
+ * @param axis The axis.
+ * @return true iff terraforming is allowed.
+ */
+inline bool AutoslopeCheckForAxis(TileIndex tile, int z_new, Slope tileh_new, Axis axis)
+{
+	DiagDirection direction = AxisToDiagDir(axis);
+	return AutoslopeCheckForEntranceEdge(tile, z_new, tileh_new, direction) &&
+		AutoslopeCheckForEntranceEdge(tile, z_new, tileh_new, ReverseDiagDir(direction));
 }
 
 /**
@@ -41,11 +62,11 @@ static inline bool AutoslopeCheckForEntranceEdge(TileIndex tile, int z_new, Slop
  *
  * @return true iff autoslope is enabled.
  */
-static inline bool AutoslopeEnabled()
+inline bool AutoslopeEnabled()
 {
 	return (_settings_game.construction.autoslope &&
 	        (_current_company < MAX_COMPANIES ||
-	         (_current_company == OWNER_NONE && _game_mode == GM_EDITOR)));
+	         (_current_company == OWNER_NONE && _game_mode == GameMode::Editor)));
 }
 
 #endif /* AUTOSLOPE_H */

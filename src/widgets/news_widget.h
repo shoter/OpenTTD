@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file news_widget.h Types related to the news widgets. */
@@ -13,7 +13,7 @@
 #include "../news_type.h"
 
 /** Widgets of the #NewsWindow class. */
-enum NewsWidgets {
+enum NewsWidgets : WidgetID {
 	WID_N_PANEL,       ///< Panel of the window.
 	WID_N_TITLE,       ///< Title of the company news.
 	WID_N_HEADLINE,    ///< The news headline.
@@ -32,10 +32,11 @@ enum NewsWidgets {
 	WID_N_VEH_SPR,     ///< Graphical display of the new vehicle.
 	WID_N_VEH_INFO,    ///< Some technical data of the new vehicle.
 	WID_N_SHOW_GROUP,  ///< Show vehicle's group
+	WID_N_SHOW_GROUP_SEL, ///< Selector for showing vehicle group, which can be hidden.
 };
 
 /** Widgets of the #MessageHistoryWindow class. */
-enum MessageHistoryWidgets {
+enum MessageHistoryWidgets : WidgetID {
 	WID_MH_STICKYBOX,  ///< Stickybox.
 	WID_MH_BACKGROUND, ///< Background of the window.
 	WID_MH_SCROLLBAR,  ///< Scrollbar for the list.

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_airport.hpp Everything to query and build airports. */
@@ -12,6 +12,7 @@
 
 #include "script_object.hpp"
 #include "../../airport.h"
+#include "../../station_type.h"
 
 /**
  * Class that handles all airport related functions.
@@ -96,7 +97,7 @@ public:
 	 * @pre IsAirportInformationAvailable(type).
 	 * @return The width in tiles.
 	 */
-	static int32 GetAirportWidth(AirportType type);
+	static SQInteger GetAirportWidth(AirportType type);
 
 	/**
 	 * Get the height of this type of airport.
@@ -104,7 +105,7 @@ public:
 	 * @pre IsAirportInformationAvailable(type).
 	 * @return The height in tiles.
 	 */
-	static int32 GetAirportHeight(AirportType type);
+	static SQInteger GetAirportHeight(AirportType type);
 
 	/**
 	 * Get the coverage radius of this type of airport.
@@ -112,7 +113,7 @@ public:
 	 * @pre IsAirportInformationAvailable(type).
 	 * @return The radius in tiles.
 	 */
-	static int32 GetAirportCoverageRadius(AirportType type);
+	static SQInteger GetAirportCoverageRadius(AirportType type);
 
 	/**
 	 * Get the number of hangars of the airport.
@@ -120,7 +121,7 @@ public:
 	 * @pre ScriptMap::IsValidTile(tile).
 	 * @return The number of hangars of the airport.
 	 */
-	static int32 GetNumHangars(TileIndex tile);
+	static SQInteger GetNumHangars(TileIndex tile);
 
 	/**
 	 * Get the first hangar tile of the airport.
@@ -142,11 +143,11 @@ public:
 	 * @pre ScriptMap::IsValidTile(tile).
 	 * @pre AirportAvailable(type).
 	 * @pre station_id == ScriptStation::STATION_NEW || station_id == ScriptStation::STATION_JOIN_ADJACENT || ScriptStation::IsValidStation(station_id).
-	 * @game @pre Valid ScriptCompanyMode active in scope.
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_AREA_NOT_CLEAR
 	 * @exception ScriptError::ERR_FLAT_LAND_REQUIRED
 	 * @exception ScriptError::ERR_LOCAL_AUTHORITY_REFUSES
-	 * @exception ScriptStation::ERR_STATION_TOO_LARGE
+	 * @exception ScriptError::ERR_STATION_TOO_SPREAD_OUT
 	 * @exception ScriptStation::ERR_STATION_TOO_CLOSE_TO_ANOTHER_STATION
 	 * @return Whether the airport has been/can be build or not.
 	 */
@@ -156,7 +157,7 @@ public:
 	 * Removes an airport.
 	 * @param tile Any tile of the airport.
 	 * @pre ScriptMap::IsValidTile(tile).
-	 * @game @pre Valid ScriptCompanyMode active in scope.
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @return Whether the airport has been/can be removed or not.
 	 */
@@ -180,7 +181,7 @@ public:
 	 * @return The amount of noise added to the nearest town.
 	 * @note The noise will be added to the town with TownID GetNearestTown(tile, type).
 	 */
-	static int GetNoiseLevelIncrease(TileIndex tile, AirportType type);
+	static SQInteger GetNoiseLevelIncrease(TileIndex tile, AirportType type);
 
 	/**
 	 * Get the TownID of the town whose local authority will influence
@@ -198,15 +199,24 @@ public:
 	 * @pre IsAirportInformationAvailable(type)
 	 * @return Maintenance cost factor of the airport type.
 	 */
-	static uint16 GetMaintenanceCostFactor(AirportType type);
+	static SQInteger GetMaintenanceCostFactor(AirportType type);
 
 	/**
 	 * Get the monthly maintenance cost of an airport type.
 	 * @param type The airport type to get the monthly maintenance cost of.
 	 * @pre IsAirportInformationAvailable(type)
-	 * @return Monthly maintenance cost of the airport type.
+	 * @return Maintenance cost of the airport type per economy-month.
+	 * @see \ref ScriptEconomyTime
 	 */
 	static Money GetMonthlyMaintenanceCost(AirportType type);
+
+	/**
+	 * Get the number of helipads of this airport type.
+	 * @param type The airport type.
+	 * @pre IsAirportInformationAvailable(type)
+	 * @return Number of helipads of this type of airport. When 0 helicopters will go to normal terminals.
+	 */
+	static SQInteger GetAirportNumHelipads(AirportType type);
 };
 
 #endif /* SCRIPT_AIRPORT_HPP */

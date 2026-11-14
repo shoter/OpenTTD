@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file ai_instance.hpp The AIInstance tracks an AI. */
@@ -23,13 +23,13 @@ public:
 	 */
 	void Initialize(class AIInfo *info);
 
-	int GetSetting(const char *name) override;
-	ScriptInfo *FindLibrary(const char *library, int version) override;
+	int GetSetting(const std::string &name) override;
+	ScriptInfo *FindLibrary(const std::string &library, int version) override;
 
 private:
 	void RegisterAPI() override;
 	void Died() override;
-	CommandCallback *GetDoCommandCallback() override;
+	CommandCallbackData *GetDoCommandCallback() override;
 	void LoadDummyScript() override;
 };
 

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file bridge_map.h Map accessor functions for bridges. */
@@ -10,21 +10,21 @@
 #ifndef BRIDGE_MAP_H
 #define BRIDGE_MAP_H
 
+#include "bridge_type.h"
 #include "rail_map.h"
 #include "road_map.h"
-#include "bridge.h"
 #include "water_map.h"
 
 /**
  * Checks if this is a bridge, instead of a tunnel
  * @param t The tile to analyze
- * @pre IsTileType(t, MP_TUNNELBRIDGE)
+ * @pre IsTileType(t, TileType::TunnelBridge)
  * @return true if the structure is a bridge one
  */
-static inline bool IsBridge(TileIndex t)
+inline bool IsBridge(Tile t)
 {
-	assert(IsTileType(t, MP_TUNNELBRIDGE));
-	return HasBit(_m[t].m5, 7);
+	assert(IsTileType(t, TileType::TunnelBridge));
+	return HasBit(t.m5(), 7);
 }
 
 /**
@@ -32,9 +32,9 @@ static inline bool IsBridge(TileIndex t)
  * @param t The tile to analyze
  * @return true if a bridge is present
  */
-static inline bool IsBridgeTile(TileIndex t)
+inline bool IsBridgeTile(Tile t)
 {
-	return IsTileType(t, MP_TUNNELBRIDGE) && IsBridge(t);
+	return IsTileType(t, TileType::TunnelBridge) && IsBridge(t);
 }
 
 /**
@@ -42,9 +42,9 @@ static inline bool IsBridgeTile(TileIndex t)
  * @param t The tile to analyze
  * @return true if a bridge is detected above
  */
-static inline bool IsBridgeAbove(TileIndex t)
+inline bool IsBridgeAbove(Tile t)
 {
-	return GB(_m[t].type, 2, 2) != 0;
+	return GB(t.type(), 2, 2) != 0;
 }
 
 /**
@@ -53,10 +53,10 @@ static inline bool IsBridgeAbove(TileIndex t)
  * @pre IsBridgeTile(t)
  * @return The bridge type
  */
-static inline BridgeType GetBridgeType(TileIndex t)
+inline BridgeType GetBridgeType(Tile t)
 {
 	assert(IsBridgeTile(t));
-	return GB(_me[t].m6, 2, 4);
+	return GB(t.m6(), 2, 4);
 }
 
 /**
@@ -65,10 +65,10 @@ static inline BridgeType GetBridgeType(TileIndex t)
  * @pre IsBridgeAbove(t)
  * @return the above mentioned axis
  */
-static inline Axis GetBridgeAxis(TileIndex t)
+inline Axis GetBridgeAxis(Tile t)
 {
 	assert(IsBridgeAbove(t));
-	return (Axis)(GB(_m[t].type, 2, 2) - 1);
+	return static_cast<Axis>(GB(t.type(), 2, 2) - 1);
 }
 
 TileIndex GetNorthernBridgeEnd(TileIndex t);
@@ -81,7 +81,7 @@ int GetBridgeHeight(TileIndex tile);
  * @param tile the bridge ramp tile to get the bridge height from
  * @return the height of the bridge in pixels
  */
-static inline int GetBridgePixelHeight(TileIndex tile)
+inline int GetBridgePixelHeight(TileIndex tile)
 {
 	return GetBridgeHeight(tile) * TILE_HEIGHT;
 }
@@ -91,19 +91,19 @@ static inline int GetBridgePixelHeight(TileIndex tile)
  * @param t the tile to remove the bridge from
  * @param a the axis of the bridge to remove
  */
-static inline void ClearSingleBridgeMiddle(TileIndex t, Axis a)
+inline void ClearSingleBridgeMiddle(Tile t, Axis a)
 {
-	ClrBit(_m[t].type, 2 + a);
+	ClrBit(t.type(), 2 + to_underlying(a));
 }
 
 /**
  * Removes bridges from the given, that is bridges along the X and Y axis.
  * @param t the tile to remove the bridge from
  */
-static inline void ClearBridgeMiddle(TileIndex t)
+inline void ClearBridgeMiddle(Tile t)
 {
-	ClearSingleBridgeMiddle(t, AXIS_X);
-	ClearSingleBridgeMiddle(t, AXIS_Y);
+	ClearSingleBridgeMiddle(t, Axis::X);
+	ClearSingleBridgeMiddle(t, Axis::Y);
 }
 
 /**
@@ -111,9 +111,9 @@ static inline void ClearBridgeMiddle(TileIndex t)
  * @param t the tile to add the bridge to
  * @param a the axis of the bridge to add
  */
-static inline void SetBridgeMiddle(TileIndex t, Axis a)
+inline void SetBridgeMiddle(Tile t, Axis a)
 {
-	SetBit(_m[t].type, 2 + a);
+	SetBit(t.type(), 2 + to_underlying(a));
 }
 
 /**
@@ -125,18 +125,19 @@ static inline void SetBridgeMiddle(TileIndex t, Axis a)
  * @param tt         the transport type of the bridge
  * @note this function should not be called directly.
  */
-static inline void MakeBridgeRamp(TileIndex t, Owner o, BridgeType bridgetype, DiagDirection d, TransportType tt)
+inline void MakeBridgeRamp(Tile t, Owner o, BridgeType bridgetype, DiagDirection d, TransportType tt)
 {
-	SetTileType(t, MP_TUNNELBRIDGE);
+	SetTileType(t, TileType::TunnelBridge);
 	SetTileOwner(t, o);
 	SetDockingTile(t, false);
-	_m[t].m2 = 0;
-	_m[t].m3 = 0;
-	_m[t].m4 = INVALID_ROADTYPE;
-	_m[t].m5 = 1 << 7 | tt << 2 | d;
-	SB(_me[t].m6, 2, 4, bridgetype);
-	_me[t].m7 = 0;
-	_me[t].m8 = INVALID_ROADTYPE << 6;
+	t.m2() = 0;
+	t.m3() = 0;
+	t.m4() = 0;
+	t.m5() = 1 << 7 | to_underlying(tt) << 2 | to_underlying(d);
+	SB(t.m6(), 2, 4, bridgetype);
+	SB(t.m6(), 6, 2, 0);
+	t.m7() = 0;
+	t.m8() = 0;
 }
 
 /**
@@ -150,11 +151,11 @@ static inline void MakeBridgeRamp(TileIndex t, Owner o, BridgeType bridgetype, D
  * @param road_rt    the road type of the bridge
  * @param tram_rt    the tram type of the bridge
  */
-static inline void MakeRoadBridgeRamp(TileIndex t, Owner o, Owner owner_road, Owner owner_tram, BridgeType bridgetype, DiagDirection d, RoadType road_rt, RoadType tram_rt)
+inline void MakeRoadBridgeRamp(Tile t, Owner o, Owner owner_road, Owner owner_tram, BridgeType bridgetype, DiagDirection d, RoadType road_rt, RoadType tram_rt)
 {
-	MakeBridgeRamp(t, o, bridgetype, d, TRANSPORT_ROAD);
-	SetRoadOwner(t, RTT_ROAD, owner_road);
-	if (owner_tram != OWNER_TOWN) SetRoadOwner(t, RTT_TRAM, owner_tram);
+	MakeBridgeRamp(t, o, bridgetype, d, TransportType::Road);
+	SetRoadOwner(t, RoadTramType::Road, owner_road);
+	if (owner_tram != OWNER_TOWN) SetRoadOwner(t, RoadTramType::Tram, owner_tram);
 	SetRoadTypes(t, road_rt, tram_rt);
 }
 
@@ -166,9 +167,9 @@ static inline void MakeRoadBridgeRamp(TileIndex t, Owner o, Owner owner_road, Ow
  * @param d          the direction this ramp must be facing
  * @param rt         the rail type of the bridge
  */
-static inline void MakeRailBridgeRamp(TileIndex t, Owner o, BridgeType bridgetype, DiagDirection d, RailType rt)
+inline void MakeRailBridgeRamp(Tile t, Owner o, BridgeType bridgetype, DiagDirection d, RailType rt)
 {
-	MakeBridgeRamp(t, o, bridgetype, d, TRANSPORT_RAIL);
+	MakeBridgeRamp(t, o, bridgetype, d, TransportType::Rail);
 	SetRailType(t, rt);
 }
 
@@ -178,9 +179,9 @@ static inline void MakeRailBridgeRamp(TileIndex t, Owner o, BridgeType bridgetyp
  * @param o          the new owner of the bridge ramp
  * @param d          the direction this ramp must be facing
  */
-static inline void MakeAqueductBridgeRamp(TileIndex t, Owner o, DiagDirection d)
+inline void MakeAqueductBridgeRamp(Tile t, Owner o, DiagDirection d)
 {
-	MakeBridgeRamp(t, o, 0, d, TRANSPORT_WATER);
+	MakeBridgeRamp(t, o, 0, d, TransportType::Water);
 }
 
 #endif /* BRIDGE_MAP_H */

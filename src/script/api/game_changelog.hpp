@@ -2,29 +2,195 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
+/** @file game_changelog.hpp Lists all changes / additions to the game script API. */
+
 /**
- * @file game_changelog.hpp Lists all changes / additions to the API.
+ * @page game_changelog Lists all changes / additions to the API.
  *
  * Only new / renamed / deleted api functions will be listed here. A list of
  * bug fixes can be found in the normal changelog. Note that removed API
  * functions may still be available if you return an older API version
  * in GetAPIVersion() in info.nut.
  *
- * \b 1.11.0
+ * \b 17.0
  *
  * This version is not yet released. The following changes are not set in stone yet.
  *
+ * \b 16.0
+ *
  * API additions:
+ * \li GSRail::RemoveRailDepot
+ * \li GSDepot
+ * \li GSError::ERR_CAT_DEPOT
+ *
+ * Other changes:
+ * \li GSTown::ExpandTown Change to town expansion to match expected behaviour with the 'allow_town_roads' setting
+ *
+ * \b 15.0
+ *
+ * API additions:
+ * \li GSEventVehicleCrashed::GetVictims
+ * \li GSEventVehicleCrashed::GetVehicleOwner
+ * \li GSEventCompanyRenamed
+ * \li GSEventPresidentRenamed
+ * \li GSCargo::CC_OVERSIZED
+ * \li GSCargo::CC_POWDERIZED
+ * \li GSCargo::CC_NON_POURABLE
+ * \li GSCargo::CC_POTABLE
+ * \li GSCargo::CC_NON_POTABLE
+ * \li GSVehicleList_Waypoint
+ * \li GSBaseStation::GetOwner
+ * \li GSError::ERR_BRIDGE_TOO_LOW
+ * \li GSEngine::GetAllRailTypes
+ * \li GSTile::IsHouseTile
+ *
+ * Other changes:
+ * \li GSBridge::GetBridgeID renamed to GSBridge::GetBridgeType
+ * \li GSWaypoint::GetWaypointID now returns the StationID of any type of waypoint
+ * \li GSList instances can now be saved
+ * \li GSVehicleList_Station accepts an optional GSVehicle::VehicleType parameter
+ * \li GSList instances can now be cloned
+ * \li GSEngine::GetRailType will only return the first RailType of an engine, use GSEngine::GetAllRailTypes instead
+ *
+ * \b 14.0
+ *
+ * API additions:
+ * \li GSIndustry::GetConstructionDate
+ * \li GSAsyncMode
+ * \li GSCompanyMode::IsValid
+ * \li GSCompanyMode::IsDeity
+ * \li GSTown::ROAD_LAYOUT_RANDOM
+ * \li GSVehicle::IsPrimaryVehicle
+ * \li GSOrder::SetOrderJumpTo
+ * \li GSOrder::SetOrderCondition
+ * \li GSOrder::SetOrderCompareFunction
+ * \li GSOrder::SetOrderCompareValue
+ * \li GSOrder::SetStopLocation
+ * \li GSOrder::SetOrderRefit
+ * \li GSOrder::AppendOrder
+ * \li GSOrder::AppendConditionalOrder
+ * \li GSOrder::InsertOrder
+ * \li GSOrder::InsertConditionalOrder
+ * \li GSOrder::RemoveOrder
+ * \li GSOrder::SetOrderFlags
+ * \li GSOrder::MoveOrder
+ * \li GSOrder::SkipToOrder
+ * \li GSOrder::CopyOrders
+ * \li GSOrder::ShareOrders
+ * \li GSOrder::UnshareOrders
+ * \li GSCompany::IsMine
+ * \li GSCompany::SetPresidentGender
+ * \li GSCompany::SetAutoRenewStatus
+ * \li GSCompany::SetAutoRenewMonths
+ * \li GSCompany::SetAutoRenewMoney
+ * \li GSCompany::SetMaxLoanAmountForCompany
+ * \li GSCompany::ResetMaxLoanAmountForCompany
+ * \li GSGameSettings::IsDisabledVehicleType
+ * \li GSGroup::GroupID
+ * \li GSGroup::IsValidGroup
+ * \li GSGroup::CreateGroup
+ * \li GSGroup::DeleteGroup
+ * \li GSGroup::GetVehicleType
+ * \li GSGroup::SetName
+ * \li GSGroup::GetName
+ * \li GSGroup::SetParent
+ * \li GSGroup::GetParent
+ * \li GSGroup::EnableAutoReplaceProtection
+ * \li GSGroup::GetAutoReplaceProtection
+ * \li GSGroup::GetNumEngines
+ * \li GSGroup::GetNumVehicles
+ * \li GSGroup::MoveVehicle
+ * \li GSGroup::EnableWagonRemoval
+ * \li GSGroup::HasWagonRemoval
+ * \li GSGroup::SetAutoReplace
+ * \li GSGroup::GetEngineReplacement
+ * \li GSGroup::StopAutoReplace
+ * \li GSGroup::GetProfitThisYear
+ * \li GSGroup::GetProfitLastYear
+ * \li GSGroup::GetCurrentUsage
+ * \li GSGroup::SetPrimaryColour
+ * \li GSGroup::SetSecondaryColour
+ * \li GSGroup::GetPrimaryColour
+ * \li GSGroup::GetSecondaryColour
+ * \li GSGroupList
+ * \li GSVehicleList_Group
+ * \li GSVehicleList_DefaultGroup
+ * \li GSGoal::IsValidGoalDestination
+ * \li GSGoal::SetDestination
+ * \li GSIndustry::GetProductionLevel
+ * \li GSIndustry::SetProductionLevel
+ * \li GSStoryPage::IsValidStoryPageElementType
+ * \li GSStoryPage::IsValidStoryPageButtonColour
+ * \li GSStoryPage::IsValidStoryPageButtonFlags
+ * \li GSStoryPage::IsValidStoryPageButtonCursor
+ * \li GSTileList_StationCoverage
+ * \li GSAirport::GetAirportNumHelipads
+ *
+ * API removals:
+ * \li GSError::ERR_PRECONDITION_TOO_MANY_PARAMETERS, that error is never returned anymore.
+ * \li GSInfo::CONFIG_RANDOM, no longer used.
+ * \li GSInfo::AddSettings random_deviation is no longer used.
+ *
+ * Other changes:
+ * \li GSGroupList accepts an optional filter function
+ * \li GSIndustryList accepts an optional filter function
+ * \li GSSignList accepts an optional filter function
+ * \li GSSubsidyList accepts an optional filter function
+ * \li GSTownList accepts an optional filter function
+ * \li GSVehicleList accepts an optional filter function
+ * \li GSInfo::AddSettings easy_value / medium_value / hard_value are replaced with default_value
+ *
+ * \b 13.0
+ *
+ * API additions:
+ * \li GSCargo::GetWeight
+ * \li GSIndustryType::ResolveNewGRFID
+ * \li GSObjectType::ResolveNewGRFID
+ * \li GSLeagueTable
+ *
+ * Other changes:
+ * \li GSRoad::HasRoadType now correctly checks RoadType against RoadType
+ *
+ * \b 12.0
+ *
+ * API additions:
+ * \li GSNewGRF
+ * \li GSNewGRFList
+ * \li GSMarine::BT_LOCK
+ * \li GSMarine::BT_CANAL
+ * \li GSTile::IsSeaTile
+ * \li GSTile::IsRiverTile
+ * \li GSTile::BT_CLEAR_WATER
+ * \li GSObjectTypeList
+ * \li GSObjectType
+ *
+ * \b 1.11.0
+ *
+ * API additions:
+ * \li GSCargo::GetName
  * \li GSEventStoryPageButtonClick
  * \li GSEventStoryPageTileSelect
  * \li GSEventStoryPageVehicleSelect
+ * \li GSIndustry::GetCargoLastAcceptedDate
+ * \li GSIndustry::GetControlFlags
+ * \li GSIndustry::GetExclusiveConsumer
+ * \li GSIndustry::GetExclusiveSupplier
+ * \li GSIndustry::GetLastProductionYear
+ * \li GSIndustry::SetControlFlags
+ * \li GSIndustry::SetExclusiveConsumer
+ * \li GSIndustry::SetExclusiveSupplier
+ * \li GSIndustry::SetText
  * \li GSStoryPage::MakePushButtonReference
  * \li GSStoryPage::MakeTileButtonReference
  * \li GSStoryPage::MakeVehicleButtonReference
  * \li GSPriorityQueue
+ *
+ * Other changes:
+ * \li GSCompany::ChangeBankBalance takes one extra parameter to refer to a location to show text effect on
+ * \li GSGoal::Question and GSGoal::QuestionClient no longer require to have any buttons except for the window type GSGoal.QT_QUESTION
  *
  * \b 1.10.0
  *
@@ -156,7 +322,7 @@
  * \li GSEngine::IsValidEngine and GSEngine::IsBuildable when outside GSCompanyMode scope
  * \li GSEventExclusiveTransportRights
  * \li GSEventRoadReconstruction
- * \li GSNews::NT_ACCIDENT, GSNews::NT_COMPANY_INFO, GSNews::NT_ADVICE, GSNews::NT_ACCEPTANCE
+ * \li GSNews::NewsType::Accident, GSNews::NewsType::CompanyInfo, GSNews::NewsType::Advice, GSNews::NewsType::Acceptance
  * \li GSIndustryType::IsProcessingIndustry
  * \li GSStation::IsAirportClosed
  * \li GSStation::OpenCloseAirport
@@ -172,4 +338,18 @@
  *
  * \b 1.2.0
  * \li First stable release with the NoGo framework.
+ */
+
+/**
+ * @mainpage
+ *
+ * What's new?
+ * \li \ref game_changelog
+ *
+ * Main classes:
+ * \li \ref GSInfo
+ * \li \ref GSController
+ *
+ * Detail topics:
+ * \li \ref script_ids
  */

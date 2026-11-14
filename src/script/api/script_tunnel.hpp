@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_tunnel.hpp Everything to query and build tunnels. */
@@ -20,6 +20,8 @@ class ScriptTunnel : public ScriptObject {
 public:
 	/**
 	 * All tunnel related errors.
+	 *
+	 * @see ScriptErrorType
 	 */
 	enum ErrorMessages {
 
@@ -85,7 +87,7 @@ public:
 	 * @pre ScriptMap::IsValidTile(start).
 	 * @pre (vehicle_type == ScriptVehicle::VT_ROAD && ScriptRoad::IsRoadTypeAvailable(ScriptRoad::GetCurrentRoadType())) ||
 	 *      (vehicle_type == ScriptVehicle::VT_RAIL && ScriptRail::IsRailTypeAvailable(ScriptRail::GetCurrentRailType())).
-	 * @game @pre Outside CompanyMode: vehicle_type == ScriptVehicle::VT_ROAD.
+	 * @game @pre ScriptCompanyMode::IsValid() || vehicle_type == ScriptVehicle::VT_ROAD.
 	 * @exception ScriptError::ERR_AREA_NOT_CLEAR
 	 * @exception ScriptTunnel::ERR_TUNNEL_CANNOT_BUILD_ON_WATER
 	 * @exception ScriptTunnel::ERR_TUNNEL_START_SITE_UNSUITABLE
@@ -95,7 +97,7 @@ public:
 	 * @note The slope of a tile can be determined by ScriptTile::GetSlope(TileIndex).
 	 * @note No matter if the road pieces were build or not, if building the
 	 *  tunnel succeeded, this function returns true.
-	 * @game @note Building a bridge (without CompanyMode) results in a bridge owned by towns.
+	 * @game @note Building a tunnel as deity (ScriptCompanyMode::IsDeity()) results in a tunnel owned by towns.
 	 */
 	static bool BuildTunnel(ScriptVehicle::VehicleType vehicle_type, TileIndex start);
 
@@ -103,7 +105,7 @@ public:
 	 * Remove the tunnel whose entrance is located at tile.
 	 * @param tile The tile that is an entrance to a tunnel.
 	 * @pre ScriptMap::IsValidTile(tile) && IsTunnelTile(tile).
-	 * @game @pre Valid ScriptCompanyMode active in scope.
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @return Whether the tunnel has been/can be removed or not.
 	 */

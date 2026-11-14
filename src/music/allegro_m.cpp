@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file allegro_m.cpp Playing music via allegro. */
@@ -26,27 +26,27 @@ static MIDI *_midi = nullptr;
  */
 extern int _allegro_instance_count;
 
-const char *MusicDriver_Allegro::Start(const StringList &param)
+std::optional<std::string_view> MusicDriver_Allegro::Start(const StringList &)
 {
 	if (_allegro_instance_count == 0 && install_allegro(SYSTEM_AUTODETECT, &errno, nullptr)) {
-		DEBUG(driver, 0, "allegro: install_allegro failed '%s'", allegro_error);
+		Debug(Facility::Driver, Severity::Critical, "allegro: install_allegro failed '{}'", allegro_error);
 		return "Failed to set up Allegro";
 	}
 	_allegro_instance_count++;
 
 	/* Initialise the sound */
 	if (install_sound(DIGI_AUTODETECT, MIDI_AUTODETECT, nullptr) != 0) {
-		DEBUG(driver, 0, "allegro: install_sound failed '%s'", allegro_error);
+		Debug(Facility::Driver, Severity::Critical, "allegro: install_sound failed '{}'", allegro_error);
 		return "Failed to set up Allegro sound";
 	}
 
 	/* Okay, there's no soundcard */
 	if (midi_card == MIDI_NONE) {
-		DEBUG(driver, 0, "allegro: no midi card found");
+		Debug(Facility::Driver, Severity::Critical, "allegro: no midi card found");
 		return "No sound card found";
 	}
 
-	return nullptr;
+	return std::nullopt;
 }
 
 void MusicDriver_Allegro::Stop()
@@ -80,7 +80,7 @@ bool MusicDriver_Allegro::IsSongPlaying()
 	return midi_pos >= 0;
 }
 
-void MusicDriver_Allegro::SetVolume(byte vol)
+void MusicDriver_Allegro::SetVolume(uint8_t vol)
 {
 	set_volume(-1, vol);
 }

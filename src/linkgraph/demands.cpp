@@ -1,7 +1,16 @@
+/*
+ * This file is part of OpenTTD.
+ * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
+ * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
+ */
+
 /** @file demands.cpp Definition of demand calculating link graph handler. */
 
 #include "../stdafx.h"
 #include "demands.h"
+#include "linkgraphjob_base.h"
+#include "../core/math_func.hpp"
 #include <queue>
 
 #include "../safeguards.h"
@@ -36,7 +45,7 @@ public:
 	 */
 	inline void AddNode(const Node &node)
 	{
-		this->supply_sum += node.Supply();
+		this->supply_sum += node.base.supply;
 	}
 
 	/**
@@ -45,7 +54,7 @@ public:
 	 */
 	inline void SetDemandPerNode(uint num_demands)
 	{
-		this->demand_per_node = max(this->supply_sum / num_demands, 1U);
+		this->demand_per_node = std::max(this->supply_sum / num_demands, 1U);
 	}
 
 	/**
@@ -57,7 +66,7 @@ public:
 	 */
 	inline uint EffectiveSupply(const Node &from, const Node &to)
 	{
-		return max(from.Supply() * max(1U, to.Supply()) * this->mod_size / 100 / this->demand_per_node, 1U);
+		return std::max(from.base.supply * std::max(1U, to.base.supply) * this->mod_size / 100 / this->demand_per_node, 1U);
 	}
 
 	/**
@@ -65,11 +74,11 @@ public:
 	 * nodes only accept anything if they also supply something. So if
 	 * undelivered_supply == 0 at the node there isn't any demand left either.
 	 * @param to Node to be checked.
-	 * @return If demand is left.
+	 * @return \c true iff demand is left.
 	 */
 	inline bool HasDemandLeft(const Node &to)
 	{
-		return (to.Supply() == 0 || to.UndeliveredSupply() > 0) && to.Demand() > 0;
+		return (to.base.supply == 0 || to.undelivered_supply > 0) && to.base.demand > 0;
 	}
 
 	void SetDemands(LinkGraphJob &job, NodeID from, NodeID to, uint demand_forw);
@@ -87,7 +96,6 @@ class AsymmetricScaler : public Scaler {
 public:
 	/**
 	 * Nothing to do here.
-	 * @param unused.
 	 */
 	inline void AddNode(const Node &)
 	{
@@ -95,7 +103,6 @@ public:
 
 	/**
 	 * Nothing to do here.
-	 * @param unused.
 	 */
 	inline void SetDemandPerNode(uint)
 	{
@@ -104,19 +111,20 @@ public:
 	/**
 	 * Get the effective supply of one node towards another one.
 	 * @param from The supplying node.
-	 * @param unused.
+	 * @return Effective supply.
 	 */
 	inline uint EffectiveSupply(const Node &from, const Node &)
 	{
-		return from.Supply();
+		return from.base.supply;
 	}
 
 	/**
 	 * Check if there is any acceptance left for this node. In asymmetric distribution
 	 * nodes always accept as long as their demand > 0.
 	 * @param to The node to be checked.
+	 * @return \c true iff demand is left.
 	 */
-	inline bool HasDemandLeft(const Node &to) { return to.Demand() > 0; }
+	inline bool HasDemandLeft(const Node &to) { return to.base.demand > 0; }
 };
 
 /**
@@ -129,12 +137,12 @@ public:
  */
 void SymmetricScaler::SetDemands(LinkGraphJob &job, NodeID from_id, NodeID to_id, uint demand_forw)
 {
-	if (job[from_id].Demand() > 0) {
+	if (job[from_id].base.demand > 0) {
 		uint demand_back = demand_forw * this->mod_size / 100;
-		uint undelivered = job[to_id].UndeliveredSupply();
+		uint undelivered = job[to_id].undelivered_supply;
 		if (demand_back > undelivered) {
 			demand_back = undelivered;
-			demand_forw = max(1U, demand_back * 100 / this->mod_size);
+			demand_forw = std::max(1U, demand_back * 100 / this->mod_size);
 		}
 		this->Scaler::SetDemands(job, to_id, from_id, demand_back);
 	}
@@ -158,9 +166,9 @@ inline void Scaler::SetDemands(LinkGraphJob &job, NodeID from_id, NodeID to_id, 
 /**
  * Do the actual demand calculation, called from constructor.
  * @param job Job to calculate the demands for.
- * @tparam Tscaler Scaler to be used for scaling demands.
+ * @param scaler Scaler to be used for scaling demands.
  */
-template<class Tscaler>
+template <class Tscaler>
 void DemandCalculator::CalcDemand(LinkGraphJob &job, Tscaler scaler)
 {
 	NodeList supplies;
@@ -170,11 +178,11 @@ void DemandCalculator::CalcDemand(LinkGraphJob &job, Tscaler scaler)
 
 	for (NodeID node = 0; node < job.Size(); node++) {
 		scaler.AddNode(job[node]);
-		if (job[node].Supply() > 0) {
+		if (job[node].base.supply > 0) {
 			supplies.push(node);
 			num_supplies++;
 		}
-		if (job[node].Demand() > 0) {
+		if (job[node].base.demand > 0) {
 			demands.push(node);
 			num_demands++;
 		}
@@ -204,33 +212,36 @@ void DemandCalculator::CalcDemand(LinkGraphJob &job, Tscaler scaler)
 				continue;
 			}
 
-			int32 supply = scaler.EffectiveSupply(job[from_id], job[to_id]);
+			int32_t supply = scaler.EffectiveSupply(job[from_id], job[to_id]);
 			assert(supply > 0);
 
-			/* Scale the distance by mod_dist around max_distance */
-			int32 distance = this->max_distance - (this->max_distance -
-					(int32)DistanceMaxPlusManhattan(job[from_id].XY(), job[to_id].XY())) *
-					this->mod_dist / 100;
+			constexpr int32_t divisor_scale = 16;
+
+			int32_t scaled_distance = this->base_distance;
+			if (this->mod_dist > 0) {
+				const int32_t distance = DistanceMaxPlusManhattan(job[from_id].base.xy, job[to_id].base.xy);
+				/* Scale distance around base_distance by (mod_dist * (100 / 1024)).
+				 * mod_dist may be > 1024, so clamp result to be non-negative */
+				scaled_distance = std::max(0, this->base_distance + (((distance - this->base_distance) * this->mod_dist) / 1024));
+			}
 
 			/* Scale the accuracy by distance around accuracy / 2 */
-			int32 divisor = this->accuracy * (this->mod_dist - 50) / 100 +
-					this->accuracy * distance / this->max_distance + 1;
-
-			assert(divisor > 0);
+			const int32_t divisor = divisor_scale + ((this->accuracy * scaled_distance * divisor_scale) / (this->base_distance * 2));
+			assert(divisor >= divisor_scale);
 
 			uint demand_forw = 0;
-			if (divisor <= supply) {
+			if (divisor <= (supply * divisor_scale)) {
 				/* At first only distribute demand if
 				 * effective supply / accuracy divisor >= 1
 				 * Others are too small or too far away to be considered. */
-				demand_forw = supply / divisor;
+				demand_forw = (supply * divisor_scale) / divisor;
 			} else if (++chance > this->accuracy * num_demands * num_supplies) {
 				/* After some trying, if there is still supply left, distribute
 				 * demand also to other nodes. */
 				demand_forw = 1;
 			}
 
-			demand_forw = min(demand_forw, job[from_id].UndeliveredSupply());
+			demand_forw = std::min(demand_forw, job[from_id].undelivered_supply);
 
 			scaler.SetDemands(job, from_id, to_id, demand_forw);
 
@@ -240,10 +251,10 @@ void DemandCalculator::CalcDemand(LinkGraphJob &job, Tscaler scaler)
 				num_demands--;
 			}
 
-			if (job[from_id].UndeliveredSupply() == 0) break;
+			if (job[from_id].undelivered_supply == 0) break;
 		}
 
-		if (job[from_id].UndeliveredSupply() != 0) {
+		if (job[from_id].undelivered_supply != 0) {
 			supplies.push(from_id);
 		} else {
 			num_supplies--;
@@ -256,24 +267,30 @@ void DemandCalculator::CalcDemand(LinkGraphJob &job, Tscaler scaler)
  * @param job Job to calculate the demands for.
  */
 DemandCalculator::DemandCalculator(LinkGraphJob &job) :
-	max_distance(DistanceMaxPlusManhattan(TileXY(0,0), TileXY(MapMaxX(), MapMaxY())))
+	base_distance(IntSqrt(DistanceMaxPlusManhattan(TileXY(0,0), TileXY(Map::MaxX(), Map::MaxY()))))
 {
 	const LinkGraphSettings &settings = job.Settings();
-	CargoID cargo = job.Cargo();
+	CargoType cargo = job.Cargo();
 
 	this->accuracy = settings.accuracy;
 	this->mod_dist = settings.demand_distance;
 	if (this->mod_dist > 100) {
-		/* Increase effect of mod_dist > 100 */
+		/* Increase effect of mod_dist > 100.
+		 * Quadratic:
+		 *   100 --> 100
+		 *   150 --> 308
+		 *   200 --> 933
+		 *   255 --> 2102
+		 */
 		int over100 = this->mod_dist - 100;
-		this->mod_dist = 100 + over100 * over100;
+		this->mod_dist = 100 + ((over100 * over100) / 12);
 	}
 
 	switch (settings.GetDistributionType(cargo)) {
-		case DT_SYMMETRIC:
+		case DistributionType::Symmetric:
 			this->CalcDemand<SymmetricScaler>(job, SymmetricScaler(settings.demand_size));
 			break;
-		case DT_ASYMMETRIC:
+		case DistributionType::Asymmetric:
 			this->CalcDemand<AsymmetricScaler>(job, AsymmetricScaler());
 			break;
 		default:

@@ -1,7 +1,7 @@
 # This file is part of OpenTTD.
 # OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
 # OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-# See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+# See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
 
 #
 # Awk script to automatically generate the code needed
@@ -24,7 +24,10 @@ BEGIN {
 }
 
 {
+	# replace Script with AI/GS, except for ScriptErrorType
 	gsub(/Script/, api)
+	gsub(/AIErrorType/, "ScriptErrorType")
+	gsub(/GSErrorType/, "ScriptErrorType")
 }
 
 {
@@ -44,6 +47,10 @@ BEGIN {
 
 /@file/ {
 	gsub(/script/, apis)
+}
+
+/^([	 ]*)\* @suspendable/ {
+	next
 }
 
 /^([	 ]*)\* @api/ {
@@ -77,13 +84,10 @@ BEGIN {
 /^(	*)class/     {
 	if (cls_level == 0) {
 		if (api_selected == "") {
-			print "Class '"$2"' has no @api. It won't be published to any API." > "/dev/stderr"
+			printf "%s:%d: %s\n", FILENAME, NR, "Class '"$2"' has no @api. It won't be published to any API." > "/dev/stderr"
 			api_selected = "false"
 		}
 		public = "false"
-		cls_param[0] = ""
-		cls_param[1] = 1
-		cls_param[2] = "x"
 		cls_in_api = api_selected
 		api_selected = ""
 		cls = $2
@@ -105,7 +109,7 @@ BEGIN {
 		}
 		api_selected = ""
 	} else {
-		print "Classes nested too deep" > "/dev/stderr"
+		printf "%s:%d: %s\n", FILENAME, NR, "Classes nested too deep" > "/dev/stderr"
 		exit 1
 	}
 	cls_level++
@@ -131,6 +135,16 @@ BEGIN {
 
 /^#/ {
 	next
+}
+
+# Convert/unify type names
+{
+	gsub(/\<SQInteger\>/, "int")
+	gsub(/\<SquirrelTable\>/, "table")
+	gsub(/\<u?int[0-9]*(_t)?\>/, "int")
+	gsub(/\<HSQOBJECT\>/, "object")
+	gsub(/std::optional<std::string>/, "string")
+	gsub(/(const )?std::string *[*&]?/, "string ")
 }
 
 # Store comments
@@ -198,7 +212,7 @@ BEGIN {
 }
 
 # Maybe the end of the class, if so we can start with the Squirrel export pretty soon
-/};/ {
+/^[ 	]*};/ {
 	comment_buffer = ""
 	cls_level--
 	if (cls_level != 0) {
@@ -245,7 +259,7 @@ BEGIN {
 }
 
 # Add a const (non-enum) value
-/^[ 	]*static const \w+ \w+ = -?\(?\w*\)?\w+;/ {
+/^[ 	]*static const(expr)? \w+ \w+ = [^;]+;/ {
 	if (api_selected == "") api_selected = cls_in_api
 	if (api_selected == "false") {
 		api_selected = ""
@@ -262,12 +276,14 @@ BEGIN {
 /^.*\(.*\).*$/ {
 	if (cls_level != 1) next
 	if (!match($0, ";")) {
-		gsub(/ :$/, ";")
-		skip_function_body = "true"
+		if (!match($0, "}$")) {
+			skip_function_body = "true"
+		}
+		gsub(/ :.*$/, ";")
 	}
 	if (match($0, "~")) {
 		if (api_selected != "") {
-			print "Destructor for '"cls"' has @api. Tag ignored." > "/dev/stderr"
+			printf "%s:%d: %s\n", FILENAME, NR, "Destructor for '"cls"' has @api. Tag ignored." > "/dev/stderr"
 			api_selected = ""
 		}
 		next

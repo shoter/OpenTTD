@@ -2,10 +2,10 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file pbs.h PBS support routines */
+/** @file pbs.h PBS support routines. */
 
 #ifndef PBS_H
 #define PBS_H
@@ -31,7 +31,7 @@ struct PBSTileInfo {
 	/**
 	 * Create an empty PBSTileInfo.
 	 */
-	PBSTileInfo() : tile(INVALID_TILE), trackdir(INVALID_TRACKDIR), okay(false) {}
+	PBSTileInfo() : tile(INVALID_TILE), trackdir(Trackdir::Invalid), okay(false) {}
 
 	/**
 	 * Create a PBSTileInfo with given tile, track direction and safe waiting position information.
@@ -55,9 +55,9 @@ Train *GetTrainForReservation(TileIndex tile, Track track);
  * @param tracks the tracks to test
  * @return true if at least on of tracks is reserved
  */
-static inline bool HasReservedTracks(TileIndex tile, TrackBits tracks)
+inline bool HasReservedTracks(TileIndex tile, TrackBits tracks)
 {
-	return (GetReservedTrackbits(tile) & tracks) != TRACK_BIT_NONE;
+	return GetReservedTrackbits(tile).Any(tracks);
 }
 
 #endif /* PBS_H */

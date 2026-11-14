@@ -2,16 +2,19 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file ai_sl.cpp Handles the saveload part of the AIs */
+/** @file ai_sl.cpp Handles the saveload part of the AIs. */
 
 #include "../stdafx.h"
-#include "../company_base.h"
 #include "../debug.h"
+
 #include "saveload.h"
-#include "../string_func.h"
+#include "saveload_error.hpp"
+#include "compat/ai_sl_compat.h"
+
+#include "../company_base.h"
 
 #include "../ai/ai.hpp"
 #include "../ai/ai_config.hpp"
@@ -20,108 +23,153 @@
 
 #include "../safeguards.h"
 
-static char _ai_saveload_name[64];
-static int  _ai_saveload_version;
-static char _ai_saveload_settings[1024];
-static bool _ai_saveload_is_random;
+static std::string _ai_saveload_name;
+static int         _ai_saveload_version;
+static std::string _ai_saveload_settings;
+static bool        _ai_saveload_is_random;
 
-static const SaveLoad _ai_company[] = {
-	    SLEG_STR(_ai_saveload_name,        SLE_STRB),
-	    SLEG_STR(_ai_saveload_settings,    SLE_STRB),
-	SLEG_CONDVAR(_ai_saveload_version,   SLE_UINT32, SLV_108, SL_MAX_VERSION),
-	SLEG_CONDVAR(_ai_saveload_is_random,   SLE_BOOL, SLV_136, SL_MAX_VERSION),
-	     SLE_END()
+static const SaveLoad _ai_company_desc[] = {
+	SaveLoad::String("name", SLE_GLOBAL_ADDRESS(_ai_saveload_name)),
+	SaveLoad::String("settings", SLE_GLOBAL_ADDRESS(_ai_saveload_settings)),
+	SaveLoad::Variable<VarFileType::U32>("version", SLE_GLOBAL_ADDRESS(_ai_saveload_version), SaveLoadVersion::StoreAIVersion),
+	SaveLoad::Variable<VarFileType::Bool>("is_random", SLE_GLOBAL_ADDRESS(_ai_saveload_is_random), SaveLoadVersion::SplitLoadWaitCounters, SaveLoadVersion::AILocalConfig),
 };
 
-static void SaveReal_AIPL(int *index_ptr)
+static const SaveLoad _ai_running_desc[] = {
+	SaveLoad::String("running_name", SLE_GLOBAL_ADDRESS(_ai_saveload_name), {}, SaveLoadVersion::AILocalConfig),
+	SaveLoad::String("running_settings", SLE_GLOBAL_ADDRESS(_ai_saveload_settings), {}, SaveLoadVersion::AILocalConfig),
+	SaveLoad::Variable<VarFileType::U32>("running_version", SLE_GLOBAL_ADDRESS(_ai_saveload_version), SaveLoadVersion::AILocalConfig),
+};
+
+static void SaveReal_AIPL(int arg)
 {
-	CompanyID index = (CompanyID)*index_ptr;
-	AIConfig *config = AIConfig::GetConfig(index);
+	CompanyID index = static_cast<CompanyID>(arg);
+	AIConfig *config = AIConfig::GetConfig(index, AIConfig::ScriptSettingSource::ForceCurrentGame);
 
 	if (config->HasScript()) {
-		strecpy(_ai_saveload_name, config->GetName(), lastof(_ai_saveload_name));
+		_ai_saveload_name = config->GetName();
 		_ai_saveload_version = config->GetVersion();
 	} else {
 		/* No AI is configured for this so store an empty string as name. */
-		_ai_saveload_name[0] = '\0';
+		_ai_saveload_name.clear();
 		_ai_saveload_version = -1;
 	}
 
-	_ai_saveload_is_random = config->IsRandom();
-	_ai_saveload_settings[0] = '\0';
-	config->SettingsToString(_ai_saveload_settings, lastof(_ai_saveload_settings));
+	_ai_saveload_settings = config->SettingsToString();
 
-	SlObject(nullptr, _ai_company);
-	/* If the AI was active, store his data too */
-	if (Company::IsValidAiID(index)) AI::Save(index);
+	SlObject(nullptr, _ai_company_desc);
+
+	if (!Company::IsValidAiID(index)) return;
+
+	/* If the AI was active, store its data too */
+	config = AIConfig::GetConfig(index);
+	_ai_saveload_name = config->GetName();
+	_ai_saveload_version = config->GetVersion();
+	_ai_saveload_settings = config->SettingsToString();
+
+	SlObject(nullptr, _ai_running_desc);
+	AI::Save(index);
+
 }
 
-static void Load_AIPL()
-{
-	/* Free all current data */
-	for (CompanyID c = COMPANY_FIRST; c < MAX_COMPANIES; c++) {
-		AIConfig::GetConfig(c, AIConfig::SSS_FORCE_GAME)->Change(nullptr);
-	}
+struct AIPLChunkHandler : ChunkHandler {
+	AIPLChunkHandler() : ChunkHandler("AIPL", ChunkType::Table) {}
 
-	CompanyID index;
-	while ((index = (CompanyID)SlIterateArray()) != (CompanyID)-1) {
-		if (index >= MAX_COMPANIES) SlErrorCorrupt("Too many AI configs");
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_ai_company_desc, _ai_company_sl_compat);
 
-		_ai_saveload_is_random = 0;
-		_ai_saveload_version = -1;
-		SlObject(nullptr, _ai_company);
-
-		if (_networking && !_network_server) {
-			if (Company::IsValidAiID(index)) AIInstance::LoadEmpty();
-			continue;
+		/* Free all current data */
+		for (CompanyID c = CompanyID::Begin(); c < MAX_COMPANIES; ++c) {
+			AIConfig::GetConfig(c, AIConfig::ScriptSettingSource::ForceCurrentGame)->Change(std::nullopt);
 		}
 
-		AIConfig *config = AIConfig::GetConfig(index, AIConfig::SSS_FORCE_GAME);
-		if (StrEmpty(_ai_saveload_name)) {
-			/* A random AI. */
-			config->Change(nullptr, -1, false, true);
-		} else {
-			config->Change(_ai_saveload_name, _ai_saveload_version, false, _ai_saveload_is_random);
+		CompanyID index;
+		while ((index = (CompanyID)SlIterateArray()) != (CompanyID)-1) {
+			if (index >= MAX_COMPANIES) SlErrorCorrupt("Too many AI configs");
+
+			_ai_saveload_is_random = false;
+			_ai_saveload_version = -1;
+			SlObject(nullptr, slt);
+
+			if (_game_mode == GameMode::Menu || (_networking && !_network_server)) {
+				if (Company::IsValidAiID(index)) {
+					SlObject(nullptr, _ai_running_desc);
+					AIInstance::LoadEmpty();
+				}
+				continue;
+			}
+
+			AIConfig *config = AIConfig::GetConfig(index, AIConfig::ScriptSettingSource::ForceCurrentGame);
+			if (_ai_saveload_name.empty() || _ai_saveload_is_random) {
+				/* A random AI. */
+				config->Change(std::nullopt, -1, false);
+			} else {
+				config->Change(_ai_saveload_name, _ai_saveload_version, false);
+				if (!config->HasScript()) {
+					/* No version of the AI available. Try to configure the
+					 * latest version of the AI instead. */
+					config->Change(_ai_saveload_name, -1, false);
+					if (!config->HasScript()) {
+						if (_ai_saveload_name != "%_dummy") {
+							Debug(Facility::Script, Severity::Critical, "The savegame has an AI by the name '{}', version {} which is no longer available.", _ai_saveload_name, _ai_saveload_version);
+							Debug(Facility::Script, Severity::Critical, "Configuration switched to Random AI.");
+						}
+					} else {
+						Debug(Facility::Script, Severity::Critical, "The savegame has an AI by the name '{}', version {} which is no longer available.", _ai_saveload_name, _ai_saveload_version);
+						Debug(Facility::Script, Severity::Critical, "The latest version of that AI has been configured instead");
+					}
+				}
+			}
+			config->StringToSettings(_ai_saveload_settings);
+
+			if (!Company::IsValidAiID(index)) continue;
+
+			/* Load the AI saved data */
+			SlObject(nullptr, _ai_running_desc);
+
+			Company::Get(index)->ai_config = std::make_unique<AIConfig>();
+			config = Company::Get(index)->ai_config.get();
+			config->Change(_ai_saveload_name, _ai_saveload_version, false);
 			if (!config->HasScript()) {
 				/* No version of the AI available that can load the data. Try to load the
 				 * latest version of the AI instead. */
-				config->Change(_ai_saveload_name, -1, false, _ai_saveload_is_random);
+				config->Change(_ai_saveload_name, -1, false);
 				if (!config->HasScript()) {
-					if (strcmp(_ai_saveload_name, "%_dummy") != 0) {
-						DEBUG(script, 0, "The savegame has an AI by the name '%s', version %d which is no longer available.", _ai_saveload_name, _ai_saveload_version);
-						DEBUG(script, 0, "A random other AI will be loaded in its place.");
+					if (_ai_saveload_name != "%_dummy") {
+						Debug(Facility::Script, Severity::Critical, "The savegame has an AI by the name '{}', version {} which is no longer available.", _ai_saveload_name, _ai_saveload_version);
+						Debug(Facility::Script, Severity::Critical, "A random other AI will be loaded in its place.");
 					} else {
-						DEBUG(script, 0, "The savegame had no AIs available at the time of saving.");
-						DEBUG(script, 0, "A random available AI will be loaded now.");
+						Debug(Facility::Script, Severity::Critical, "The savegame had no AIs available at the time of saving.");
+						Debug(Facility::Script, Severity::Critical, "A random available AI will be loaded now.");
 					}
 				} else {
-					DEBUG(script, 0, "The savegame has an AI by the name '%s', version %d which is no longer available.", _ai_saveload_name, _ai_saveload_version);
-					DEBUG(script, 0, "The latest version of that AI has been loaded instead, but it'll not get the savegame data as it's incompatible.");
+					Debug(Facility::Script, Severity::Critical, "The savegame has an AI by the name '{}', version {} which is no longer available.", _ai_saveload_name, _ai_saveload_version);
+					Debug(Facility::Script, Severity::Critical, "The latest version of that AI has been loaded instead, but it'll not get the savegame data as it's incompatible.");
 				}
-				/* Make sure the AI doesn't get the saveload data, as he was not the
+				/* Make sure the AI doesn't get the saveload data, as it was not the
 				 *  writer of the saveload data in the first place */
 				_ai_saveload_version = -1;
 			}
-		}
-
-		config->StringToSettings(_ai_saveload_settings);
-
-		/* Start the AI directly if it was active in the savegame */
-		if (Company::IsValidAiID(index)) {
-			AI::StartNew(index, false);
-			AI::Load(index, _ai_saveload_version);
+			config->StringToSettings(_ai_saveload_settings);
+			config->SetToLoadData(AIInstance::Load(_ai_saveload_version));
 		}
 	}
-}
 
-static void Save_AIPL()
-{
-	for (int i = COMPANY_FIRST; i < MAX_COMPANIES; i++) {
-		SlSetArrayIndex(i);
-		SlAutolength((AutolengthProc *)SaveReal_AIPL, &i);
+	void Save() const override
+	{
+		SlTableHeader(_ai_company_desc);
+
+		for (CompanyID i = CompanyID::Begin(); i < MAX_COMPANIES; ++i) {
+			SlSetArrayIndex(i);
+			SlAutolength(SaveReal_AIPL, i.base());
+		}
 	}
-}
-
-extern const ChunkHandler _ai_chunk_handlers[] = {
-	{ 'AIPL', Save_AIPL, Load_AIPL, nullptr, nullptr, CH_ARRAY | CH_LAST},
 };
+
+static const AIPLChunkHandler AIPL;
+static const ChunkHandlerRef ai_chunk_handlers[] = {
+	AIPL,
+};
+
+extern const ChunkHandlerTable _ai_chunk_handlers(ai_chunk_handlers);

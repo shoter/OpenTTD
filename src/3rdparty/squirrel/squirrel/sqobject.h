@@ -2,6 +2,7 @@
 #ifndef _SQOBJECT_H_
 #define _SQOBJECT_H_
 
+#include <vector>
 #include "squtils.h"
 
 #define SQ_CLOSURESTREAM_HEAD (('S'<<24)|('Q'<<16)|('I'<<8)|('R'))
@@ -55,17 +56,32 @@ enum SQMetaMethod{
 
 struct SQRefCounted
 {
-	SQRefCounted() { _uiRef = 0; _weakref = NULL; }
+	SQRefCounted() {}
 	virtual ~SQRefCounted();
 	SQWeakRef *GetWeakRef(SQObjectType type);
-	SQUnsignedInteger _uiRef;
-	struct SQWeakRef *_weakref;
+	SQUnsignedInteger _uiRef = 0;
+	struct SQWeakRef *_weakref = nullptr;
 	virtual void Release()=0;
+
+	/* Placement new/delete to prevent memory leaks if constructor throws an exception. */
+	inline void *operator new([[maybe_unused]] size_t size, void *ptr, [[maybe_unused]] size_t real_size)
+	{
+		assert(size <= real_size);
+		return ptr;
+	}
+
+	inline void operator delete(void *ptr, void *, size_t real_size)
+	{
+		SQ_FREE(ptr, real_size);
+	}
+
+	/* Never used but required. */
+	inline void operator delete(void *) { NOT_REACHED(); }
 };
 
 struct SQWeakRef : SQRefCounted
 {
-	void Release();
+	void Release() override;
 	SQObject _obj;
 };
 
@@ -88,7 +104,7 @@ struct SQObjectPtr;
 		(obj)->_uiRef--; \
 		if((obj)->_uiRef == 0) \
 			(obj)->Release(); \
-		(obj) = NULL;	\
+		(obj) = nullptr;	\
 	} \
 }
 
@@ -119,7 +135,7 @@ struct SQObjectPtr;
 #define _refcounted(obj) ((obj)._unVal.pRefCounted)
 #define _rawval(obj) ((obj)._unVal.raw)
 
-#define _stringval(obj) (obj)._unVal.pString->_val
+#define _stringval(obj) (obj)._unVal.pString->View()
 #define _userdataval(obj) (obj)._unVal.pUserData->_val
 
 #define tofloat(num) ((type(num)==OT_INTEGER)?(SQFloat)_integer(num):_float(num))
@@ -133,7 +149,7 @@ struct SQObjectPtr : public SQObject
 	{
 		SQ_OBJECT_RAWINIT()
 		_type=OT_NULL;
-		_unVal.pUserPointer=NULL;
+		_unVal.pUserPointer=nullptr;
 	}
 	SQObjectPtr(const SQObjectPtr &o)
 	{
@@ -141,6 +157,14 @@ struct SQObjectPtr : public SQObject
 		_type=o._type;
 		_unVal=o._unVal;
 		__AddRef(_type,_unVal);
+	}
+	SQObjectPtr(SQObjectPtr &&o)
+	{
+		SQ_OBJECT_RAWINIT()
+		this->_type = OT_NULL;
+		this->_unVal.pUserPointer = nullptr;
+		std::swap(this->_type, o._type);
+		std::swap(this->_unVal, o._unVal);
 	}
 	SQObjectPtr(const SQObject &o)
 	{
@@ -280,7 +304,7 @@ struct SQObjectPtr : public SQObject
 		tOldType = _type;
 		unOldVal = _unVal;
 		_type = OT_NULL;
-		_unVal.pUserPointer = NULL;
+		_unVal.pUserPointer = nullptr;
 		__Release(tOldType,unOldVal);
 	}
 	inline SQObjectPtr& operator=(SQInteger i)
@@ -311,6 +335,12 @@ struct SQObjectPtr : public SQObject
 		__Release(tOldType,unOldVal);
 		return *this;
 	}
+	inline SQObjectPtr& operator=(SQObjectPtr &&obj)
+	{
+		std::swap(this->_type, obj._type);
+		std::swap(this->_unVal, obj._unVal);
+		return *this;
+	}
 	inline SQObjectPtr& operator=(const SQObject& obj)
 	{
 		SQObjectType tOldType;
@@ -324,7 +354,7 @@ struct SQObjectPtr : public SQObject
 		return *this;
 	}
 	private:
-		SQObjectPtr(const SQChar *){} //safety
+		SQObjectPtr(const char *) = delete; //safety
 };
 
 inline void _Swap(SQObject &a,SQObject &b)
@@ -343,19 +373,62 @@ struct SQCollectable : public SQRefCounted {
 	SQCollectable *_next;
 	SQCollectable *_prev;
 	SQSharedState *_sharedstate;
-	virtual void Release()=0;
-	virtual void Mark(SQCollectable **chain)=0;
+	void Release() override=0;
+	virtual void EnqueueMarkObjectForChildren(class SQGCMarkerQueue &queue)=0;
 	void UnMark();
 	virtual void Finalize()=0;
 	static void AddToChain(SQCollectable **chain,SQCollectable *c);
 	static void RemoveFromChain(SQCollectable **chain,SQCollectable *c);
+
+	/**
+	 * Helper to perform the final memory freeing of this instance. Since the destructor might
+	 * release more objects, this can cause a very deep recursion. As such, the calls to this
+	 * are to be done via _sharedstate->DelayFinalFree which ensures the calls to this method
+	 * are done in an iterative instead of recursive approach.
+	 */
+	virtual void FinalFree() {}
+};
+
+/**
+ * Helper container for state to change the garbage collection from a recursive to an iterative approach.
+ * The iterative approach provides effectively a depth first search approach.
+ */
+class SQGCMarkerQueue {
+	std::vector<SQCollectable*> stack; ///< The elements to still process, with the most recent elements at the back.
+public:
+	/** Whether there are any elements left to process. */
+	bool IsEmpty() { return this->stack.empty(); }
+
+	/**
+	 * Remove the most recently added element from the queue.
+	 * Removal when the queue is empty results in undefined behaviour.
+	 */
+	SQCollectable *Pop()
+	{
+		SQCollectable *collectable = this->stack.back();
+		this->stack.pop_back();
+		return collectable;
+	}
+
+	/**
+	 * Add a collectable to the queue, but only when it has not been marked yet.
+	 * When adding it to the queue, the collectable will be marked, so subsequent calls
+	 * will not add it again.
+	 */
+	void Enqueue(SQCollectable *collectable)
+	{
+		if ((collectable->_uiRef & MARK_FLAG) == 0) {
+			collectable->_uiRef |= MARK_FLAG;
+			this->stack.push_back(collectable);
+		}
+	}
 };
 
 
 #define ADD_TO_CHAIN(chain,obj) AddToChain(chain,obj)
 #define REMOVE_FROM_CHAIN(chain,obj) {if(!(_uiRef&MARK_FLAG))RemoveFromChain(chain,obj);}
 #define CHAINABLE_OBJ SQCollectable
-#define INIT_CHAIN() {_next=NULL;_prev=NULL;_sharedstate=ss;}
+#define INIT_CHAIN() {_next=nullptr;_prev=nullptr;_sharedstate=ss;}
 #else
 
 #define ADD_TO_CHAIN(chain,obj) ((void)0)
@@ -373,8 +446,8 @@ struct SQDelegable : public CHAINABLE_OBJ {
 SQUnsignedInteger TranslateIndex(const SQObjectPtr &idx);
 typedef sqvector<SQObjectPtr> SQObjectPtrVec;
 typedef sqvector<SQInteger> SQIntVec;
-const SQChar *GetTypeName(const SQObjectPtr &obj1);
-const SQChar *IdType2Name(SQObjectType type);
+std::string_view GetTypeName(const SQObjectPtr &obj1);
+std::string_view IdType2Name(SQObjectType type);
 
 
 

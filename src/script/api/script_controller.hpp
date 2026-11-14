@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_controller.hpp The controller of the script. */
@@ -10,9 +10,8 @@
 #ifndef SCRIPT_CONTROLLER_HPP
 #define SCRIPT_CONTROLLER_HPP
 
-#include "script_types.hpp"
-#include "../../core/string_compare_type.hpp"
-#include <map>
+#include "../../string_func.h"
+#include "../../company_type.h"
 
 /**
  * The Controller, the class each Script should extend. It creates the Script,
@@ -23,7 +22,6 @@
  *  script that matches to the specified version as close as possible. It tries
  *  (from first to last, stopping as soon as the attempt succeeds)
  *
- *  - load the exact same version of the same script,
  *  - load the latest version of the same script that supports loading data from
  *    the saved version (the version of saved data must be equal or greater
  *    than ScriptInfo::MinVersionToLoad),
@@ -40,7 +38,7 @@
  *   data from the loaded game.
  * - Finally, #Start is called to start execution of the script.
  *
- * See also http://wiki.openttd.org/AI:Save/Load for more details.
+ * See also https://wiki.openttd.org/en/Development/Script/Save%20and%20Load for more details.
  *
  * @api ai game
  */
@@ -49,17 +47,14 @@ class ScriptController {
 	friend class ScriptInstance;
 
 public:
+#ifndef DOXYGEN_API
 	/**
 	 * Initializer of the ScriptController.
 	 * @param company The company this Script is normally serving.
 	 */
-	ScriptController(CompanyID company);
+	ScriptController(::CompanyID company);
 
-	/**
-	 * Destructor of the ScriptController.
-	 */
-	~ScriptController();
-
+#else
 	/**
 	 * This function is called to start your script. Your script starts here. If you
 	 *   return from this function, your script dies, so make sure that doesn't
@@ -68,7 +63,6 @@ public:
 	 */
 	void Start();
 
-#ifdef DOXYGEN_API
 	/**
 	 * Save the state of the script.
 	 *
@@ -83,23 +77,22 @@ public:
 	 *   - booleans, and
 	 *   - nulls.
 	 *
-	 * In particular, instances of classes can't be saved including
-	 *   ScriptList. Such a list should be converted to an array or table on
-	 *   save and converted back on load.
+	 * In particular, instances of classes can't be saved with the exception of
+	 *   ScriptList.
 	 *
 	 * The function is called as soon as the user saves the game,
 	 *   independently of other activities of the script. The script is not
 	 *   notified of the call. To avoid race-conditions between #Save and the
 	 *   other script code, change variables directly after a #Sleep, it is
 	 *   very unlikely, to get interrupted at that point in the execution.
-	 * See also http://wiki.openttd.org/AI:Save/Load for more details.
+	 * See also https://wiki.openttd.org/en/Development/Script/Save%20and%20Load for more details.
 	 *
 	 * @note No other information is saved than the table returned by #Save.
 	 *   For example all pending events are lost as soon as the game is loaded.
 	 *
 	 * @return Data of the script that should be stored in the save game.
 	 */
-	SquirrelTable Save();
+	table Save();
 
 	/**
 	 * Load saved data just before calling #Start.
@@ -107,7 +100,7 @@ public:
 	 * @param version Version number of the script that created the \a data.
 	 * @param data Data that was saved (return value of #Save).
 	 */
-	void Load(int version, SquirrelTable data);
+	void Load(int version, table data);
 #endif /* DOXYGEN_API */
 
 	/**
@@ -127,20 +120,35 @@ public:
 	static int GetOpsTillSuspend();
 
 	/**
+	 * Remove \c amount ops from the number of ops till suspend.
+	 * @api none
+	 */
+	static void DecreaseOps(int amount);
+
+	/**
 	 * Get the value of one of your settings you set via info.nut.
 	 * @param name The name of the setting.
 	 * @return the value for the setting, or -1 if the setting is not known.
 	 */
-	static int GetSetting(const char *name);
+	static int GetSetting(const std::string &name);
 
 	/**
 	 * Get the OpenTTD version of this executable. The version is formatted
 	 * with the bits having the following meaning:
-	 * 28-31 major version
-	 * 24-27 minor version
-	 * 20-23 build
+	 * 24-31 major version + 16.
+	 * 20-23 minor version.
 	 *    19 1 if it is a release, 0 if it is not.
 	 *  0-18 revision number; 0 when the revision is unknown.
+	 * You have to subtract 16 from the major version to get the correct
+	 * value.
+	 *
+	 * Prior to OpenTTD 12, the bits have the following meaning:
+	 * 28-31 major version.
+	 * 24-27 minor version.
+	 * 20-23 build.
+	 *    19 1 if it is a release, 0 if it is not.
+	 *  0-18 revision number; 0 when the revision is unknown.
+	 *
 	 * @return The version in newgrf format.
 	 */
 	static uint GetVersion();
@@ -178,7 +186,7 @@ public:
 	 * @note gui.ai_developer_tools setting must be enabled or the break is
 	 * ignored.
 	 */
-	static void Break(const char* message);
+	static void Break(const std::string &message);
 
 	/**
 	 * When Squirrel triggers a print, this function is called.
@@ -187,7 +195,7 @@ public:
 	 * @param message The message Squirrel logged.
 	 * @note Use ScriptLog.Info/Warning/Error instead of 'print'.
 	 */
-	static void Print(bool error_msg, const char *message);
+	static void Print(bool error_msg, const std::string &message);
 
 	/**
 	 * Import a library.
@@ -198,19 +206,14 @@ public:
 	 * @return The loaded library object. If class_name is set, it is also available (under the scope of the import) under that name.
 	 * @note This command can be called from the global space, and does not need an instance.
 	 */
-	static HSQOBJECT Import(const char *library, const char *class_name, int version);
+	static HSQOBJECT Import(const std::string &library, const std::string &class_name, int version);
 
 private:
-	typedef std::map<const char *, const char *, StringCompare> LoadedLibraryList; ///< The type for loaded libraries.
+	typedef std::map<std::string, std::string, CaseInsensitiveComparator> LoadedLibraryList; ///< The type for loaded libraries.
 
 	uint ticks;                       ///< The amount of ticks we're sleeping.
 	LoadedLibraryList loaded_library; ///< The libraries we loaded.
 	int loaded_library_count;         ///< The amount of libraries.
-
-	/**
-	 * Register all classes that are known inside the script API.
-	 */
-	void RegisterClasses();
 };
 
 #endif /* SCRIPT_CONTROLLER_HPP */

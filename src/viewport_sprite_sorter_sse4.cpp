@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file viewport_sprite_sorter_sse4.cpp Sprite sorter that uses SSE4.1. */
@@ -14,18 +14,18 @@
 #include "smmintrin.h"
 #include "viewport_sprite_sorter.h"
 #include <forward_list>
-#include <map>
 #include <stack>
 
 #include "safeguards.h"
 
-#ifdef _SQ64
-	assert_compile((sizeof(ParentSpriteToDraw) % 16) == 0);
+#ifdef POINTER_IS_64BIT
+	static_assert((sizeof(ParentSpriteToDraw) % 16) == 0);
 #	define LOAD_128 _mm_load_si128
 #else
 #	define LOAD_128 _mm_loadu_si128
 #endif
 
+GNU_TARGET("sse4.1")
 void ViewportSortParentSpritesSSE41(ParentSpriteToSortVector *psdv)
 {
 	if (psdv->size() < 2) return;
@@ -39,24 +39,24 @@ void ViewportSortParentSpritesSSE41(ParentSpriteToSortVector *psdv)
 	 * Also use special constants to indicate sorting state without
 	 * adding extra fields to ParentSpriteToDraw structure.
 	 */
-	const uint32 ORDER_COMPARED = UINT32_MAX; // Sprite was compared but we still need to compare the ones preceding it
-	const uint32 ORDER_RETURNED = UINT32_MAX - 1; // Mark sorted sprite in case there are other occurrences of it in the stack
+	const uint32_t ORDER_COMPARED = UINT32_MAX; // Sprite was compared but we still need to compare the ones preceding it
+	const uint32_t ORDER_RETURNED = UINT32_MAX - 1; // Mark sorted sprite in case there are other occurrences of it in the stack
 	std::stack<ParentSpriteToDraw *> sprite_order;
-	uint32 next_order = 0;
+	uint32_t next_order = 0;
 
-	std::forward_list<std::pair<int64, ParentSpriteToDraw *>> sprite_list;  // We store sprites in a list sorted by xmin+ymin
+	std::forward_list<std::pair<int64_t, ParentSpriteToDraw *>> sprite_list;  // We store sprites in a list sorted by xmin+ymin
 
 	/* Initialize sprite list and order. */
 	for (auto p = psdv->rbegin(); p != psdv->rend(); p++) {
-		sprite_list.push_front(std::make_pair((*p)->xmin + (*p)->ymin, *p));
+		sprite_list.emplace_front((*p)->xmin + (*p)->ymin, *p);
 		sprite_order.push(*p);
 		(*p)->order = next_order++;
 	}
 
 	sprite_list.sort();
 
-	std::vector<ParentSpriteToDraw*> preceding;  // Temporarily stores sprites that precede current and their position in the list
-	auto preceding_prev = sprite_list.begin(); // Store iterator in case we need to delete a single preciding sprite
+	std::vector<ParentSpriteToDraw *> preceding;  // Temporarily stores sprites that precede current and their position in the list
+	auto preceding_prev = sprite_list.begin(); // Store iterator in case we need to delete a single preceding sprite
 	auto out = psdv->begin();  // Iterator to output sorted sprites
 
 	while (!sprite_order.empty()) {
@@ -79,16 +79,16 @@ void ViewportSortParentSpritesSSE41(ParentSpriteToSortVector *psdv)
 		/* We only need sprites with xmin <= s->xmax && ymin <= s->ymax && zmin <= s->zmax
 		 * So by iterating sprites with xmin + ymin <= s->xmax + s->ymax
 		 * we get all we need and some more that we filter out later.
-		 * We don't include zmin into the sum as there are usually more neighbors on x and y than z
+		 * We don't include zmin into the sum as there are usually more neighbours on x and y than z
 		 * so including it will actually increase the amount of false positives.
 		 * Also min coordinates can be > max so using max(xmin, xmax) + max(ymin, ymax)
 		 * to ensure that we iterate the current sprite as we need to remove it from the list.
 		 */
-		auto ssum = max(s->xmax, s->xmin) + max(s->ymax, s->ymin);
+		auto ssum = std::max(s->xmax, s->xmin) + std::max(s->ymax, s->ymin);
 		auto prev = sprite_list.before_begin();
 		auto x = sprite_list.begin();
-		while (x != sprite_list.end() && ((*x).first <= ssum)) {
-			auto p = (*x).second;
+		while (x != sprite_list.end() && x->first <= ssum) {
+			auto p = x->second;
 			if (p == s) {
 				/* We found the current sprite, remove it and move on. */
 				x = sprite_list.erase_after(prev);
@@ -151,7 +151,7 @@ void ViewportSortParentSpritesSSE41(ParentSpriteToSortVector *psdv)
 
 		/* Sort all preceding sprites by order and assign new orders in reverse (as original sorter did). */
 		std::sort(preceding.begin(), preceding.end(), [](const ParentSpriteToDraw *a, const ParentSpriteToDraw *b) {
-			return a->order >  b->order;
+			return a->order > b->order;
 		});
 
 		s->order = ORDER_COMPARED;

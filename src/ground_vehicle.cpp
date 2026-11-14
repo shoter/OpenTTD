@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file ground_vehicle.cpp Implementation of GroundVehicle. */
@@ -23,13 +23,13 @@ void GroundVehicle<T, Type>::PowerChanged()
 	assert(this->First() == this);
 	const T *v = T::From(this);
 
-	uint32 total_power = 0;
-	uint32 max_te = 0;
-	uint32 number_of_parts = 0;
-	uint16 max_track_speed = this->vcache.cached_max_speed; // Max track speed in internal units.
+	uint32_t total_power = 0;
+	uint32_t max_te = 0;
+	uint32_t number_of_parts = 0;
+	uint16_t max_track_speed = this->vcache.cached_max_speed; // Max track speed in internal units.
 
 	for (const T *u = v; u != nullptr; u = u->Next()) {
-		uint32 current_power = u->GetPower() + u->GetPoweredPartPower(u);
+		uint32_t current_power = u->GetPower() + u->GetPoweredPartPower();
 		total_power += current_power;
 
 		/* Only powered parts add tractive effort. */
@@ -37,18 +37,18 @@ void GroundVehicle<T, Type>::PowerChanged()
 		number_of_parts++;
 
 		/* Get minimum max speed for this track. */
-		uint16 track_speed = u->GetMaxTrackSpeed();
-		if (track_speed > 0) max_track_speed = min(max_track_speed, track_speed);
+		uint16_t track_speed = u->GetMaxTrackSpeed();
+		if (track_speed > 0) max_track_speed = std::min(max_track_speed, track_speed);
 	}
 
-	byte air_drag;
-	byte air_drag_value = v->GetAirDrag();
+	uint8_t air_drag;
+	uint8_t air_drag_value = v->GetAirDrag();
 
 	/* If air drag is set to zero (default), the resulting air drag coefficient is dependent on max speed. */
 	if (air_drag_value == 0) {
-		uint16 max_speed = v->GetDisplayMaxSpeed();
+		uint16_t max_speed = v->GetDisplayMaxSpeed();
 		/* Simplification of the method used in TTDPatch. It uses <= 10 to change more steadily from 128 to 196. */
-		air_drag = (max_speed <= 10) ? 192 : max(2048 / max_speed, 1);
+		air_drag = (max_speed <= 10) ? 192 : std::max(2048 / max_speed, 1);
 	} else {
 		/* According to the specs, a value of 0x01 in the air drag property means "no air drag". */
 		air_drag = (air_drag_value == 1) ? 0 : air_drag_value;
@@ -60,12 +60,12 @@ void GroundVehicle<T, Type>::PowerChanged()
 	max_te /= 256;  // Tractive effort is a [0-255] coefficient.
 	if (this->gcache.cached_power != total_power || this->gcache.cached_max_te != max_te) {
 		/* Stop the vehicle if it has no power. */
-		if (total_power == 0) this->vehstatus |= VS_STOPPED;
+		if (total_power == 0) this->vehstatus.Set(VehState::Stopped);
 
 		this->gcache.cached_power = total_power;
 		this->gcache.cached_max_te = max_te;
-		SetWindowDirty(WC_VEHICLE_DETAILS, this->index);
-		SetWindowWidgetDirty(WC_VEHICLE_VIEW, this->index, WID_VV_START_STOP);
+		SetWindowDirty(WindowClass::VehicleDetails, this->index);
+		SetWindowWidgetDirty(WindowClass::VehicleView, this->index, WID_VV_START_STOP);
 	}
 
 	this->gcache.cached_max_track_speed = max_track_speed;
@@ -79,17 +79,17 @@ template <class T, VehicleType Type>
 void GroundVehicle<T, Type>::CargoChanged()
 {
 	assert(this->First() == this);
-	uint32 weight = 0;
+	uint32_t weight = 0;
 
 	for (T *u = T::From(this); u != nullptr; u = u->Next()) {
-		uint32 current_weight = u->GetWeight();
+		uint32_t current_weight = u->GetWeight();
 		weight += current_weight;
 		/* Slope steepness is in percent, result in N. */
 		u->gcache.cached_slope_resistance = current_weight * u->GetSlopeSteepness() * 100;
 	}
 
 	/* Store consist weight in cache. */
-	this->gcache.cached_weight = max<uint32>(1, weight);
+	this->gcache.cached_weight = std::max(1u, weight);
 	/* Friction in bearings and other mechanical parts is 0.1% of the weight (result in N). */
 	this->gcache.cached_axle_resistance = 10 * weight;
 
@@ -107,16 +107,16 @@ int GroundVehicle<T, Type>::GetAcceleration() const
 	/* Templated class used for function calls for performance reasons. */
 	const T *v = T::From(this);
 	/* Speed is used squared later on, so U16 * U16, and then multiplied by other values. */
-	int64 speed = v->GetCurrentSpeed(); // [km/h-ish]
+	int64_t speed = v->GetCurrentSpeed(); // [km/h-ish]
 
 	/* Weight is stored in tonnes. */
-	int32 mass = this->gcache.cached_weight;
+	int64_t mass = this->gcache.cached_weight;
 
 	/* Power is stored in HP, we need it in watts.
 	 * Each vehicle can have U16 power, 128 vehicles, HP -> watt
 	 * and km/h to m/s conversion below result in a maximum of
 	 * about 1.1E11, way more than 4.3E9 of int32. */
-	int64 power = this->gcache.cached_power * 746ll;
+	int64_t power = this->gcache.cached_power * 746ll;
 
 	/* This is constructed from:
 	 *  - axle resistance:  U16 power * 10 for 128 vehicles.
@@ -127,11 +127,11 @@ int GroundVehicle<T, Type>::GetAcceleration() const
 	 *     * 8.4E9
 	 *  - air drag: 28 * (U8 drag + 3 * U8 drag * 128 vehicles / 20) * U16 speed * U16 speed
 	 *     * 6.2E14 before dividing by 1000
-	 * Sum is 6.3E11, more than 4.3E9 of int32, so int64 is needed.
+	 * Sum is 6.3E11, more than 4.3E9 of int32_t, so int64_t is needed.
 	 */
-	int64 resistance = 0;
+	int64_t resistance = 0;
 
-	bool maglev = v->GetAccelerationType() == 2;
+	bool maglev = v->GetAccelerationType() == VehicleAccelerationModel::Maglev;
 
 	const int area = v->GetAirDragArea();
 	if (!maglev) {
@@ -141,7 +141,7 @@ int GroundVehicle<T, Type>::GetAcceleration() const
 	}
 	/* Air drag; the air drag coefficient is in an arbitrary NewGRF-unit,
 	 * so we need some magic conversion factor. */
-	resistance += (area * this->gcache.cached_air_drag * speed * speed) / 1000;
+	resistance += static_cast<int64_t>(area) * this->gcache.cached_air_drag * speed * speed / 1000;
 
 	resistance += this->GetSlopeResistance();
 
@@ -149,9 +149,9 @@ int GroundVehicle<T, Type>::GetAcceleration() const
 	AccelStatus mode = v->GetAccelerationStatus();
 
 	const int max_te = this->gcache.cached_max_te; // [N]
-	/* Constructued from power, with need to multiply by 18 and assuming
+	/* Constructed from power, with need to multiply by 18 and assuming
 	 * low speed, it needs to be a 64 bit integer too. */
-	int64 force;
+	int64_t force;
 	if (speed > 0) {
 		if (!maglev) {
 			/* Conversion factor from km/h to m/s is 5/18 to get [N] in the end. */
@@ -162,8 +162,8 @@ int GroundVehicle<T, Type>::GetAcceleration() const
 		}
 	} else {
 		/* "Kickoff" acceleration. */
-		force = (mode == AS_ACCEL && !maglev) ? min(max_te, power) : power;
-		force = max(force, (mass * 8) + resistance);
+		force = (mode == AS_ACCEL && !maglev) ? std::min<int>(max_te, power) : power;
+		force = std::max(force, (mass * 8) + resistance);
 	}
 
 	if (mode == AS_ACCEL) {
@@ -175,10 +175,10 @@ int GroundVehicle<T, Type>::GetAcceleration() const
 		 * down hill will never slow down enough, and a vehicle that came up
 		 * a hill will never speed up enough to (eventually) get back to the
 		 * same (maximum) speed. */
-		int accel = ClampToI32((force - resistance) / (mass * 4));
-		return force < resistance ? min(-1, accel) : max(1, accel);
+		int accel = ClampTo<int32_t>((force - resistance) / (mass * 4));
+		return force < resistance ? std::min(-1, accel) : std::max(1, accel);
 	} else {
-		return ClampToI32(min(-force - resistance, -10000) / mass);
+		return ClampTo<int32_t>(std::min<int64_t>(-force - resistance, -10000) / mass);
 	}
 }
 
@@ -191,8 +191,8 @@ bool GroundVehicle<T, Type>::IsChainInDepot() const
 {
 	const T *v = this->First();
 	/* Is the front engine stationary in the depot? */
-	assert_compile((int)TRANSPORT_RAIL == (int)VEH_TRAIN);
-	assert_compile((int)TRANSPORT_ROAD == (int)VEH_ROAD);
+	static_assert(to_underlying(TransportType::Rail) == to_underlying(VehicleType::Train));
+	static_assert(to_underlying(TransportType::Road) == to_underlying(VehicleType::Road));
 	if (!IsDepotTypeTile(v->tile, (TransportType)Type) || v->cur_speed != 0) return false;
 
 	/* Check whether the rest is also already trying to enter the depot. */
@@ -204,6 +204,6 @@ bool GroundVehicle<T, Type>::IsChainInDepot() const
 }
 
 /* Instantiation for Train */
-template struct GroundVehicle<Train, VEH_TRAIN>;
+template struct GroundVehicle<Train, VehicleType::Train>;
 /* Instantiation for RoadVehicle */
-template struct GroundVehicle<RoadVehicle, VEH_ROAD>;
+template struct GroundVehicle<RoadVehicle, VehicleType::Road>;

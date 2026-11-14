@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file dedicated_v.cpp Dedicated server video 'driver'. */
@@ -10,6 +10,7 @@
 #include "../stdafx.h"
 
 #include "../gfx_func.h"
+#include "../error_func.h"
 #include "../network/network.h"
 #include "../network/network_internal.h"
 #include "../console_func.h"
@@ -18,37 +19,11 @@
 #include "../fios.h"
 #include "../blitter/factory.hpp"
 #include "../company_func.h"
-#include "../core/random_func.hpp"
-#include "../saveload/saveload.h"
+#include "../saveload/saveload_func.h"
 #include "../thread.h"
+#include "../window_func.h"
+#include <iostream>
 #include "dedicated_v.h"
-
-#ifdef __OS2__
-#	include <sys/time.h> /* gettimeofday */
-#	include <sys/types.h>
-#	include <unistd.h>
-#	include <conio.h>
-
-#	define INCL_DOS
-#	include <os2.h>
-
-#	define STDIN 0  /* file descriptor for standard input */
-
-/**
- * Switches OpenTTD to a console app at run-time, instead of a PM app
- * Necessary to see stdout, etc.
- */
-static void OS2_SwitchToConsoleMode()
-{
-	PPIB pib;
-	PTIB tib;
-
-	DosGetInfoBlocks(&tib, &pib);
-
-	/* Change flag from PM to VIO */
-	pib->pib_ultype = 3;
-}
-#endif
 
 #if defined(UNIX)
 #	include <sys/time.h> /* gettimeofday */
@@ -57,11 +32,13 @@ static void OS2_SwitchToConsoleMode()
 #	include <signal.h>
 #	define STDIN 0  /* file descriptor for standard input */
 
+/** Dedicated exit requested. */
+std::atomic<bool> _dedicated_exit_requested;
+
 /* Signal handlers */
 static void DedicatedSignalHandler(int sig)
 {
-	if (_game_mode == GM_NORMAL && _settings_client.gui.autosave_on_exit) DoExitSave();
-	_exit_game = true;
+	_dedicated_exit_requested = true;
 	signal(sig, DedicatedSignalHandler);
 }
 #endif
@@ -75,24 +52,18 @@ static void DedicatedSignalHandler(int sig)
 
 static HANDLE _hInputReady, _hWaitForInputHandling;
 static HANDLE _hThread; // Thread to close
-static char _win_console_thread_buffer[200];
+static std::string _win_console_thread_buffer;
 
 /* Windows Console thread. Just loop and signal when input has been received */
 static void WINAPI CheckForConsoleInput()
 {
 	SetCurrentThreadName("ottd:win-console");
 
-	DWORD nb;
-	HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
 	for (;;) {
-		ReadFile(hStdin, _win_console_thread_buffer, lengthof(_win_console_thread_buffer), &nb, nullptr);
-		if (nb >= lengthof(_win_console_thread_buffer)) nb = lengthof(_win_console_thread_buffer) - 1;
-		_win_console_thread_buffer[nb] = '\0';
+		std::getline(std::cin, _win_console_thread_buffer);
 
-		/* Signal input waiting that input is read and wait for it being handled
-		 * SignalObjectAndWait() should be used here, but it's unsupported in Win98< */
-		SetEvent(_hInputReady);
-		WaitForSingleObject(_hWaitForInputHandling, INFINITE);
+		/* Signal input waiting that input is read and wait for it being handled. */
+		SignalObjectAndWait(_hInputReady, _hWaitForInputHandling, INFINITE, FALSE);
 	}
 }
 
@@ -102,12 +73,12 @@ static void CreateWindowsConsoleThread()
 	/* Create event to signal when console input is ready */
 	_hInputReady = CreateEvent(nullptr, false, false, nullptr);
 	_hWaitForInputHandling = CreateEvent(nullptr, false, false, nullptr);
-	if (_hInputReady == nullptr || _hWaitForInputHandling == nullptr) usererror("Cannot create console event!");
+	if (_hInputReady == nullptr || _hWaitForInputHandling == nullptr) UserError("Cannot create console event!");
 
 	_hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)CheckForConsoleInput, nullptr, 0, &dwThreadId);
-	if (_hThread == nullptr) usererror("Cannot create console thread!");
+	if (_hThread == nullptr) UserError("Cannot create console thread!");
 
-	DEBUG(driver, 2, "Windows console thread started");
+	Debug(Facility::Driver, Severity::Warning, "Windows console thread started");
 }
 
 static void CloseWindowsConsoleThread()
@@ -115,7 +86,7 @@ static void CloseWindowsConsoleThread()
 	CloseHandle(_hThread);
 	CloseHandle(_hInputReady);
 	CloseHandle(_hWaitForInputHandling);
-	DEBUG(driver, 2, "Windows console thread shut down");
+	Debug(Facility::Driver, Severity::Warning, "Windows console thread shut down");
 }
 
 #endif
@@ -123,24 +94,26 @@ static void CloseWindowsConsoleThread()
 #include "../safeguards.h"
 
 
-static void *_dedicated_video_mem;
+static std::unique_ptr<uint8_t[]> _dedicated_video_mem;
 
-/* Whether a fork has been done. */
+/** Whether a fork has been done. */
 bool _dedicated_forks;
 
-extern bool SafeLoad(const char *filename, SaveLoadOperation fop, DetailedFileType dft, GameMode newgm, Subdirectory subdir, struct LoadFilter *lf = nullptr);
+extern bool SafeLoad(const std::string &filename, SaveLoadOperation fop, DetailedFileType dft, GameMode newgm, Subdirectory subdir, struct LoadFilter *lf = nullptr);
 
 static FVideoDriver_Dedicated iFVideoDriver_Dedicated;
 
 
-const char *VideoDriver_Dedicated::Start(const StringList &parm)
+std::optional<std::string_view> VideoDriver_Dedicated::Start(const StringList &)
 {
+	this->UpdateAutoResolution();
+
 	int bpp = BlitterFactory::GetCurrentBlitter()->GetScreenDepth();
-	_dedicated_video_mem = (bpp == 0) ? nullptr : MallocT<byte>(_cur_resolution.width * _cur_resolution.height * (bpp / 8));
+	if (bpp != 0) _dedicated_video_mem = std::make_unique<uint8_t[]>(static_cast<size_t>(_cur_resolution.width) * _cur_resolution.height * (bpp / 8));
 
 	_screen.width  = _screen.pitch = _cur_resolution.width;
 	_screen.height = _cur_resolution.height;
-	_screen.dst_ptr = _dedicated_video_mem;
+	_screen.dst_ptr = _dedicated_video_mem.get();
 	ScreenSizeChanged();
 	BlitterFactory::GetCurrentBlitter()->PostResize();
 
@@ -148,21 +121,18 @@ const char *VideoDriver_Dedicated::Start(const StringList &parm)
 	/* For win32 we need to allocate a console (debug mode does the same) */
 	CreateConsole();
 	CreateWindowsConsoleThread();
-	SetConsoleTitle(_T("OpenTTD Dedicated Server"));
+	SetConsoleTitle(L"OpenTTD Dedicated Server");
 #endif
 
 #ifdef _MSC_VER
 	/* Disable the MSVC assertion message box. */
 	_set_error_mode(_OUT_TO_STDERR);
+	_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
 #endif
 
-#ifdef __OS2__
-	/* For OS/2 we also need to switch to console mode instead of PM mode */
-	OS2_SwitchToConsoleMode();
-#endif
-
-	DEBUG(driver, 1, "Loading dedicated server");
-	return nullptr;
+	Debug(Facility::Driver, Severity::Error, "Loading dedicated server");
+	return std::nullopt;
 }
 
 void VideoDriver_Dedicated::Stop()
@@ -170,14 +140,14 @@ void VideoDriver_Dedicated::Stop()
 #ifdef _WIN32
 	CloseWindowsConsoleThread();
 #endif
-	free(_dedicated_video_mem);
+	_dedicated_video_mem = nullptr;
 }
 
-void VideoDriver_Dedicated::MakeDirty(int left, int top, int width, int height) {}
-bool VideoDriver_Dedicated::ChangeResolution(int w, int h) { return false; }
-bool VideoDriver_Dedicated::ToggleFullscreen(bool fs) { return false; }
+void VideoDriver_Dedicated::MakeDirty(int, int, int, int) {}
+bool VideoDriver_Dedicated::ChangeResolution(int, int) { return false; }
+bool VideoDriver_Dedicated::ToggleFullscreen(bool) { return false; }
 
-#if defined(UNIX) || defined(__OS2__)
+#if defined(UNIX)
 static bool InputWaiting()
 {
 	struct timeval tv;
@@ -193,14 +163,6 @@ static bool InputWaiting()
 	return select(STDIN + 1, &readfds, nullptr, nullptr, &tv) > 0;
 }
 
-static uint32 GetTime()
-{
-	struct timeval tim;
-
-	gettimeofday(&tim, nullptr);
-	return tim.tv_usec / 1000 + tim.tv_sec * 1000;
-}
-
 #else
 
 static bool InputWaiting()
@@ -208,47 +170,31 @@ static bool InputWaiting()
 	return WaitForSingleObject(_hInputReady, 1) == WAIT_OBJECT_0;
 }
 
-static uint32 GetTime()
-{
-	return GetTickCount();
-}
-
 #endif
 
 static void DedicatedHandleKeyInput()
 {
-	static char input_line[1024] = "";
-
 	if (!InputWaiting()) return;
 
 	if (_exit_game) return;
 
-#if defined(UNIX) || defined(__OS2__)
-	if (fgets(input_line, lengthof(input_line), stdin) == nullptr) return;
+	std::string input_line;
+#if defined(UNIX)
+	if (!std::getline(std::cin, input_line)) return;
 #else
 	/* Handle console input, and signal console thread, it can accept input again */
-	assert_compile(lengthof(_win_console_thread_buffer) <= lengthof(input_line));
-	strecpy(input_line, _win_console_thread_buffer, lastof(input_line));
+	std::swap(input_line, _win_console_thread_buffer);
 	SetEvent(_hWaitForInputHandling);
 #endif
 
-	/* Remove trailing \r or \n */
-	for (char *c = input_line; *c != '\0'; c++) {
-		if (*c == '\n' || *c == '\r' || c == lastof(input_line)) {
-			*c = '\0';
-			break;
-		}
-	}
-	str_validate(input_line, lastof(input_line));
-
-	IConsoleCmdExec(input_line); // execute command
+	/* Remove any trailing \r or \n, and ensure the string is valid. */
+	auto p = input_line.find_last_not_of("\r\n");
+	if (p != std::string::npos) p++;
+	IConsoleCmdExec(StrMakeValid(input_line.substr(0, p)));
 }
 
 void VideoDriver_Dedicated::MainLoop()
 {
-	uint32 cur_ticks = GetTime();
-	uint32 next_tick = cur_ticks + MILLISECONDS_PER_TICK;
-
 	/* Signal handlers */
 #if defined(UNIX)
 	signal(SIGTERM, DedicatedSignalHandler);
@@ -261,56 +207,27 @@ void VideoDriver_Dedicated::MainLoop()
 	_network_dedicated = true;
 	_current_company = _local_company = COMPANY_SPECTATOR;
 
-	/* If SwitchMode is SM_LOAD_GAME, it means that the user used the '-g' options */
-	if (_switch_mode != SM_LOAD_GAME) {
+	/* If SwitchMode is SwitchMode::LoadGame / SwitchMode::StartHeightmap, it means that the user used the '-g' options */
+	if (_switch_mode != SwitchMode::LoadGame && _switch_mode != SwitchMode::StartHeightmap) {
 		StartNewGameWithoutGUI(GENERATE_NEW_SEED);
-		SwitchToMode(_switch_mode);
-		_switch_mode = SM_NONE;
-	} else {
-		_switch_mode = SM_NONE;
-		/* First we need to test if the savegame can be loaded, else we will end up playing the
-		 *  intro game... */
-		if (!SafeLoad(_file_to_saveload.name, _file_to_saveload.file_op, _file_to_saveload.detail_ftype, GM_NORMAL, BASE_DIR)) {
-			/* Loading failed, pop out.. */
-			DEBUG(net, 0, "Loading requested map failed, aborting");
-			_networking = false;
-		} else {
-			/* We can load this game, so go ahead */
-			SwitchToMode(SM_LOAD_GAME);
-		}
 	}
+
+	this->is_game_threaded = false;
 
 	/* Done loading, start game! */
 
-	if (!_networking) {
-		DEBUG(net, 0, "Dedicated server could not be started, aborting");
-		return;
-	}
-
 	while (!_exit_game) {
-		uint32 prev_cur_ticks = cur_ticks; // to check for wrapping
-		InteractiveRandom(); // randomness
-
 		if (!_dedicated_forks) DedicatedHandleKeyInput();
+		this->DrainCommandQueue();
 
-		cur_ticks = GetTime();
-		_realtime_tick += cur_ticks - prev_cur_ticks;
-		if (cur_ticks >= next_tick || cur_ticks < prev_cur_ticks || _ddc_fastforward) {
-			next_tick = cur_ticks + MILLISECONDS_PER_TICK;
+		this->Tick();
+		this->SleepTillNextTick();
 
-			GameLoop();
-			UpdateWindows();
+#if defined(UNIX)
+		if (_dedicated_exit_requested) {
+			if (_game_mode == GameMode::Normal && _settings_client.gui.autosave_on_exit) DoExitSave();
+			_exit_game = true;
 		}
-
-		/* Don't sleep when fast forwarding (for desync debugging) */
-		if (!_ddc_fastforward) {
-			/* Sleep longer on a dedicated server, if the game is paused and no clients connected.
-			 * That can allow the CPU to better use deep sleep states. */
-			if (_pause_mode != 0 && !HasClients()) {
-				CSleep(100);
-			} else {
-				CSleep(1);
-			}
-		}
+#endif
 	}
 }

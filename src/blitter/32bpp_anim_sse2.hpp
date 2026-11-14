@@ -2,10 +2,10 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file 32bpp_anim.hpp A partially SSE2 32 bpp blitter with animation support. */
+/** @file 32bpp_anim_sse2.hpp A partially SSE2 32 bpp blitter with animation support. */
 
 #ifndef BLITTER_32BPP_SSE2_ANIM_HPP
 #define BLITTER_32BPP_SSE2_ANIM_HPP
@@ -14,6 +14,10 @@
 
 #ifndef SSE_VERSION
 #define SSE_VERSION 2
+#endif
+
+#ifndef SSE_TARGET
+#define SSE_TARGET "sse2"
 #endif
 
 #ifndef FULL_ANIMATION
@@ -27,14 +31,14 @@
 class Blitter_32bppSSE2_Anim : public Blitter_32bppAnim {
 public:
 	void PaletteAnimate(const Palette &palette) override;
-	const char *GetName() override { return "32bpp-sse2-anim"; }
+	std::string_view GetName() override { return "32bpp-sse2-anim"; }
 };
 
 /** Factory for the partially 32bpp blitter with animation. */
 class FBlitter_32bppSSE2_Anim : public BlitterFactory {
 public:
 	FBlitter_32bppSSE2_Anim() : BlitterFactory("32bpp-sse2-anim", "32bpp partially SSE2 Animation Blitter (palette animation)", HasCPUIDFlag(1, 3, 26)) {}
-	Blitter *CreateInstance() override { return new Blitter_32bppSSE2_Anim(); }
+	std::unique_ptr<Blitter> CreateInstance() override { return std::make_unique<Blitter_32bppSSE2_Anim>(); }
 };
 
 #endif /* WITH_SSE */

@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file mixer.h Functions to mix sound samples. */
@@ -18,16 +18,20 @@ struct MixerChannel;
  * @param buffer Pointer to interleaved 2-channel signed 16 bit PCM data buffer, guaranteed to be 0-initialized.
  * @param samples number of samples that must be filled into \c buffer.
  */
-typedef void(*MxStreamCallback)(int16 *buffer, size_t samples);
+typedef void(*MxStreamCallback)(int16_t *buffer, size_t samples);
 
 bool MxInitialize(uint rate);
+uint32_t MxGetRate();
 void MxMixSamples(void *buffer, uint samples);
 
 MixerChannel *MxAllocateChannel();
-void MxSetChannelRawSrc(MixerChannel *mc, int8 *mem, size_t size, uint rate, bool is16bit);
+void MxSetChannelRawSrc(MixerChannel *mc, const std::shared_ptr<std::vector<std::byte>> &mem, uint rate, bool is16bit);
 void MxSetChannelVolume(MixerChannel *mc, uint volume, float pan);
 void MxActivateChannel(MixerChannel*);
+void MxCloseAllChannels();
 
-uint32 MxSetMusicSource(MxStreamCallback music_callback);
+uint32_t MxSetMusicSource(MxStreamCallback music_callback);
+
+void SetEffectVolume(uint8_t volume);
 
 #endif /* MIXER_H */

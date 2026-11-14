@@ -2,165 +2,113 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file debug.cpp Handling of printing debug messages. */
 
 #include "stdafx.h"
-#include <stdarg.h>
+#include "core/string_consumer.hpp"
 #include "console_func.h"
 #include "debug.h"
-#include "string_func.h"
 #include "fileio_func.h"
 #include "settings_type.h"
+#include <mutex>
 
 #if defined(_WIN32)
 #include "os/windows/win32.h"
 #endif
 
-#include <time.h>
+#include "3rdparty/fmt/chrono.h"
 
 #include "network/network_admin.h"
-SOCKET _debug_socket = INVALID_SOCKET;
 
 #include "safeguards.h"
 
-int _debug_driver_level;
-int _debug_grf_level;
-int _debug_map_level;
-int _debug_misc_level;
-int _debug_net_level;
-int _debug_sprite_level;
-int _debug_oldloader_level;
-int _debug_npf_level;
-int _debug_yapf_level;
-int _debug_freetype_level;
-int _debug_script_level;
-int _debug_sl_level;
-int _debug_gamelog_level;
-int _debug_desync_level;
-int _debug_console_level;
-#ifdef RANDOM_DEBUG
-int _debug_random_level;
-#endif
-
-uint32 _realtime_tick = 0;
-
-struct DebugLevel {
-	const char *name;
-	int *level;
+/** Element in the queue of debug messages that have to be passed to either NetworkAdminConsole or IConsolePrint.*/
+struct QueuedDebugItem {
+	Facility facility; ///< The facility of the message.
+	std::string message; ///< The actual formatted message.
 };
+std::atomic<bool> _debug_remote_console; ///< Whether we need to send data to either NetworkAdminConsole or IConsolePrint.
+std::mutex _debug_remote_console_mutex; ///< Mutex to guard the queue of debug messages for either NetworkAdminConsole or IConsolePrint.
+std::vector<QueuedDebugItem> _debug_remote_console_queue; ///< Queue for debug messages to be passed to NetworkAdminConsole or IConsolePrint.
+std::vector<QueuedDebugItem> _debug_remote_console_queue_spare; ///< Spare queue to swap with _debug_remote_console_queue.
 
-#define DEBUG_LEVEL(x) { #x, &_debug_##x##_level }
-	static const DebugLevel debug_level[] = {
-	DEBUG_LEVEL(driver),
-	DEBUG_LEVEL(grf),
-	DEBUG_LEVEL(map),
-	DEBUG_LEVEL(misc),
-	DEBUG_LEVEL(net),
-	DEBUG_LEVEL(sprite),
-	DEBUG_LEVEL(oldloader),
-	DEBUG_LEVEL(npf),
-	DEBUG_LEVEL(yapf),
-	DEBUG_LEVEL(freetype),
-	DEBUG_LEVEL(script),
-	DEBUG_LEVEL(sl),
-	DEBUG_LEVEL(gamelog),
-	DEBUG_LEVEL(desync),
-	DEBUG_LEVEL(console),
-#ifdef RANDOM_DEBUG
-	DEBUG_LEVEL(random),
-#endif
-	};
-#undef DEBUG_LEVEL
+/** Severity level for each debug facility. */
+EnumIndexArray<Severity, Facility, Facility::End> _debug_level;
+
+/** Name for each debug facility. */
+static EnumIndexArray<std::string_view, Facility, Facility::End> _debug_facilities = {
+	"driver", // Facility::Driver
+	"grf", // Facility::Grf
+	"map", // Facility::Map
+	"misc", // Facility::Misc
+	"net", // Facility::Net
+	"sprite", // Facility::Sprite
+	"oldloader", // Facility::Oldloader
+	"yapf", // Facility::Yapf
+	"fontcache", // Facility::Fontcache
+	"script", // Facility::Script
+	"sl", // Facility::Sl
+	"gamelog", // Facility::Gamelog
+	"desync", // Facility::Desync
+	"console", // Facility::Console
+	"random", // Facility::Random
+};
 
 /**
  * Dump the available debug facility names in the help text.
- * @param buf Start address for storing the output.
- * @param last Last valid address for storing the output.
- * @return Next free position in the output.
+ * @param output_iterator The iterator to write the string to.
  */
-char *DumpDebugFacilityNames(char *buf, char *last)
+void DumpDebugFacilityNames(std::back_insert_iterator<std::string> &output_iterator)
 {
-	size_t length = 0;
-	for (const DebugLevel *i = debug_level; i != endof(debug_level); ++i) {
-		if (length == 0) {
-			buf = strecpy(buf, "List of debug facility names:\n", last);
+	bool written = false;
+	for (Facility facility : EnumRange(Facility::End)) {
+		if (!written) {
+			fmt::format_to(output_iterator, "List of debug facility names:\n");
 		} else {
-			buf = strecpy(buf, ", ", last);
-			length += 2;
+			fmt::format_to(output_iterator, ", ");
 		}
-		buf = strecpy(buf, i->name, last);
-		length += strlen(i->name);
+		fmt::format_to(output_iterator, "{}", _debug_facilities[facility]);
+		written = true;
 	}
-	if (length > 0) {
-		buf = strecpy(buf, "\n\n", last);
+	if (written) {
+		fmt::format_to(output_iterator, "\n\n");
 	}
-	return buf;
 }
 
 /**
  * Internal function for outputting the debug line.
- * @param dbg Debug category.
- * @param buf Text line to output.
+ * @param facility The facility category/classification of the debug message.
+ * @param severity The severity of the debug level; lower is more likely to be shown.
+ * @param message The message to output.
  */
-static void debug_print(const char *dbg, const char *buf)
+void DebugPrint(Facility facility, Severity severity, std::string &&message)
 {
-	if (_debug_socket != INVALID_SOCKET) {
-		char buf2[1024 + 32];
+	if (facility == Facility::Desync && severity != Severity::Critical) {
+		static auto f = FioFOpenFile("commands-out.log", "wb", Subdirectory::Autosave);
+		if (!f.has_value()) return;
 
-		seprintf(buf2, lastof(buf2), "%sdbg: [%s] %s\n", GetLogPrefix(), dbg, buf);
-		/* Sending out an error when this fails would be nice, however... the error
-		 * would have to be send over this failing socket which won't work. */
-		send(_debug_socket, buf2, (int)strlen(buf2), 0);
-		return;
-	}
-	if (strcmp(dbg, "desync") == 0) {
-		static FILE *f = FioFOpenFile("commands-out.log", "wb", AUTOSAVE_DIR);
-		if (f == nullptr) return;
-
-		fprintf(f, "%s%s\n", GetLogPrefix(), buf);
-		fflush(f);
+		fmt::print(*f, "{}{}\n", GetLogPrefix(true), message);
+		fflush(*f);
 #ifdef RANDOM_DEBUG
-	} else if (strcmp(dbg, "random") == 0) {
-		static FILE *f = FioFOpenFile("random-out.log", "wb", AUTOSAVE_DIR);
-		if (f == nullptr) return;
+	} else if (facility == Facility::Random) {
+		static auto f = FioFOpenFile("random-out.log", "wb", Subdirectory::Autosave);
+		if (!f.has_value()) return;
 
-		fprintf(f, "%s\n", buf);
-		fflush(f);
+		fmt::print(*f, "{}\n", message);
+		fflush(*f);
 #endif
 	} else {
-		char buffer[512];
-		seprintf(buffer, lastof(buffer), "%sdbg: [%s] %s\n", GetLogPrefix(), dbg, buf);
-#if defined(_WIN32)
-		TCHAR system_buf[512];
-		convert_to_fs(buffer, system_buf, lengthof(system_buf), true);
-		_fputts(system_buf, stderr);
-#else
-		fputs(buffer, stderr);
-#endif
-		NetworkAdminConsole(dbg, buf);
-		IConsoleDebug(dbg, buf);
+		fmt::print(stderr, "{}dbg: [{}:{}] {}\n", GetLogPrefix(true), _debug_facilities[facility], severity, message);
+
+		if (_debug_remote_console.load()) {
+			/* Only add to the queue when there is at least one consumer of the data. */
+			std::lock_guard<std::mutex> lock(_debug_remote_console_mutex);
+			_debug_remote_console_queue.emplace_back(facility, std::move(message));
+		}
 	}
-}
-
-/**
- * Output a debug line.
- * @note Do not call directly, use the #DEBUG macro instead.
- * @param dbg Debug category.
- * @param format Text string a la printf, with optional arguments.
- */
-void CDECL debug(const char *dbg, const char *format, ...)
-{
-	char buf[1024];
-
-	va_list va;
-	va_start(va, format);
-	vseprintf(buf, lastof(buf), format, va);
-	va_end(va);
-
-	debug_print(dbg, buf);
 }
 
 /**
@@ -168,54 +116,51 @@ void CDECL debug(const char *dbg, const char *format, ...)
  * For setting individual levels a string like \c "net=3,grf=6" should be used.
  * If the string starts with a number, the number is used as global debugging level.
  * @param s Text describing the wanted debugging levels.
+ * @param error_func The function to call if a parse error occurs.
  */
-void SetDebugString(const char *s)
+void SetDebugString(std::string_view s, SetDebugStringErrorFunc error_func)
 {
-	int v;
-	char *end;
-	const char *t;
+	StringConsumer consumer{s};
 
-	/* global debugging level? */
-	if (*s >= '0' && *s <= '9') {
-		const DebugLevel *i;
+	/* Store planned changes into a temporary array during parse */
+	auto new_debug_level = _debug_level;
 
-		v = strtoul(s, &end, 0);
-		s = end;
-
-		for (i = debug_level; i != endof(debug_level); ++i) *i->level = v;
+	/* Global debugging level? */
+	auto level = consumer.TryReadIntegerBase<int>(10);
+	if (level.has_value()) {
+		new_debug_level.fill(static_cast<Severity>(*level));
 	}
 
-	/* individual levels */
-	for (;;) {
-		const DebugLevel *i;
-		int *p;
+	static const std::string_view lowercase_letters{"abcdefghijklmnopqrstuvwxyz"};
+	static const std::string_view lowercase_letters_and_digits{"abcdefghijklmnopqrstuvwxyz0123456789"};
 
-		/* skip delimiters */
-		while (*s == ' ' || *s == ',' || *s == '\t') s++;
-		if (*s == '\0') break;
+	/* Individual levels */
+	while (consumer.AnyBytesLeft()) {
+		consumer.SkipUntilCharIn(lowercase_letters);
+		if (!consumer.AnyBytesLeft()) break;
 
-		t = s;
-		while (*s >= 'a' && *s <= 'z') s++;
-
-		/* check debugging levels */
-		p = nullptr;
-		for (i = debug_level; i != endof(debug_level); ++i) {
-			if (s == t + strlen(i->name) && strncmp(t, i->name, s - t) == 0) {
-				p = i->level;
-				break;
-			}
-		}
-
-		if (*s == '=') s++;
-		v = strtoul(s, &end, 0);
-		s = end;
-		if (p != nullptr) {
-			*p = v;
-		} else {
-			ShowInfoF("Unknown debug level '%.*s'", (int)(s - t), t);
+		/* Find the level by name. */
+		std::string_view key = consumer.ReadUntilCharNotIn(lowercase_letters);
+		auto it = std::ranges::find(_debug_facilities, key);
+		if (it == std::end(_debug_facilities)) {
+			error_func(fmt::format("Unknown debug level '{}'", key));
 			return;
 		}
+
+		/* Do not skip lowercase letters, so 'net misc=2' won't be resolved
+		 * to setting 'net=2' and leaving misc untouched. */
+		consumer.SkipUntilCharIn(lowercase_letters_and_digits);
+		level = consumer.TryReadIntegerBase<int>(10);
+		if (!level.has_value()) {
+			error_func(fmt::format("Level for '{}' must be a valid integer.", key));
+			return;
+		}
+
+		new_debug_level[static_cast<Facility>(std::distance(_debug_facilities.begin(), it))] = static_cast<Severity>(*level);
 	}
+
+	/* Apply the changes after parse is successful */
+	_debug_level = new_debug_level;
 }
 
 /**
@@ -223,38 +168,75 @@ void SetDebugString(const char *s)
  * Just return a string with the values of all the debug categories.
  * @return string with debug-levels
  */
-const char *GetDebugString()
+std::string GetDebugString()
 {
-	const DebugLevel *i;
-	static char dbgstr[150];
-	char dbgval[20];
-
-	memset(dbgstr, 0, sizeof(dbgstr));
-	i = debug_level;
-	seprintf(dbgstr, lastof(dbgstr), "%s=%d", i->name, *i->level);
-
-	for (i++; i != endof(debug_level); i++) {
-		seprintf(dbgval, lastof(dbgval), ", %s=%d", i->name, *i->level);
-		strecat(dbgstr, dbgval, lastof(dbgstr));
+	std::string result;
+	for (Facility facility : EnumRange(Facility::End)) {
+		if (!result.empty()) result += ", ";
+		format_append(result, "{}={}", _debug_facilities[facility], _debug_level[facility]);
 	}
-
-	return dbgstr;
+	return result;
 }
 
 /**
- * Get the prefix for logs; if show_date_in_logs is enabled it returns
- * the date, otherwise it returns nothing.
- * @return the prefix for logs (do not free), never nullptr
+ * Get the prefix for logs.
+ *
+ * If show_date_in_logs or \p force is enabled it returns
+ * the date, otherwise it returns an empty string.
+ *
+ * @param force Whether to force the prefix on.
+ * @return The prefix for logs.
  */
-const char *GetLogPrefix()
+std::string GetLogPrefix(bool force)
 {
-	static char _log_prefix[24];
-	if (_settings_client.gui.show_date_in_logs) {
-		time_t cur_time = time(nullptr);
-		strftime(_log_prefix, sizeof(_log_prefix), "[%Y-%m-%d %H:%M:%S] ", localtime(&cur_time));
-	} else {
-		*_log_prefix = '\0';
+	std::string log_prefix;
+	if (force || _settings_client.gui.show_date_in_logs) {
+		log_prefix = fmt::format("[{:%Y-%m-%d %H:%M:%S}] ", fmt::localtime(time(nullptr)));
 	}
-	return _log_prefix;
+	return log_prefix;
 }
 
+/**
+ * Send the queued Debug messages to either NetworkAdminConsole or IConsolePrint from the
+ * GameLoop thread to prevent concurrent accesses to both the NetworkAdmin's packet queue
+ * as well as IConsolePrint's buffers.
+ *
+ * This is to be called from the GameLoop thread.
+ */
+void DebugSendRemoteMessages()
+{
+	if (!_debug_remote_console.load()) return;
+
+	{
+		std::lock_guard<std::mutex> lock(_debug_remote_console_mutex);
+		std::swap(_debug_remote_console_queue, _debug_remote_console_queue_spare);
+	}
+
+	for (auto &item : _debug_remote_console_queue_spare) {
+		NetworkAdminConsole(_debug_facilities[item.facility], item.message);
+		if (_settings_client.gui.developer >= 2) IConsolePrint(CC_DEBUG, "dbg: [{}] {}", _debug_facilities[item.facility], item.message);
+	}
+
+	_debug_remote_console_queue_spare.clear();
+}
+
+/**
+ * Reconsider whether we need to send debug messages to either NetworkAdminConsole
+ * or IConsolePrint. The former is when they have enabled console handling whereas
+ * the latter depends on the gui.developer setting's value.
+ *
+ * This is to be called from the GameLoop thread.
+ */
+void DebugReconsiderSendRemoteMessages()
+{
+	bool enable = _settings_client.gui.developer >= 2;
+
+	for (ServerNetworkAdminSocketHandler *as : ServerNetworkAdminSocketHandler::IterateActive()) {
+		if (as->update_frequency[AdminUpdateType::Console].Test(AdminUpdateFrequency::Automatic)) {
+			enable = true;
+			break;
+		}
+	}
+
+	_debug_remote_console.store(enable);
+}

@@ -2,25 +2,26 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file highscore.cpp Definition of functions used for highscore handling */
+/** @file highscore.cpp Definition of functions used for highscore handling. */
 
 #include "stdafx.h"
 #include "highscore.h"
 #include "company_base.h"
 #include "company_func.h"
-#include "cheat_func.h"
+#include "fileio_type.h"
 #include "string_func.h"
 #include "strings_func.h"
-#include "table/strings.h"
 #include "debug.h"
+
+#include "table/strings.h"
 
 #include "safeguards.h"
 
-HighScore _highscore_table[SP_HIGHSCORE_END][5]; ///< various difficulty-settings; top 5
-char *_highscore_file; ///< The file to store the highscore data in.
+HighScoresTable _highscore_table; ///< Table with all the high scores.
+std::string _highscore_file; ///< The file to store the highscore data in.
 
 static const StringID _endgame_perf_titles[] = {
 	STR_HIGHSCORE_PERFORMANCE_TITLE_BUSINESSMAN,
@@ -43,39 +44,37 @@ static const StringID _endgame_perf_titles[] = {
 
 StringID EndGameGetPerformanceTitleFromValue(uint value)
 {
-	value = minu(value / 64, lengthof(_endgame_perf_titles) - 1);
+	value = std::min<uint>(value / 64, lengthof(_endgame_perf_titles) - 1);
 
 	return _endgame_perf_titles[value];
 }
 
-/** Save the highscore for the company */
-int8 SaveHighScoreValue(const Company *c)
+/**
+ * Save the highscore for the company
+ * @param c The company to insert.
+ * @return The index the company got in the high score table, or -1 when it did not end up in the table.
+ */
+int8_t SaveHighScoreValue(const Company *c)
 {
-	HighScore *hs = _highscore_table[SP_CUSTOM];
-	uint i;
-	uint16 score = c->old_economy[0].performance_history;
+	auto &highscores = _highscore_table[SP_CUSTOM];
+	uint16_t score = c->old_economy[0].performance_history;
 
-	/* Exclude cheaters from the honour of being in the highscore table */
-	if (CheatHasBeenUsed()) return -1;
+	auto it = std::ranges::find_if(highscores, [&score](auto &highscore) { return highscore.score <= score; });
 
-	for (i = 0; i < lengthof(_highscore_table[0]); i++) {
-		/* You are in the TOP5. Move all values one down and save us there */
-		if (hs[i].score <= score) {
-			/* move all elements one down starting from the replaced one */
-			memmove(&hs[i + 1], &hs[i], sizeof(HighScore) * (lengthof(_highscore_table[0]) - i - 1));
-			SetDParam(0, c->index);
-			SetDParam(1, c->index);
-			GetString(hs[i].company, STR_HIGHSCORE_NAME, lastof(hs[i].company)); // get manager/company name string
-			hs[i].score = score;
-			hs[i].title = EndGameGetPerformanceTitleFromValue(score);
-			return i;
-		}
-	}
+	/* If we cannot find it, our score is not high enough. */
+	if (it == highscores.end()) return -1;
 
-	return -1; // too bad; we did not make it into the top5
+	/* Move all elements one down starting from the replaced one */
+	std::move_backward(it, highscores.end() - 1, highscores.end());
+
+	/* Fill the elements. */
+	it->name = GetString(STR_HIGHSCORE_NAME, c->index, c->index); // get manager/company name string
+	it->score = score;
+	it->title = EndGameGetPerformanceTitleFromValue(score);
+	return std::distance(highscores.begin(), it);
 }
 
-/** Sort all companies given their performance */
+/** Sort all companies given their performance. @copydoc GUIList::Sorter */
 static bool HighScoreSorter(const Company * const &a, const Company * const &b)
 {
 	return b->old_economy[0].performance_history < a->old_economy[0].performance_history;
@@ -85,95 +84,81 @@ static bool HighScoreSorter(const Company * const &a, const Company * const &b)
  * Save the highscores in a network game when it has ended
  * @return Position of the local company in the highscore list.
  */
-int8 SaveHighScoreValueNetwork()
+int8_t SaveHighScoreValueNetwork()
 {
-	const Company *cl[MAX_COMPANIES];
-	uint count = 0;
-	int8 company = -1;
+	std::vector<const Company *> cl;
+	int8_t local_company_place = -1;
 
 	/* Sort all active companies with the highest score first */
-	for (const Company *c : Company::Iterate()) cl[count++] = c;
+	for (const Company *c : Company::Iterate()) cl.push_back(c);
 
-	std::sort(std::begin(cl), std::begin(cl) + count, HighScoreSorter);
+	std::ranges::sort(cl, HighScoreSorter);
 
-	{
-		uint i;
+	/* Clear the high scores from the previous network game. */
+	auto &highscores = _highscore_table[SP_MULTIPLAYER];
+	std::fill(highscores.begin(), highscores.end(), HighScore{});
 
-		memset(_highscore_table[SP_MULTIPLAYER], 0, sizeof(_highscore_table[SP_MULTIPLAYER]));
+	for (size_t i = 0; i < cl.size() && i < highscores.size(); i++) {
+		const Company *c = cl[i];
+		auto &highscore = highscores[i];
+		highscore.name = GetString(STR_HIGHSCORE_NAME, c->index, c->index); // get manager/company name string
+		highscore.score = c->old_economy[0].performance_history;
+		highscore.title = EndGameGetPerformanceTitleFromValue(highscore.score);
 
-		/* Copy over Top5 companies */
-		for (i = 0; i < lengthof(_highscore_table[SP_MULTIPLAYER]) && i < count; i++) {
-			HighScore *hs = &_highscore_table[SP_MULTIPLAYER][i];
-
-			SetDParam(0, cl[i]->index);
-			SetDParam(1, cl[i]->index);
-			GetString(hs->company, STR_HIGHSCORE_NAME, lastof(hs->company)); // get manager/company name string
-			hs->score = cl[i]->old_economy[0].performance_history;
-			hs->title = EndGameGetPerformanceTitleFromValue(hs->score);
-
-			/* get the ranking of the local company */
-			if (cl[i]->index == _local_company) company = i;
-		}
+		if (c->index == _local_company) local_company_place = static_cast<int8_t>(i);
 	}
 
-	/* Add top5 companies to highscore table */
-	return company;
+	return local_company_place;
 }
 
 /** Save HighScore table to file */
 void SaveToHighScore()
 {
-	FILE *fp = fopen(_highscore_file, "wb");
+	auto ofp = FileHandle::Open(_highscore_file, "wb");
+	if (!ofp.has_value()) return;
+	auto &fp = *ofp;
 
-	if (fp != nullptr) {
-		uint i;
-		HighScore *hs;
-
-		for (i = 0; i < SP_SAVED_HIGHSCORE_END; i++) {
-			for (hs = _highscore_table[i]; hs != endof(_highscore_table[i]); hs++) {
-				/* First character is a command character, so strlen will fail on that */
-				byte length = min(sizeof(hs->company), StrEmpty(hs->company) ? 0 : (int)strlen(&hs->company[1]) + 1);
-
-				if (fwrite(&length, sizeof(length), 1, fp)       != 1 || // write away string length
-						fwrite(hs->company, length, 1, fp)           >  1 || // Yes... could be 0 bytes too
-						fwrite(&hs->score, sizeof(hs->score), 1, fp) != 1 ||
-						fwrite("  ", 2, 1, fp)                       != 1) { // XXX - placeholder for hs->title, not saved anymore; compatibility
-					DEBUG(misc, 1, "Could not save highscore.");
-					i = SP_SAVED_HIGHSCORE_END;
-					break;
-				}
+	/* Does not iterate through the complete array!. */
+	for (SettingsProfile i : EnumRange(SP_SAVED_HIGHSCORE_END)) {
+		for (HighScore &hs : _highscore_table[i]) {
+			/* This code is weird and old fashioned to keep compatibility with the old high score files. */
+			uint8_t name_length = ClampTo<uint8_t>(hs.name.size());
+			if (fwrite(&name_length, sizeof(name_length), 1, fp) != 1 || // Write the string length of the name
+					fwrite(hs.name.data(), name_length, 1, fp) > 1 || // Yes... could be 0 bytes too
+					fwrite(&hs.score, sizeof(hs.score), 1, fp) != 1 ||
+					fwrite("  ", 2, 1, fp) != 1) { // Used to be hs.title, not saved anymore; compatibility
+				Debug(Facility::Misc, Severity::Error, "Could not save highscore.");
+				return;
 			}
 		}
-		fclose(fp);
 	}
 }
 
 /** Initialize the highscore table to 0 and if any file exists, load in values */
 void LoadFromHighScore()
 {
-	FILE *fp = fopen(_highscore_file, "rb");
+	std::fill(_highscore_table.begin(), _highscore_table.end(), HighScores{});
 
-	memset(_highscore_table, 0, sizeof(_highscore_table));
+	auto ofp = FileHandle::Open(_highscore_file, "rb");
+	if (!ofp.has_value()) return;
+	auto &fp = *ofp;
 
-	if (fp != nullptr) {
-		uint i;
-		HighScore *hs;
+	/* Does not iterate through the complete array!. */
+	for (SettingsProfile i : EnumRange(SP_SAVED_HIGHSCORE_END)) {
+		for (HighScore &hs : _highscore_table[i]) {
+			/* This code is weird and old fashioned to keep compatibility with the old high score files. */
+			uint8_t name_length;
+			char buffer[std::numeric_limits<decltype(name_length)>::max() + 1];
 
-		for (i = 0; i < SP_SAVED_HIGHSCORE_END; i++) {
-			for (hs = _highscore_table[i]; hs != endof(_highscore_table[i]); hs++) {
-				byte length;
-				if (fread(&length, sizeof(length), 1, fp)                              !=  1 ||
-						fread(hs->company, min<int>(lengthof(hs->company), length), 1, fp) >   1 || // Yes... could be 0 bytes too
-						fread(&hs->score, sizeof(hs->score), 1, fp)                        !=  1 ||
-						fseek(fp, 2, SEEK_CUR)                                             == -1) { // XXX - placeholder for hs->title, not saved anymore; compatibility
-					DEBUG(misc, 1, "Highscore corrupted");
-					i = SP_SAVED_HIGHSCORE_END;
-					break;
-				}
-				str_validate(hs->company, lastof(hs->company), SVS_NONE);
-				hs->title = EndGameGetPerformanceTitleFromValue(hs->score);
+			if (fread(&name_length, sizeof(name_length), 1, fp) !=  1 ||
+					fread(buffer, name_length, 1, fp) > 1 || // Yes... could be 0 bytes too
+					fread(&hs.score, sizeof(hs.score), 1, fp) !=  1 ||
+					fseek(fp, 2, SEEK_CUR) == -1) { // Used to be hs.title, not saved anymore; compatibility
+				Debug(Facility::Misc, Severity::Error, "Highscore corrupted");
+				return;
 			}
+			hs.name = StrMakeValid(std::string_view(buffer, name_length));
+			hs.title = EndGameGetPerformanceTitleFromValue(hs.score);
 		}
-		fclose(fp);
 	}
 }

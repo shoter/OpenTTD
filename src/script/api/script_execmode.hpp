@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_execmode.hpp Switch the script to Execute Mode. */
@@ -34,7 +34,7 @@ protected:
 public:
 	/**
 	 * Creating instance of this class switches the build mode to Execute.
-	 * @note When the instance is destroyed, he restores the mode that was
+	 * @note When the instance is destroyed, it restores the mode that was
 	 *   current when the instance was created!
 	 */
 	ScriptExecMode();
@@ -43,12 +43,12 @@ public:
 	 * Destroying this instance reset the building mode to the mode it was
 	 *   in when the instance was created.
 	 */
-	~ScriptExecMode();
+	~ScriptExecMode() override;
 
 	/**
 	 * @api -all
 	 */
-	virtual void FinalRelease();
+	void FinalRelease() override;
 };
 
 #endif /* SCRIPT_EXECMODE_HPP */

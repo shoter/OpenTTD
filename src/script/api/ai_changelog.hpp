@@ -2,23 +2,109 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
+/** @file ai_changelog.hpp Lists all changes / additions to the AI API. */
+
 /**
- * @file ai_changelog.hpp Lists all changes / additions to the API.
+ * @page ai_changelog Lists all changes / additions to the API.
  *
  * Only new / renamed / deleted api functions will be listed here. A list of
  * bug fixes can be found in the normal changelog. Note that removed API
  * functions may still be available if you return an older API version
  * in GetAPIVersion() in info.nut.
  *
- * \b 1.11.0
+ * \b 17.0
  *
  * This version is not yet released. The following changes are not set in stone yet.
  *
+ * \b 16.0
+ *
  * API additions:
+ * \li AIRail::RemoveRailDepot
+ * \li AIDepot
+ * \li AIError::ERR_CAT_DEPOT
+ *
+ * \b 15.0
+ *
+ * API additions:
+ * \li AIEventVehicleCrashed::GetVictims
+ * \li AIEventVehicleCrashed::GetVehicleOwner
+ * \li AIEventCompanyRenamed
+ * \li AIEventPresidentRenamed
+ * \li AICargo::CC_OVERSIZED
+ * \li AICargo::CC_POWDERIZED
+ * \li AICargo::CC_NON_POURABLE
+ * \li AICargo::CC_POTABLE
+ * \li AICargo::CC_NON_POTABLE
+ * \li AIVehicleList_Waypoint
+ * \li AIError::ERR_BRIDGE_TOO_LOW
+ * \li AIEngine::GetAllRailTypes
+ * \li AITile::IsHouseTile
+ *
+ * Other changes:
+ * \li AIBridge::GetBridgeID renamed to AIBridge::GetBridgeType
+ * \li AIWaypoint::GetWaypointID now returns the StationID of any type of waypoint
+ * \li AIList instances can now be saved
+ * \li AIVehicleList_Station accepts an optional AIVehicle::VehicleType parameter
+ * \li AIList instances can now be cloned
+ * \li AIEngine::GetRailType will only return the first RailType of an engine, use AIEngine::GetAllRailTypes instead
+ *
+ * \b 14.0
+ *
+ * API additions:
+ * \li AITown::ROAD_LAYOUT_RANDOM
+ * \li AIVehicle::IsPrimaryVehicle
+ * \li AITileList_StationCoverage
+ * \li AIAirport::GetAirportNumHelipads
+ *
+ * API removals:
+ * \li AIError::ERR_PRECONDITION_TOO_MANY_PARAMETERS, that error is never returned anymore.
+ * \li AIInfo::CONFIG_RANDOM, no longer used.
+ * \li AIInfo::AddSettings random_deviation is no longer used.
+ *
+ * Other changes:
+ * \li AIGroupList accepts an optional filter function
+ * \li AIIndustryList accepts an optional filter function
+ * \li AISignList accepts an optional filter function
+ * \li AISubsidyList accepts an optional filter function
+ * \li AITownList accepts an optional filter function
+ * \li AIVehicleList accepts an optional filter function
+ * \li AIInfo::AddSettings easy_value / medium_value / hard_value are replaced with default_value
+ *
+ * \b 13.0
+ *
+ * API additions:
+ * \li AICargo::GetWeight
+ * \li AIIndustryType::ResolveNewGRFID
+ * \li AIObjectType::ResolveNewGRFID
+ *
+ * Other changes:
+ * \li AIRoad::HasRoadType now correctly checks RoadType against RoadType
+ *
+ * \b 12.0
+ *
+ * API additions:
+ * \li AINewGRF
+ * \li AINewGRFList
+ * \li AIGroup::GetNumVehicles
+ * \li AIMarine::BT_LOCK
+ * \li AIMarine::BT_CANAL
+ * \li AITile::IsSeaTile
+ * \li AITile::IsRiverTile
+ * \li AITile::BT_CLEAR_WATER
+ * \li AIObjectTypeList
+ * \li AIObjectType
+ *
+ * \b 1.11.0
+ *
+ * API additions:
+ * \li AICargo::GetName
  * \li AIPriorityQueue
+ *
+ * Other changes:
+ * \li AIVehicle::CloneVehicle now correctly returns estimate when short on cash
  *
  * \b 1.10.0
  *
@@ -404,4 +490,18 @@
  *
  * \b 0.7.0
  * \li First stable release with the NoAI framework.
+ */
+
+/**
+ * @mainpage
+ *
+ * What's new?
+ * \li \ref ai_changelog
+ *
+ * Main classes:
+ * \li \ref AIInfo
+ * \li \ref AIController
+ *
+ * Detail topics:
+ * \li \ref script_ids
  */

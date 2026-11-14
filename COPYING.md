@@ -1,12 +1,12 @@
 This is the license which applies to OpenTTD with the exception of some
-3rd party modules. See [./README.md](./README.md) for details
+3rd party modules. See [our readme](./README.md) for details
 
 GNU General Public License
 ==========================
 
 _Version 2, June 1991_
 _Copyright © 1989, 1991 Free Software Foundation, Inc.,_
-_51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA_
+_[https://fsf.org/](https://fsf.org/)_
 
 Everyone is permitted to copy and distribute verbatim copies
 of this license document, but changing it is not allowed.
@@ -304,8 +304,7 @@ the "copyright" line and a pointer to where the full notice is found.
     GNU General Public License for more details.
 
     You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+    with this program. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
 
 Also add information on how to contact you by electronic and paper mail.
 

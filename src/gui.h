@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file gui.h GUI functions that shouldn't be here. */
@@ -10,6 +10,8 @@
 #ifndef GUI_H
 #define GUI_H
 
+#include "rail_type.h"
+#include "road_type.h"
 #include "vehicle_type.h"
 #include "economy_type.h"
 #include "tile_type.h"
@@ -20,12 +22,10 @@
 struct Window;
 
 /* main_gui.cpp */
-void HandleOnEditText(const char *str);
 void InitializeGUI();
 
 /* settings_gui.cpp */
 void ShowGameOptions();
-void ShowGameSettings();
 
 /* train_gui.cpp */
 void ShowOrdersWindow(const Vehicle *v);
@@ -44,25 +44,34 @@ void ShowHeightmapLoad();
 /* misc_gui.cpp */
 void ShowLandInfo(TileIndex tile);
 void ShowAboutWindow();
-void ShowBuildTreesToolbar();
-void ShowTownDirectory();
-void ShowIndustryDirectory();
-void ShowIndustryCargoesWindow();
-void ShowSubsidiesList();
-void ShowGoalsList(CompanyID company);
-void ShowGoalQuestion(uint16 id, byte type, uint32 button_mask, const char *question);
-void ShowStoryBook(CompanyID company, uint16 page_id = INVALID_STORY_PAGE);
-
 void ShowEstimatedCostOrIncome(Money cost, int x, int y);
 
+/* tree_gui.cpp */
+void ShowBuildTreesToolbar();
+
+/* town_gui.cpp */
+void ShowTownDirectory();
+void ShowFoundTownWindow();
+
+/* industry_gui.cpp */
+void ShowIndustryDirectory();
+void ShowIndustryCargoesWindow();
+void ShowBuildIndustryWindow();
+
+/* subsidy_gui.cpp */
+void ShowSubsidiesList();
+
+/* story_gui.cpp */
+void ShowStoryBook(CompanyID company, StoryPageID page_id = StoryPageID::Invalid(), bool centered = false);
+
+/* viewport_gui.cpp */
 void ShowExtraViewportWindow(TileIndex tile = INVALID_TILE);
 void ShowExtraViewportWindowForTileUnderCursor();
 
 /* bridge_gui.cpp */
-void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transport_type, byte bridge_type);
+void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transport_type, RailType railtype, RoadType roadtype);
 
-void ShowBuildIndustryWindow();
-void ShowFoundTownWindow();
+/* music_gui.cpp */
 void ShowMusicWindow();
 
 #endif /* GUI_H */

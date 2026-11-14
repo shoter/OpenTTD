@@ -2,13 +2,14 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file 8bpp_base.cpp Implementation of the base for all 8 bpp blitters. */
 
 #include "../stdafx.h"
 #include "../gfx_func.h"
+#include "../spritecache.h"
 #include "8bpp_base.hpp"
 #include "common.hpp"
 
@@ -16,46 +17,47 @@
 
 void Blitter_8bppBase::DrawColourMappingRect(void *dst, int width, int height, PaletteID pal)
 {
-	const uint8 *ctab = GetNonSprite(pal, ST_RECOLOUR) + 1;
+	const uint8_t *ctab = GetNonSprite(pal, SpriteType::Recolour) + 1;
 
 	do {
-		for (int i = 0; i != width; i++) *((uint8 *)dst + i) = ctab[((uint8 *)dst)[i]];
-		dst = (uint8 *)dst + _screen.pitch;
+		for (int i = 0; i != width; i++) *((uint8_t *)dst + i) = ctab[((uint8_t *)dst)[i]];
+		dst = (uint8_t *)dst + _screen.pitch;
 	} while (--height);
 }
 
 void *Blitter_8bppBase::MoveTo(void *video, int x, int y)
 {
-	return (uint8 *)video + x + y * _screen.pitch;
+	return (uint8_t *)video + x + y * _screen.pitch;
 }
 
-void Blitter_8bppBase::SetPixel(void *video, int x, int y, uint8 colour)
+void Blitter_8bppBase::SetPixel(void *video, int x, int y, PixelColour colour)
 {
-	*((uint8 *)video + x + y * _screen.pitch) = colour;
+	*((uint8_t *)video + x + y * _screen.pitch) = colour.p;
 }
 
-void Blitter_8bppBase::DrawLine(void *video, int x, int y, int x2, int y2, int screen_width, int screen_height, uint8 colour, int width, int dash)
+void Blitter_8bppBase::DrawLine(void *video, int x, int y, int x2, int y2, int screen_width, int screen_height, PixelColour colour, int width, int dash)
 {
 	this->DrawLineGeneric(x, y, x2, y2, screen_width, screen_height, width, dash, [=](int x, int y) {
-		*((uint8 *)video + x + y * _screen.pitch) = colour;
+		*((uint8_t *)video + x + y * _screen.pitch) = colour.p;
 	});
 }
 
-void Blitter_8bppBase::DrawRect(void *video, int width, int height, uint8 colour)
+void Blitter_8bppBase::DrawRect(void *video, int width, int height, PixelColour colour)
 {
+	std::byte *p = static_cast<std::byte *>(video);
 	do {
-		memset(video, colour, width);
-		video = (uint8 *)video + _screen.pitch;
+		std::fill_n(p, width, static_cast<std::byte>(colour.p));
+		p += _screen.pitch;
 	} while (--height);
 }
 
 void Blitter_8bppBase::CopyFromBuffer(void *video, const void *src, int width, int height)
 {
-	uint8 *dst = (uint8 *)video;
-	const uint8 *usrc = (const uint8 *)src;
+	uint8_t *dst = (uint8_t *)video;
+	const uint8_t *usrc = (const uint8_t *)src;
 
 	for (; height > 0; height--) {
-		memcpy(dst, usrc, width * sizeof(uint8));
+		std::copy_n(usrc, width, dst);
 		usrc += width;
 		dst += _screen.pitch;
 	}
@@ -63,11 +65,11 @@ void Blitter_8bppBase::CopyFromBuffer(void *video, const void *src, int width, i
 
 void Blitter_8bppBase::CopyToBuffer(const void *video, void *dst, int width, int height)
 {
-	uint8 *udst = (uint8 *)dst;
-	const uint8 *src = (const uint8 *)video;
+	uint8_t *udst = (uint8_t *)dst;
+	const uint8_t *src = (const uint8_t *)video;
 
 	for (; height > 0; height--) {
-		memcpy(udst, src, width * sizeof(uint8));
+		std::copy_n(src, width, udst);
 		src += _screen.pitch;
 		udst += width;
 	}
@@ -75,11 +77,11 @@ void Blitter_8bppBase::CopyToBuffer(const void *video, void *dst, int width, int
 
 void Blitter_8bppBase::CopyImageToBuffer(const void *video, void *dst, int width, int height, int dst_pitch)
 {
-	uint8 *udst = (uint8 *)dst;
-	const uint8 *src = (const uint8 *)video;
+	uint8_t *udst = (uint8_t *)dst;
+	const uint8_t *src = (const uint8_t *)video;
 
 	for (; height > 0; height--) {
-		memcpy(udst, src, width * sizeof(uint8));
+		std::copy_n(src, width, udst);
 		src += _screen.pitch;
 		udst += dst_pitch;
 	}
@@ -87,12 +89,12 @@ void Blitter_8bppBase::CopyImageToBuffer(const void *video, void *dst, int width
 
 void Blitter_8bppBase::ScrollBuffer(void *video, int &left, int &top, int &width, int &height, int scroll_x, int scroll_y)
 {
-	const uint8 *src;
-	uint8 *dst;
+	const uint8_t *src;
+	uint8_t *dst;
 
 	if (scroll_y > 0) {
 		/* Calculate pointers */
-		dst = (uint8 *)video + left + (top + height - 1) * _screen.pitch;
+		dst = (uint8_t *)video + left + (top + height - 1) * _screen.pitch;
 		src = dst - scroll_y * _screen.pitch;
 
 		/* Decrease height and increase top */
@@ -110,14 +112,10 @@ void Blitter_8bppBase::ScrollBuffer(void *video, int &left, int &top, int &width
 			width += scroll_x;
 		}
 
-		for (int h = height; h > 0; h--) {
-			memcpy(dst, src, width * sizeof(uint8));
-			src -= _screen.pitch;
-			dst -= _screen.pitch;
-		}
+		Blitter::MovePixels(src, dst, width, height, -_screen.pitch);
 	} else {
 		/* Calculate pointers */
-		dst = (uint8 *)video + left + top * _screen.pitch;
+		dst = (uint8_t *)video + left + top * _screen.pitch;
 		src = dst - scroll_y * _screen.pitch;
 
 		/* Decrease height. (scroll_y is <=0). */
@@ -134,27 +132,21 @@ void Blitter_8bppBase::ScrollBuffer(void *video, int &left, int &top, int &width
 			width += scroll_x;
 		}
 
-		/* the y-displacement may be 0 therefore we have to use memmove,
-		 * because source and destination may overlap */
-		for (int h = height; h > 0; h--) {
-			memmove(dst, src, width * sizeof(uint8));
-			src += _screen.pitch;
-			dst += _screen.pitch;
-		}
+		Blitter::MovePixels(src, dst, width, height, _screen.pitch);
 	}
 }
 
-int Blitter_8bppBase::BufferSize(int width, int height)
+size_t Blitter_8bppBase::BufferSize(uint width, uint height)
 {
-	return width * height;
+	return static_cast<size_t>(width) * height;
 }
 
-void Blitter_8bppBase::PaletteAnimate(const Palette &palette)
+void Blitter_8bppBase::PaletteAnimate(const Palette &)
 {
 	/* Video backend takes care of the palette animation */
 }
 
 Blitter::PaletteAnimation Blitter_8bppBase::UsePaletteAnimation()
 {
-	return Blitter::PALETTE_ANIMATION_VIDEO_BACKEND;
+	return Blitter::PaletteAnimation::VideoBackend;
 }

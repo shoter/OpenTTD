@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file framerate_widget.h Types related to the framerate windows widgets. */
@@ -11,7 +11,7 @@
 #define WIDGETS_FRAMERATE_WIDGET_H
 
 /** Widgets of the #FramerateWindow class. */
-enum FramerateWindowWidgets {
+enum FramerateWindowWidgets : WidgetID {
 	WID_FRW_CAPTION,
 	WID_FRW_RATE_GAMELOOP,
 	WID_FRW_RATE_DRAWING,
@@ -21,12 +21,11 @@ enum FramerateWindowWidgets {
 	WID_FRW_TIMES_CURRENT,
 	WID_FRW_TIMES_AVERAGE,
 	WID_FRW_ALLOCSIZE,
-	WID_FRW_SEL_MEMORY,
 	WID_FRW_SCROLLBAR,
 };
 
 /** Widgets of the #FrametimeGraphWindow class. */
-enum FrametimeGraphWindowWidgets {
+enum FrametimeGraphWindowWidgets : WidgetID {
 	WID_FGW_CAPTION,
 	WID_FGW_GRAPH,
 };

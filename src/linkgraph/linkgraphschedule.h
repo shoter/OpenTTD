@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file linkgraphschedule.h Declaration of link graph schedule used for cargo distribution. */
@@ -20,10 +20,8 @@ class LinkGraphJob;
  */
 class ComponentHandler {
 public:
-	/**
-	 * Destroy the handler. Must be given due to virtual Run.
-	 */
-	virtual ~ComponentHandler() {}
+	/** Ensure the destructor of the sub classes are called as well. */
+	virtual ~ComponentHandler() = default;
 
 	/**
 	 * Run the handler. A link graph handler must not read or write any data
@@ -39,10 +37,10 @@ private:
 	~LinkGraphSchedule();
 	typedef std::list<LinkGraph *> GraphList;
 	typedef std::list<LinkGraphJob *> JobList;
-	friend const SaveLoad *GetLinkGraphScheduleDesc();
+	friend SaveLoadTable GetLinkGraphScheduleDesc();
 
 protected:
-	ComponentHandler *handlers[6]; ///< Handlers to be run for each job.
+	std::array<std::unique_ptr<ComponentHandler>, 6> handlers{}; ///< Handlers to be run for each job.
 	GraphList schedule;            ///< Queue for new jobs.
 	JobList running;               ///< Currently running jobs.
 
@@ -55,9 +53,10 @@ public:
 	static void Clear();
 
 	void SpawnNext();
+	bool IsJoinWithUnfinishedJobDue() const;
 	void JoinNext();
 	void SpawnAll();
-	void ShiftDates(int interval);
+	void ShiftDates(TimerGameEconomy::Date interval);
 
 	/**
 	 * Queue a link graph for execution.
@@ -73,7 +72,10 @@ public:
 	 * Remove a link graph from the execution queue.
 	 * @param lg Link graph to be removed.
 	 */
-	void Unqueue(LinkGraph *lg) { this->schedule.remove(lg); }
+	void Dequeue(LinkGraph *lg) { this->schedule.remove(lg); }
 };
+
+void StateGameLoop_LinkGraphPauseControl();
+void AfterLoad_LinkGraphPauseControl();
 
 #endif /* LINKGRAPHSCHEDULE_H */

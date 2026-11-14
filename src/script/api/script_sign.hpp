@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_sign.hpp Everything to query and build signs. */
@@ -12,6 +12,7 @@
 
 #include "script_company.hpp"
 #include "script_error.hpp"
+#include "../../signs_type.h"
 
 /**
  * Class that handles all sign related functions.
@@ -21,6 +22,8 @@ class ScriptSign : public ScriptObject {
 public:
 	/**
 	 * All sign related error messages.
+	 *
+	 * @see ScriptErrorType
 	 */
 	enum ErrorMessages {
 
@@ -43,7 +46,7 @@ public:
 	 * @param sign_id The sign to set the name for.
 	 * @param name The name for the sign (can be either a raw string, or a ScriptText object).
 	 * @pre IsValidSign(sign_id).
-	 * @pre name != nullptr && len(name) != 0.
+	 * @pre name != null && len(name) != 0.
 	 * @exception ScriptError::ERR_NAME_IS_NOT_UNIQUE
 	 * @return True if and only if the name was changed.
 	 */
@@ -55,7 +58,7 @@ public:
 	 * @pre IsValidSign(sign_id).
 	 * @return The name of the sign.
 	 */
-	static char *GetName(SignID sign_id);
+	static std::optional<std::string> GetName(SignID sign_id);
 
 	/**
 	 * Get the owner of a sign.
@@ -79,7 +82,7 @@ public:
 	 * @param location The place to build the sign.
 	 * @param name The text to place on the sign (can be either a raw string, or a ScriptText object).
 	 * @pre ScriptMap::IsValidTile(location).
-	 * @pre name != nullptr && len(name) != 0.
+	 * @pre name != null && len(name) != 0.
 	 * @exception ScriptSign::ERR_SIGN_TOO_MANY_SIGNS
 	 * @return The SignID of the build sign (use IsValidSign() to check for validity).
 	 *   In test-mode it returns 0 if successful, or any other value to indicate

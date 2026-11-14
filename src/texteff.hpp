@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file texteff.hpp Functions related to text effects. */
@@ -17,25 +17,26 @@
 /**
  * Text effect modes.
  */
-enum TextEffectMode {
-	TE_RISING, ///< Make the text effect slowly go upwards
-	TE_STATIC, ///< Keep the text effect static
-
-	INVALID_TE_ID = 0xFFFF,
+enum class TextEffectMode : uint8_t {
+	Invalid, ///< Text effect is invalid.
+	Rising, ///< Make the text effect slowly go upwards
+	Static, ///< Keep the text effect static
 };
 
-typedef uint16 TextEffectID;
+using TextEffectID = uint16_t;
 
-void MoveAllTextEffects(uint delta_ms);
-TextEffectID AddTextEffect(StringID msg, int x, int y, uint8 duration, TextEffectMode mode);
+static const TextEffectID INVALID_TE_ID = UINT16_MAX;
+
+TextEffectID AddTextEffect(EncodedString &&msg, int x, int y, uint8_t duration, TextEffectMode mode);
 void InitTextEffects();
 void DrawTextEffects(DrawPixelInfo *dpi);
-void UpdateTextEffect(TextEffectID effect_id, StringID msg);
+void UpdateTextEffect(TextEffectID effect_id, EncodedString &&msg);
 void RemoveTextEffect(TextEffectID effect_id);
+void UpdateAllTextEffectVirtCoords();
 
 /* misc_gui.cpp */
-TextEffectID ShowFillingPercent(int x, int y, int z, uint8 percent, StringID colour);
-void UpdateFillingPercent(TextEffectID te_id, uint8 percent, StringID colour);
+TextEffectID ShowFillingPercent(int x, int y, int z, uint8_t percent, StringID colour);
+void UpdateFillingPercent(TextEffectID te_id, uint8_t percent, StringID colour);
 void HideFillingPercent(TextEffectID *te_id);
 
 void ShowCostOrIncomeAnimation(int x, int y, int z, Money cost);

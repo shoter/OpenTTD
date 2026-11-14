@@ -2,13 +2,10 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/**
- * @file cocoa_m.cpp
- * @brief MIDI music player for MacOS X using CoreAudio.
- */
+/** @file cocoa_m.cpp MIDI music player for MacOS X using CoreAudio. */
 
 
 #ifdef WITH_COCOA
@@ -26,10 +23,6 @@
 
 #include "../safeguards.h"
 
-#if !defined(HAVE_OSX_1011_SDK)
-#define kMusicSequenceFile_AnyType 0
-#endif
-
 static FMusicDriver_Cocoa iFMusicDriver_Cocoa;
 
 
@@ -37,7 +30,7 @@ static MusicPlayer    _player = nullptr;
 static MusicSequence  _sequence = nullptr;
 static MusicTimeStamp _seq_length = 0;
 static bool           _playing = false;
-static byte           _volume = 127;
+static uint8_t           _volume = 127;
 
 
 /** Set the volume of the current sequence. */
@@ -67,7 +60,7 @@ static void DoSetVolume()
 		}
 	}
 	if (output_unit == nullptr) {
-		DEBUG(driver, 1, "cocoa_m: Failed to get output node to set volume");
+		Debug(Facility::Driver, Severity::Error, "cocoa_m: Failed to get output node to set volume");
 		return;
 	}
 
@@ -79,11 +72,11 @@ static void DoSetVolume()
 /**
  * Initialized the MIDI player, including QuickTime initialization.
  */
-const char *MusicDriver_Cocoa::Start(const StringList &parm)
+std::optional<std::string_view> MusicDriver_Cocoa::Start(const StringList &)
 {
 	if (NewMusicPlayer(&_player) != noErr) return "failed to create music player";
 
-	return nullptr;
+	return std::nullopt;
 }
 
 
@@ -119,7 +112,7 @@ void MusicDriver_Cocoa::PlaySong(const MusicSongInfo &song)
 {
 	std::string filename = MidiFile::GetSMFFile(song);
 
-	DEBUG(driver, 2, "cocoa_m: trying to play '%s'", filename.c_str());
+	Debug(Facility::Driver, Severity::Warning, "cocoa_m: trying to play '{}'", filename);
 
 	this->StopSong();
 	if (_sequence != nullptr) {
@@ -130,15 +123,15 @@ void MusicDriver_Cocoa::PlaySong(const MusicSongInfo &song)
 	if (filename.empty()) return;
 
 	if (NewMusicSequence(&_sequence) != noErr) {
-		DEBUG(driver, 0, "cocoa_m: Failed to create music sequence");
+		Debug(Facility::Driver, Severity::Critical, "cocoa_m: Failed to create music sequence");
 		return;
 	}
 
-	const char *os_file = OTTD2FS(filename.c_str());
-	CFAutoRelease<CFURLRef> url(CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8*)os_file, strlen(os_file), false));
+	std::string os_file = OTTD2FS(filename);
+	CFAutoRelease<CFURLRef> url(CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8*)os_file.data(), os_file.length(), false));
 
 	if (MusicSequenceFileLoad(_sequence, url.get(), kMusicSequenceFile_AnyType, 0) != noErr) {
-		DEBUG(driver, 0, "cocoa_m: Failed to load MIDI file");
+		Debug(Facility::Driver, Severity::Critical, "cocoa_m: Failed to load MIDI file");
 		return;
 	}
 
@@ -148,7 +141,7 @@ void MusicDriver_Cocoa::PlaySong(const MusicSongInfo &song)
 	MusicSequenceGetAUGraph(_sequence, &graph);
 	AUGraphOpen(graph);
 	if (AUGraphInitialize(graph) != noErr) {
-		DEBUG(driver, 0, "cocoa_m: Failed to initialize AU graph");
+		Debug(Facility::Driver, Severity::Critical, "cocoa_m: Failed to initialize AU graph");
 		return;
 	}
 
@@ -173,7 +166,7 @@ void MusicDriver_Cocoa::PlaySong(const MusicSongInfo &song)
 	if (MusicPlayerStart(_player) != noErr) return;
 	_playing = true;
 
-	DEBUG(driver, 3, "cocoa_m: playing '%s'", filename.c_str());
+	Debug(Facility::Driver, Severity::Notice, "cocoa_m: playing '{}'", filename);
 }
 
 
@@ -193,7 +186,7 @@ void MusicDriver_Cocoa::StopSong()
  *
  * @param vol The desired volume, range of the value is @c 0-127
  */
-void MusicDriver_Cocoa::SetVolume(byte vol)
+void MusicDriver_Cocoa::SetVolume(uint8_t vol)
 {
 	_volume = vol;
 	DoSetVolume();

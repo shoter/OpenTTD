@@ -8,15 +8,28 @@ if(NOT OPTION_DEDICATED)
     )
 
     add_files(
-        sdl_v.cpp
-        sdl_v.h
-        CONDITION SDL_FOUND
+        opengl.cpp
+        opengl.h
+        CONDITION OPENGL_FOUND
     )
 
     add_files(
-        sdl2_v.cpp
-        sdl2_v.h
-        CONDITION SDL2_FOUND
+        d3d11_v.cpp
+        CONDITION D3D11_FOUND
+    )
+
+    add_files(
+        sdl3_v.cpp
+        sdl3_v.h
+        sdl3_default_v.cpp
+        sdl3_default_v.h
+        CONDITION SDL3_FOUND
+    )
+
+    add_files(
+        sdl3_opengl_v.cpp
+        sdl3_opengl_v.h
+        CONDITION SDL3_FOUND AND OPENGL_FOUND
     )
 
     add_files(
@@ -31,5 +44,6 @@ add_files(
     dedicated_v.h
     null_v.cpp
     null_v.h
+    video_driver.cpp
     video_driver.hpp
 )

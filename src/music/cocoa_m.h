@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file cocoa_m.h Base of music playback via CoreAudio. */
@@ -14,7 +14,7 @@
 
 class MusicDriver_Cocoa : public MusicDriver {
 public:
-	const char *Start(const StringList &param) override;
+	std::optional<std::string_view> Start(const StringList &param) override;
 
 	void Stop() override;
 
@@ -24,14 +24,14 @@ public:
 
 	bool IsSongPlaying() override;
 
-	void SetVolume(byte vol) override;
-	const char *GetName() const override { return "cocoa"; }
+	void SetVolume(uint8_t vol) override;
+	std::string_view GetName() const override { return "cocoa"; }
 };
 
 class FMusicDriver_Cocoa : public DriverFactoryBase {
 public:
-	FMusicDriver_Cocoa() : DriverFactoryBase(Driver::DT_MUSIC, 10, "cocoa", "Cocoa MIDI Driver") {}
-	Driver *CreateInstance() const override { return new MusicDriver_Cocoa(); }
+	FMusicDriver_Cocoa() : DriverFactoryBase(Driver::Type::Music, 10, "cocoa", "Cocoa MIDI Driver") {}
+	std::unique_ptr<Driver> CreateInstance() const override { return std::make_unique<MusicDriver_Cocoa>(); }
 };
 
 #endif /* MUSIC_MACOSX_COCOA_H */

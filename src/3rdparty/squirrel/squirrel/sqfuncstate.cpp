@@ -3,6 +3,7 @@
  */
 
 #include "../../../stdafx.h"
+#include "../../fmt/format.h"
 
 #include "sqpcheader.h"
 #include "sqcompiler.h"
@@ -79,19 +80,20 @@ SQInstructionDesc g_InstrDesc[]={
 	{"_OP_NEWSLOTA"},
 	{"_OP_SCOPE_END"}
 };
-#endif
+
 void DumpLiteral(SQObjectPtr &o)
 {
 	switch(type(o)){
-		case OT_STRING:	printf("\"%s\"",_stringval(o));break;
-		case OT_FLOAT: printf("{%f}",_float(o));break;
-		case OT_INTEGER: printf("{" OTTD_PRINTF64 "}",_integer(o));break;
-		case OT_BOOL: printf("%s",_integer(o)?"true":"false");break;
-		default: printf("(%s %p)",GetTypeName(o),(void*)_rawval(o));break; break; //shut up compiler
+		case OT_STRING:	fmt::print("\"{}\"",_stringval(o));break;
+		case OT_FLOAT: fmt::print("{{{}}}",_float(o));break;
+		case OT_INTEGER: fmt::print("{{{}}}",_integer(o));break;
+		case OT_BOOL: fmt::print(_integer(o)?"true":"false");break;
+		default: fmt::print("({} {})",GetTypeName(o),(size_t)(void*)_rawval(o));break; break; //shut up compiler
 	}
 }
+#endif
 
-SQFuncState::SQFuncState(SQSharedState *ss,SQFuncState *parent,CompilerErrorFunc efunc,void *ed)
+SQFuncState::SQFuncState(SQSharedState *ss,SQFuncState *parent)
 {
 		_nliterals = 0;
 		_literals = SQTable::Create(ss,0);
@@ -104,15 +106,8 @@ SQFuncState::SQFuncState(SQSharedState *ss,SQFuncState *parent,CompilerErrorFunc
 		_traps = 0;
 		_returnexp = 0;
 		_varparams = false;
-		_errfunc = efunc;
-		_errtarget = ed;
 		_bgenerator = false;
 
-}
-
-void SQFuncState::Error(const SQChar *err)
-{
-	_errfunc(_errtarget,err);
 }
 
 #ifdef _DEBUG_DUMP
@@ -199,7 +194,7 @@ void SQFuncState::Dump(SQFunctionProto *func)
 			}
 		}
 		else if(inst.op==_OP_LOADFLOAT) {
-			printf("[%03d] %15s %d %f %d %d\n",n,g_InstrDesc[inst.op].name,inst._arg0,*((SQFloat*)&inst._arg1),inst._arg2,inst._arg3);
+			printf("[%03d] %15s %d %f %d %d\n",n,g_InstrDesc[inst.op].name,inst._arg0,std::bit_cast<SQFloat>(inst._arg1),inst._arg2,inst._arg3);
 		}
 		else if(inst.op==_OP_ARITH){
 			printf("[%03d] %15s %d %d %d %c\n",n,g_InstrDesc[inst.op].name,inst._arg0,inst._arg1,inst._arg2,inst._arg3);
@@ -234,7 +229,7 @@ SQInteger SQFuncState::GetConstant(const SQObject &cons)
 		_nliterals++;
 		if(_nliterals > MAX_LITERALS) {
 			val.Null();
-			Error("internal compiler error: too many literals");
+			throw CompileException("internal compiler error: too many literals");
 		}
 	}
 	return _integer(val);
@@ -242,19 +237,20 @@ SQInteger SQFuncState::GetConstant(const SQObject &cons)
 
 void SQFuncState::SetIntructionParams(SQInteger pos,SQInteger arg0,SQInteger arg1,SQInteger arg2,SQInteger arg3)
 {
-	_instructions[pos]._arg0=(unsigned char)*((SQUnsignedInteger *)&arg0);
-	_instructions[pos]._arg1=(SQInt32)*((SQUnsignedInteger *)&arg1);
-	_instructions[pos]._arg2=(unsigned char)*((SQUnsignedInteger *)&arg2);
-	_instructions[pos]._arg3=(unsigned char)*((SQUnsignedInteger *)&arg3);
+	_instructions[pos]._arg0 = (unsigned char)std::bit_cast<SQUnsignedInteger>(arg0);
+	_instructions[pos]._arg1 = (SQInt32)std::bit_cast<SQUnsignedInteger>(arg1);
+	_instructions[pos]._arg2 = (unsigned char)std::bit_cast<SQUnsignedInteger>(arg2);
+	_instructions[pos]._arg3 = (unsigned char)std::bit_cast<SQUnsignedInteger>(arg3);
 }
 
 void SQFuncState::SetIntructionParam(SQInteger pos,SQInteger arg,SQInteger val)
 {
 	switch(arg){
-		case 0:_instructions[pos]._arg0=(unsigned char)*((SQUnsignedInteger *)&val);break;
-		case 1:case 4:_instructions[pos]._arg1=(SQInt32)*((SQUnsignedInteger *)&val);break;
-		case 2:_instructions[pos]._arg2=(unsigned char)*((SQUnsignedInteger *)&val);break;
-		case 3:_instructions[pos]._arg3=(unsigned char)*((SQUnsignedInteger *)&val);break;
+		case 0: _instructions[pos]._arg0 = (unsigned char)std::bit_cast<SQUnsignedInteger>(val); break;
+		case 1:
+		case 4: _instructions[pos]._arg1 = (SQInt32)std::bit_cast<SQUnsignedInteger>(val); break;
+		case 2: _instructions[pos]._arg2 = (unsigned char)std::bit_cast<SQUnsignedInteger>(val); break;
+		case 3: _instructions[pos]._arg3 = (unsigned char)std::bit_cast<SQUnsignedInteger>(val); break;
 	};
 }
 
@@ -263,7 +259,7 @@ SQInteger SQFuncState::AllocStackPos()
 	SQInteger npos=_vlocals.size();
 	_vlocals.push_back(SQLocalVarInfo());
 	if(_vlocals.size()>((SQUnsignedInteger)_stacksize)) {
-		if(_stacksize>MAX_FUNC_STACKSIZE) Error("internal compiler error: too many locals");
+		if(_stacksize>MAX_FUNC_STACKSIZE) throw CompileException("internal compiler error: too many locals");
 		_stacksize=_vlocals.size();
 	}
 	return npos;
@@ -498,9 +494,9 @@ void SQFuncState::AddInstruction(SQInstruction &i)
 	_instructions.push_back(i);
 }
 
-SQObject SQFuncState::CreateString(const SQChar *s,SQInteger len)
+SQObject SQFuncState::CreateString(std::string_view s)
 {
-	SQObjectPtr ns(SQString::Create(_sharedstate,s,len));
+	SQObjectPtr ns(SQString::Create(_sharedstate,s));
 	_table(_strings)->NewSlot(ns,(SQInteger)1);
 	return std::move(ns);
 }
@@ -538,7 +534,7 @@ SQFunctionProto *SQFuncState::BuildProto()
 	for(SQUnsignedInteger no = 0; no < _lineinfos.size(); no++) f->_lineinfos[no] = _lineinfos[no];
 	for(SQUnsignedInteger no = 0; no < _defaultparams.size(); no++) f->_defaultparams[no] = _defaultparams[no];
 
-	memcpy(f->_instructions,&_instructions[0],(size_t)_instructions.size()*sizeof(SQInstruction));
+	std::copy_n(&_instructions[0], _instructions.size(), f->_instructions);
 
 	f->_varparams = _varparams;
 
@@ -548,7 +544,7 @@ SQFunctionProto *SQFuncState::BuildProto()
 SQFuncState *SQFuncState::PushChildState(SQSharedState *ss)
 {
 	SQFuncState *child = (SQFuncState *)sq_malloc(sizeof(SQFuncState));
-	new (child) SQFuncState(ss,this,_errfunc,_errtarget);
+	new (child) SQFuncState(ss,this);
 	_childstates.push_back(child);
 	return child;
 }
@@ -562,7 +558,7 @@ void SQFuncState::PopChildState()
 
 SQFuncState::~SQFuncState()
 {
-	while(_childstates.size() > 0)
+	while(!_childstates.empty())
 	{
 		PopChildState();
 	}

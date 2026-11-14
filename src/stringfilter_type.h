@@ -2,16 +2,13 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file stringfilter_type.h Searching and filtering using a stringterm. */
 
 #ifndef STRINGFILTER_TYPE_H
 #define STRINGFILTER_TYPE_H
-
-#include "core/smallvec_type.hpp"
-#include "strings_type.h"
 
 /**
  * String filter and state.
@@ -32,35 +29,35 @@ struct StringFilter {
 private:
 	/** State of a single filter word */
 	struct WordState {
-		const char *start;                         ///< Word to filter for.
+		std::string word;                          ///< Word to filter for.
 		bool match;                                ///< Already matched?
 	};
 
-	const char *filter_buffer;                     ///< Parsed filter string. Words separated by 0.
 	std::vector<WordState> word_index;             ///< Word index and filter state.
-	uint word_matches;                             ///< Summary of filter state: Number of words matched.
+	uint word_matches = 0;                         ///< Summary of filter state: Number of words matched.
 
 	const bool *case_sensitive;                    ///< Match case-sensitively (usually a static variable).
+	bool locale_aware;                             ///< Match words using the current locale.
 
 public:
 	/**
 	 * Constructor for filter.
 	 * @param case_sensitive Pointer to a (usually static) variable controlling the case-sensitivity. nullptr means always case-insensitive.
+	 * @param locale_aware Whether to match using the locale.
 	 */
-	StringFilter(const bool *case_sensitive = nullptr) : filter_buffer(nullptr), word_matches(0), case_sensitive(case_sensitive) {}
-	~StringFilter() { free(this->filter_buffer); }
+	StringFilter(const bool *case_sensitive = nullptr, bool locale_aware = true) : case_sensitive(case_sensitive), locale_aware(locale_aware) {}
 
-	void SetFilterTerm(const char *str);
+	void SetFilterTerm(std::string_view str);
 
 	/**
 	 * Check whether any filter words were entered.
 	 * @return true if no words were entered.
 	 */
-	bool IsEmpty() const { return this->word_index.size() == 0; }
+	bool IsEmpty() const { return this->word_index.empty(); }
 
 	void ResetState();
-	void AddLine(const char *str);
-	void AddLine(StringID str);
+	void AddLine(const char *) = delete; // prevent implicit construction of string_view from potential nullptr
+	void AddLine(std::string_view str);
 
 	/**
 	 * Get the matching state of the current item.

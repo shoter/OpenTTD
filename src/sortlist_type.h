@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file sortlist_type.h Base types for having sorted lists in GUIs. */
@@ -11,51 +11,78 @@
 #define SORTLIST_TYPE_H
 
 #include "core/enum_type.hpp"
-#include "core/bitmath_func.hpp"
-#include "core/smallvec_type.hpp"
-#include "date_type.h"
+#include "timer/timer_game_tick.h"
 
 /** Flags of the sort list. */
-enum SortListFlags {
-	VL_NONE       = 0,      ///< no sort
-	VL_DESC       = 1 << 0, ///< sort descending or ascending
-	VL_RESORT     = 1 << 1, ///< instruct the code to resort the list in the next loop
-	VL_REBUILD    = 1 << 2, ///< rebuild the sort list
-	VL_FIRST_SORT = 1 << 3, ///< sort with quick sort first
-	VL_FILTER     = 1 << 4, ///< filter disabled/enabled
-	VL_END        = 1 << 5,
+enum class SortListFlag : uint8_t {
+	Desc, ///< sort descending or ascending
+	Resort, ///< instruct the code to resort the list in the next loop
+	Rebuild, ///< rebuild the sort list
+	Filter, ///< filter disabled/enabled
 };
-DECLARE_ENUM_AS_BIT_SET(SortListFlags)
+using SortListFlags = EnumBitSet<SortListFlag, uint8_t>;
 
 /** Data structure describing how to show the list (what sort direction and criteria). */
 struct Listing {
 	bool order;    ///< Ascending/descending
-	byte criteria; ///< Sorting criteria
+	uint8_t criteria; ///< Sorting criteria
 };
 /** Data structure describing what to show in the list (filter criteria). */
 struct Filtering {
 	bool state;    ///< Filter on/off
-	byte criteria; ///< Filtering criteria
+	uint8_t criteria; ///< Filtering criteria
 };
 
 /**
  * List template of 'things' \p T to sort in a GUI.
  * @tparam T Type of data stored in the list to represent each item.
+ * @tparam P Type of data passed as additional parameter to the sort function.
  * @tparam F Type of data fed as additional value to the filter function. @see FilterFunction
  */
-template <typename T, typename F = const char*>
+template <typename T, typename P = std::nullptr_t, typename F = std::string_view>
 class GUIList : public std::vector<T> {
 public:
-	typedef bool SortFunction(const T&, const T&);  ///< Signature of sort function.
-	typedef bool CDECL FilterFunction(const T*, F); ///< Signature of filter function.
+	/**
+	 * Comparison helper for the sorter, comparing \c a to \c b.
+	 * @param a The first element.
+	 * @param b The second element.
+	 * @return \c true if the first element is less than the second element.
+	 */
+	using Sorter = bool (const T &a, const T &b);
+
+	/**
+	 * Comparison helper for the sorter, comparing \c a to \c b taking the \c filter ino consideration.
+	 * @param a The first element.
+	 * @param b The second element.
+	 * @param filter Filter parameter for a subsection of the data, e.g. a specific cargo type when comparing industry production.
+	 * @return \c true if the first element is less than the second element.
+	 */
+	using SorterWithFilter = bool(const T &a, const T &b, const P filter);
+
+	using SortFunction = std::conditional_t<std::is_same_v<P, std::nullptr_t>, bool (const T&, const T&), bool (const T&, const T&, const P)>; ///< Signature of sort function.
+
+	/**
+	 * Check whether an element should be kept in the list.
+	 * @param item The element to check.
+	 * @param filter The filter parameter.
+	 * @return \c true iff the element should be in the list.
+	 */
+	using FilterFunction = bool(const T *item, F filter); ///< Signature of filter function.
 
 protected:
-	SortFunction * const *sort_func_list;     ///< the sort criteria functions
-	FilterFunction * const *filter_func_list; ///< the filter criteria functions
+	std::span<SortFunction * const> sort_func_list;     ///< the sort criteria functions
+	std::span<FilterFunction * const> filter_func_list; ///< the filter criteria functions
 	SortListFlags flags;                      ///< used to control sorting/resorting/etc.
-	uint8 sort_type;                          ///< what criteria to sort on
-	uint8 filter_type;                        ///< what criteria to filter on
-	uint16 resort_timer;                      ///< resort list after a given amount of ticks if set
+	uint8_t sort_type;                          ///< what criteria to sort on
+	uint8_t filter_type;                        ///< what criteria to filter on
+	uint16_t resort_timer;                      ///< resort list after a given amount of ticks if set
+
+	/**
+	 * If sort parameters are used then params must be a reference,
+	 * however if not then params cannot be a reference as it will not be able to reference anything.
+	 */
+	using SortParameterReference = std::conditional_t<std::is_same_v<P, std::nullptr_t>, P, P&>;
+	const SortParameterReference params; ///< @copydoc SortParameterReference
 
 	/**
 	 * Check if the list is sortable
@@ -73,17 +100,32 @@ protected:
 	void ResetResortTimer()
 	{
 		/* Resort every 10 days */
-		this->resort_timer = DAY_TICKS * 10;
+		this->resort_timer = Ticks::DAY_TICKS * 10;
 	}
 
 public:
+	/* If sort parameters are not used then we don't require a reference to the params. */
+	template <typename T_ = T, typename P_ = P, typename _F = F, std::enable_if_t<std::is_same_v<P_, std::nullptr_t>>* = nullptr>
 	GUIList() :
-		sort_func_list(nullptr),
-		filter_func_list(nullptr),
-		flags(VL_FIRST_SORT),
+		sort_func_list({}),
+		filter_func_list({}),
+		flags({}),
 		sort_type(0),
 		filter_type(0),
-		resort_timer(1)
+		resort_timer(1),
+		params(nullptr)
+	{};
+
+	/* If sort parameters are used then we require a reference to the params. */
+	template <typename T_ = T, typename P_ = P, typename _F = F, std::enable_if_t<!std::is_same_v<P_, std::nullptr_t>>* = nullptr>
+	GUIList(const P &params) :
+		sort_func_list({}),
+		filter_func_list({}),
+		flags({}),
+		sort_type(0),
+		filter_type(0),
+		resort_timer(1),
+		params(params)
 	{};
 
 	/**
@@ -91,7 +133,7 @@ public:
 	 *
 	 * @return The current sorttype
 	 */
-	uint8 SortType() const
+	uint8_t SortType() const
 	{
 		return this->sort_type;
 	}
@@ -101,10 +143,11 @@ public:
 	 *
 	 * @param n_type the new sort type
 	 */
-	void SetSortType(uint8 n_type)
+	void SetSortType(uint8_t n_type)
 	{
+		assert(n_type < std::size(this->sort_func_list));
 		if (this->sort_type != n_type) {
-			SETBITS(this->flags, VL_RESORT | VL_FIRST_SORT);
+			this->flags.Set(SortListFlag::Resort);
 			this->sort_type = n_type;
 		}
 	}
@@ -117,7 +160,7 @@ public:
 	Listing GetListing() const
 	{
 		Listing l;
-		l.order = (this->flags & VL_DESC) != 0;
+		l.order = this->flags.Test(SortListFlag::Desc);
 		l.criteria = this->sort_type;
 
 		return l;
@@ -131,13 +174,11 @@ public:
 	void SetListing(Listing l)
 	{
 		if (l.order) {
-			SETBITS(this->flags, VL_DESC);
+			this->flags.Set(SortListFlag::Desc);
 		} else {
-			CLRBITS(this->flags, VL_DESC);
+			this->flags.Reset(SortListFlag::Desc);
 		}
 		this->sort_type = l.criteria;
-
-		SETBITS(this->flags, VL_FIRST_SORT);
 	}
 
 	/**
@@ -145,7 +186,7 @@ public:
 	 *
 	 * @return The current filtertype
 	 */
-	uint8 FilterType() const
+	uint8_t FilterType() const
 	{
 		return this->filter_type;
 	}
@@ -155,8 +196,9 @@ public:
 	 *
 	 * @param n_type the new filter type
 	 */
-	void SetFilterType(uint8 n_type)
+	void SetFilterType(uint8_t n_type)
 	{
+		assert(n_type < std::size(this->filter_func_list));
 		if (this->filter_type != n_type) {
 			this->filter_type = n_type;
 		}
@@ -170,7 +212,7 @@ public:
 	Filtering GetFiltering() const
 	{
 		Filtering f;
-		f.state = (this->flags & VL_FILTER) != 0;
+		f.state = this->flags.Test(SortListFlag::Filter);
 		f.criteria = this->filter_type;
 
 		return f;
@@ -184,9 +226,9 @@ public:
 	void SetFiltering(Filtering f)
 	{
 		if (f.state) {
-			SETBITS(this->flags, VL_FILTER);
+			this->flags.Set(SortListFlag::Filter);
 		} else {
-			CLRBITS(this->flags, VL_FILTER);
+			this->flags.Reset(SortListFlag::Filter);
 		}
 		this->filter_type = f.criteria;
 	}
@@ -202,7 +244,7 @@ public:
 	bool NeedResort()
 	{
 		if (--this->resort_timer == 0) {
-			SETBITS(this->flags, VL_RESORT);
+			this->flags.Set(SortListFlag::Resort);
 			this->ResetResortTimer();
 			return true;
 		}
@@ -215,7 +257,7 @@ public:
 	 */
 	void ForceResort()
 	{
-		SETBITS(this->flags, VL_RESORT);
+		this->flags.Set(SortListFlag::Resort);
 	}
 
 	/**
@@ -225,7 +267,7 @@ public:
 	 */
 	bool IsDescSortOrder() const
 	{
-		return (this->flags & VL_DESC) != 0;
+		return this->flags.Test(SortListFlag::Desc);
 	}
 
 	/**
@@ -235,17 +277,13 @@ public:
 	 */
 	void ToggleSortOrder()
 	{
-		this->flags ^= VL_DESC;
+		this->flags.Flip(SortListFlag::Desc);
 
-		if (this->IsSortable()) MemReverseT(std::vector<T>::data(), std::vector<T>::size());
+		if (this->IsSortable()) std::reverse(std::vector<T>::begin(), std::vector<T>::end());
 	}
 
 	/**
 	 * Sort the list.
-	 *  For the first sorting we use quick sort since it is
-	 *  faster for irregular sorted data. After that we
-	 *  use gsort.
-	 *
 	 * @param compare The function to compare two list items
 	 * @return true if the list sequence has been altered
 	 *
@@ -254,34 +292,31 @@ public:
 	bool Sort(Comp compare)
 	{
 		/* Do not sort if the resort bit is not set */
-		if (!(this->flags & VL_RESORT)) return false;
+		if (!this->flags.Test(SortListFlag::Resort)) return false;
 
-		CLRBITS(this->flags, VL_RESORT);
+		this->flags.Reset(SortListFlag::Resort);
 
 		this->ResetResortTimer();
 
 		/* Do not sort when the list is not sortable */
 		if (!this->IsSortable()) return false;
 
-		const bool desc = (this->flags & VL_DESC) != 0;
+		const bool desc = this->flags.Test(SortListFlag::Desc);
 
-		if (this->flags & VL_FIRST_SORT) {
-			CLRBITS(this->flags, VL_FIRST_SORT);
-
+		if constexpr (std::is_same_v<P, std::nullptr_t>) {
 			std::sort(std::vector<T>::begin(), std::vector<T>::end(), [&](const T &a, const T &b) { return desc ? compare(b, a) : compare(a, b); });
-			return true;
+		} else {
+			std::sort(std::vector<T>::begin(), std::vector<T>::end(), [&](const T &a, const T &b) { return desc ? compare(b, a, params) : compare(a, b, params); });
 		}
-
-		std::sort(std::vector<T>::begin(), std::vector<T>::end(), [&](const T &a, const T &b) { return desc ? compare(b, a) : compare(a, b); });
 		return true;
 	}
 
 	/**
-	 * Hand the array of sort function pointers to the sort list
+	 * Hand the sort function pointers to the GUIList.
 	 *
-	 * @param n_funcs The pointer to the first sort func
+	 * @param n_funcs Span covering the sort function pointers.
 	 */
-	void SetSortFuncs(SortFunction * const *n_funcs)
+	void SetSortFuncs(std::span<SortFunction * const> n_funcs)
 	{
 		this->sort_func_list = n_funcs;
 	}
@@ -294,7 +329,8 @@ public:
 	 */
 	bool Sort()
 	{
-		assert(this->sort_func_list != nullptr);
+		if (this->sort_func_list.empty()) return false;
+		assert(this->sort_type < this->sort_func_list.size());
 		return this->Sort(this->sort_func_list[this->sort_type]);
 	}
 
@@ -305,7 +341,7 @@ public:
 	 */
 	bool IsFilterEnabled() const
 	{
-		return (this->flags & VL_FILTER) != 0;
+		return this->flags.Test(SortListFlag::Filter);
 	}
 
 	/**
@@ -316,9 +352,9 @@ public:
 	void SetFilterState(bool state)
 	{
 		if (state) {
-			SETBITS(this->flags, VL_FILTER);
+			this->flags.Set(SortListFlag::Filter);
 		} else {
-			CLRBITS(this->flags, VL_FILTER);
+			this->flags.Reset(SortListFlag::Filter);
 		}
 	}
 
@@ -332,7 +368,7 @@ public:
 	bool Filter(FilterFunction *decide, F filter_data)
 	{
 		/* Do not filter if the filter bit is not set */
-		if (!(this->flags & VL_FILTER)) return false;
+		if (!this->flags.Test(SortListFlag::Filter)) return false;
 
 		bool changed = false;
 		for (auto it = std::vector<T>::begin(); it != std::vector<T>::end(); /* Nothing */) {
@@ -348,11 +384,11 @@ public:
 	}
 
 	/**
-	 * Hand the array of filter function pointers to the sort list
+	 * Hand the filter function pointers to the GUIList.
 	 *
-	 * @param n_funcs The pointer to the first filter func
+	 * @param n_funcs Span covering the filter function pointers.
 	 */
-	void SetFilterFuncs(FilterFunction * const *n_funcs)
+	void SetFilterFuncs(std::span<FilterFunction * const> n_funcs)
 	{
 		this->filter_func_list = n_funcs;
 	}
@@ -365,7 +401,8 @@ public:
 	 */
 	bool Filter(F filter_data)
 	{
-		if (this->filter_func_list == nullptr) return false;
+		if (this->filter_func_list.empty()) return false;
+		assert(this->filter_type < this->filter_func_list.size());
 		return this->Filter(this->filter_func_list[this->filter_type], filter_data);
 	}
 
@@ -375,7 +412,7 @@ public:
 	 */
 	bool NeedRebuild() const
 	{
-		return (this->flags & VL_REBUILD) != 0;
+		return this->flags.Test(SortListFlag::Rebuild);
 	}
 
 	/**
@@ -383,7 +420,7 @@ public:
 	 */
 	void ForceRebuild()
 	{
-		SETBITS(this->flags, VL_REBUILD);
+		this->flags.Set(SortListFlag::Rebuild);
 	}
 
 	/**
@@ -393,8 +430,8 @@ public:
 	 */
 	void RebuildDone()
 	{
-		CLRBITS(this->flags, VL_REBUILD);
-		SETBITS(this->flags, VL_RESORT | VL_FIRST_SORT);
+		this->flags.Reset(SortListFlag::Rebuild);
+		this->flags.Set(SortListFlag::Resort);
 	}
 };
 

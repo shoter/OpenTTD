@@ -2,7 +2,7 @@
 // This file is part of OpenTTD.
 // OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
 // OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-// See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+// See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
 //
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -44,17 +44,16 @@ LANGUAGE LANG_NEUTRAL, SUBLANG_DEFAULT
 // Dialog
 //
 
-100 DIALOG DISCARDABLE  0, 0, 305, 101
+100 DIALOG DISCARDABLE  0, 0, 305, 109
 STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Fatal Application Failure"
 FONT 8, "MS Sans Serif"
 BEGIN
-    PUSHBUTTON      "&Close",12,7,82,60,14
-    PUSHBUTTON      "&Emergency save",13,158,82,60,14
-    PUSHBUTTON      "",15,238,82,60,14
-    EDITTEXT        11,7,103,291,118,ES_MULTILINE | ES_READONLY | WS_VSCROLL |
+    PUSHBUTTON      "&Close",12,7,90,60,14
+    PUSHBUTTON      "",15,238,90,60,14
+    EDITTEXT        11,7,111,291,118,ES_MULTILINE | ES_READONLY | WS_VSCROLL |
                     WS_HSCROLL | NOT WS_TABSTOP
-    LTEXT           "",10,36,5,262,72
+    LTEXT           "",10,36,5,262,80
     ICON            100,IDC_STATIC,9,9,20,20
 END
 
@@ -77,8 +76,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,11,0,${REV_ISODATE}
- PRODUCTVERSION 1,11,0,${REV_ISODATE}
+ FILEVERSION ${REV_MAJOR},${REV_MINOR},${REV_YEAR},${REV_DATE}
+ PRODUCTVERSION ${REV_MAJOR},${REV_MINOR},${REV_YEAR},${REV_DATE}
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L

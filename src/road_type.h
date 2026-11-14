@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file road_type.h Enums and other types related to roads. */
@@ -11,35 +11,42 @@
 #define ROAD_TYPE_H
 
 #include "core/enum_type.hpp"
+#include "core/label_type.hpp"
 
-typedef uint32 RoadTypeLabel;
+using RoadTypeLabel = Label<struct RoadTypeLabelTag>;
+
+static const RoadTypeLabel ROADTYPE_LABEL_ROAD{"ROAD"};
+static const RoadTypeLabel ROADTYPE_LABEL_TRAM{"ELRL"};
 
 /**
  * The different roadtypes we support
- *
- * @note currently only ROADTYPE_ROAD and ROADTYPE_TRAM are supported.
  */
-enum RoadType {
+enum RoadType : uint8_t {
 	ROADTYPE_BEGIN   = 0,    ///< Used for iterations
 	ROADTYPE_ROAD    = 0,    ///< Basic road type
 	ROADTYPE_TRAM    = 1,    ///< Trams
 	ROADTYPE_END     = 63,   ///< Used for iterations
 	INVALID_ROADTYPE = 63,   ///< flag for invalid roadtype
 };
-DECLARE_POSTFIX_INCREMENT(RoadType)
-template <> struct EnumPropsT<RoadType> : MakeEnumPropsT<RoadType, byte, ROADTYPE_BEGIN, ROADTYPE_END, INVALID_ROADTYPE, 6> {};
+
+/** Bitset of \c RoadType elements. */
+using RoadTypes = EnumBitSet<RoadType, uint64_t>;
 
 /**
- * The different roadtypes we support, but then a bitmask of them.
- * @note Must be treated as a uint64 type, narrowing it causes bit membership tests to give wrong results.
+ * The different types of road type.
  */
-enum RoadTypes : uint64 {
-	ROADTYPES_NONE     = 0,                                ///< No roadtypes
-	ROADTYPES_ROAD     = 1 << ROADTYPE_ROAD,               ///< Road
-	ROADTYPES_TRAM     = 1 << ROADTYPE_TRAM,               ///< Trams
-	INVALID_ROADTYPES  = UINT64_MAX,                       ///< Invalid roadtypes
+enum class RoadTramType : uint8_t {
+	Road, ///< Road type.
+	Tram, ///< Tram type.
+	End, ///< End marker.
+	Invalid = 0xFF, ///< Invalid marker.
 };
-DECLARE_ENUM_AS_BIT_SET(RoadTypes)
+
+/** Bitset of \c RoadTramType elements. */
+using RoadTramTypes = EnumBitSet<RoadTramType, uint8_t>;
+
+/** All possible RoadTramTypes. */
+static constexpr RoadTramTypes ROADTRAMTYPES_ALL{RoadTramType::Road, RoadTramType::Tram};
 
 /**
  * Enumeration for the road parts on a tile.
@@ -47,25 +54,34 @@ DECLARE_ENUM_AS_BIT_SET(RoadTypes)
  * This enumeration defines the possible road parts which
  * can be build on a tile.
  */
-enum RoadBits {
-	ROAD_NONE = 0U,                  ///< No road-part is build
-	ROAD_NW   = 1U,                  ///< North-west part
-	ROAD_SW   = 2U,                  ///< South-west part
-	ROAD_SE   = 4U,                  ///< South-east part
-	ROAD_NE   = 8U,                  ///< North-east part
-	ROAD_X    = ROAD_SW | ROAD_NE,   ///< Full road along the x-axis (south-west + north-east)
-	ROAD_Y    = ROAD_NW | ROAD_SE,   ///< Full road along the y-axis (north-west + south-east)
-
-	ROAD_N    = ROAD_NE | ROAD_NW,   ///< Road at the two northern edges
-	ROAD_E    = ROAD_NE | ROAD_SE,   ///< Road at the two eastern edges
-	ROAD_S    = ROAD_SE | ROAD_SW,   ///< Road at the two southern edges
-	ROAD_W    = ROAD_NW | ROAD_SW,   ///< Road at the two western edges
-
-	ROAD_ALL  = ROAD_X  | ROAD_Y,    ///< Full 4-way crossing
-
-	ROAD_END  = ROAD_ALL + 1,        ///< Out-of-range roadbits, used for iterations
+enum class RoadBit : uint8_t {
+	NW = 0, ///< North-west part
+	SW = 1, ///< South-west part
+	SE = 2, ///< South-east part
+	NE = 3, ///< North-east part
 };
-DECLARE_ENUM_AS_BIT_SET(RoadBits)
-template <> struct EnumPropsT<RoadBits> : MakeEnumPropsT<RoadBits, byte, ROAD_NONE, ROAD_END, ROAD_NONE, 4> {};
+
+/** Bitset of \c RoadBit elements. */
+using RoadBits = EnumBitSet<RoadBit, uint8_t>;
+
+static constexpr RoadBits ROAD_X{RoadBit::SW, RoadBit::NE}; ///< Full road along the x-axis (south-west + north-east)
+static constexpr RoadBits ROAD_Y{RoadBit::NW, RoadBit::SE}; ///< Full road along the y-axis (north-west + south-east)
+
+static constexpr RoadBits ROAD_N{RoadBit::NE, RoadBit::NW}; ///< Road at the two northern edges
+static constexpr RoadBits ROAD_E{RoadBit::NE, RoadBit::SE}; ///< Road at the two eastern edges
+static constexpr RoadBits ROAD_S{RoadBit::SE, RoadBit::SW}; ///< Road at the two southern edges
+static constexpr RoadBits ROAD_W{RoadBit::NW, RoadBit::SW}; ///< Road at the two western edges
+
+static constexpr RoadBits ROAD_ALL{RoadBit::NW, RoadBit::SW, RoadBit::SE, RoadBit::NE}; ///< Full 4-way crossing
+
+/** Which directions are disallowed ? */
+enum class DisallowedRoadDirection : uint8_t {
+	Southbound, ///< All southbound traffic is disallowed.
+	Northbound, ///< All northbound traffic is disallowed.
+	End, ///< End marker.
+};
+
+/** Bitset of \c DisallowedRoadDirection elements. */
+using DisallowedRoadDirections = EnumBitSet<DisallowedRoadDirection, uint8_t>;
 
 #endif /* ROAD_TYPE_H */

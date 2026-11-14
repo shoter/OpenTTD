@@ -2,13 +2,14 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file airport.cpp Functions related to airports. */
 
 #include "stdafx.h"
 #include "station_base.h"
+
 #include "table/strings.h"
 #include "table/airport_movement.h"
 #include "table/airporttile_ids.h"
@@ -35,7 +36,7 @@
  * @param short_strip Airport has a short land/take-off strip.
  */
 #define AIRPORT(name, num_helipads, short_strip) \
-	AIRPORT_GENERIC(name, _airport_terminal_ ## name, num_helipads, AirportFTAClass::ALL | (short_strip ? AirportFTAClass::SHORT_STRIP : (AirportFTAClass::Flags)0), 0)
+	AIRPORT_GENERIC(name, _airport_terminal_ ## name, num_helipads, AirportFTAClass::Flags({AirportFTAClass::Flag::Airplanes, AirportFTAClass::Flag::Helicopters}) | (short_strip ? AirportFTAClass::Flags{AirportFTAClass::Flag::ShortStrip} : AirportFTAClass::Flags{}), 0)
 
 /**
  * Define a heliport.
@@ -44,7 +45,7 @@
  * @param delta_z Height of the airport above the land.
  */
 #define HELIPORT(name, num_helipads, delta_z) \
-	AIRPORT_GENERIC(name, nullptr, num_helipads, AirportFTAClass::HELICOPTERS, delta_z)
+	AIRPORT_GENERIC(name, nullptr, num_helipads, AirportFTAClass::Flag::Helicopters, delta_z)
 
 AIRPORT(country, 0, true)
 AIRPORT(city, 0, false)
@@ -56,7 +57,7 @@ HELIPORT(helidepot, 1, 0)
 AIRPORT(intercontinental, 2, false)
 HELIPORT(helistation, 3, 0)
 HELIPORT(oilrig, 1, 54)
-AIRPORT_GENERIC(dummy, nullptr, 0, AirportFTAClass::ALL, 0)
+AIRPORT_GENERIC(dummy, nullptr, 0, AirportFTAClass::Flags({AirportFTAClass::Flag::Airplanes, AirportFTAClass::Flag::Helicopters}), 0)
 
 #undef HELIPORT
 #undef AIRPORT
@@ -65,8 +66,8 @@ AIRPORT_GENERIC(dummy, nullptr, 0, AirportFTAClass::ALL, 0)
 #include "table/airport_defaults.h"
 
 
-static uint16 AirportGetNofElements(const AirportFTAbuildup *apFA);
-static AirportFTA *AirportBuildAutomata(uint nofelements, const AirportFTAbuildup *apFA);
+static uint16_t AirportGetNofElements(const AirportFTAbuildup *apFA);
+static void AirportBuildAutomata(std::vector<AirportFTA> &layout, uint8_t nofelements, const AirportFTAbuildup *apFA);
 
 
 /**
@@ -80,25 +81,25 @@ static AirportFTA *AirportBuildAutomata(uint nofelements, const AirportFTAbuildu
 AirportMovingData RotateAirportMovingData(const AirportMovingData *orig, Direction rotation, uint num_tiles_x, uint num_tiles_y)
 {
 	AirportMovingData amd;
-	amd.flag = orig->flag;
-	amd.direction = ChangeDir(orig->direction, (DirDiff)rotation);
+	amd.flags = orig->flags;
+	amd.direction = ChangeDir(orig->direction, static_cast<DirDiff>(rotation));
 	switch (rotation) {
-		case DIR_N:
+		case Direction::N:
 			amd.x = orig->x;
 			amd.y = orig->y;
 			break;
 
-		case DIR_E:
+		case Direction::E:
 			amd.x = orig->y;
 			amd.y = num_tiles_y * TILE_SIZE - orig->x - 1;
 			break;
 
-		case DIR_S:
+		case Direction::S:
 			amd.x = num_tiles_x * TILE_SIZE - orig->x - 1;
 			amd.y = num_tiles_y * TILE_SIZE - orig->y - 1;
 			break;
 
-		case DIR_W:
+		case Direction::W:
 			amd.x = num_tiles_x * TILE_SIZE - orig->y - 1;
 			amd.y = orig->x;
 			break;
@@ -110,12 +111,12 @@ AirportMovingData RotateAirportMovingData(const AirportMovingData *orig, Directi
 
 AirportFTAClass::AirportFTAClass(
 	const AirportMovingData *moving_data_,
-	const byte *terminals_,
-	const byte num_helipads_,
-	const byte *entry_points_,
+	const uint8_t *terminals_,
+	const uint8_t num_helipads_,
+	const uint8_t *entry_points_,
 	Flags flags_,
 	const AirportFTAbuildup *apFA,
-	byte delta_z_
+	uint8_t delta_z_
 ) :
 	moving_data(moving_data_),
 	terminals(terminals_),
@@ -126,30 +127,19 @@ AirportFTAClass::AirportFTAClass(
 	delta_z(delta_z_)
 {
 	/* Build the state machine itself */
-	this->layout = AirportBuildAutomata(this->nofelements, apFA);
-}
-
-AirportFTAClass::~AirportFTAClass()
-{
-	for (uint i = 0; i < nofelements; i++) {
-		AirportFTA *current = layout[i].next;
-		while (current != nullptr) {
-			AirportFTA *next = current->next;
-			free(current);
-			current = next;
-		}
-	}
-	free(layout);
+	AirportBuildAutomata(this->layout, this->nofelements, apFA);
 }
 
 /**
  * Get the number of elements of a source Airport state automata
  * Since it is actually just a big array of AirportFTA types, we only
  * know one element from the other by differing 'position' identifiers
+ * @param apFA The state machine builder.
+ * @return The number of elements.
  */
-static uint16 AirportGetNofElements(const AirportFTAbuildup *apFA)
+static uint16_t AirportGetNofElements(const AirportFTAbuildup *apFA)
 {
-	uint16 nofelements = 0;
+	uint16_t nofelements = 0;
 	int temp = apFA[0].position;
 
 	for (uint i = 0; i < MAX_ELEMENTS; i++) {
@@ -162,41 +152,32 @@ static uint16 AirportGetNofElements(const AirportFTAbuildup *apFA)
 	return nofelements;
 }
 
+AirportFTA::AirportFTA(const AirportFTAbuildup &buildup) : blocks(buildup.blocks), position(buildup.position), next_position(buildup.next), heading(buildup.heading)
+{
+}
+
 /**
  * Construct the FTA given a description.
+ * @param layout The vector to write the automata to.
  * @param nofelements The number of elements in the FTA.
  * @param apFA The description of the FTA.
- * @return The FTA describing the airport.
  */
-static AirportFTA *AirportBuildAutomata(uint nofelements, const AirportFTAbuildup *apFA)
+static void AirportBuildAutomata(std::vector<AirportFTA> &layout, uint8_t nofelements, const AirportFTAbuildup *apFA)
 {
-	AirportFTA *FAutomata = MallocT<AirportFTA>(nofelements);
-	uint16 internalcounter = 0;
+	uint16_t internalcounter = 0;
 
+	layout.reserve(nofelements);
 	for (uint i = 0; i < nofelements; i++) {
-		AirportFTA *current = &FAutomata[i];
-		current->position      = apFA[internalcounter].position;
-		current->heading       = apFA[internalcounter].heading;
-		current->block         = apFA[internalcounter].block;
-		current->next_position = apFA[internalcounter].next;
+		AirportFTA *current = &layout.emplace_back(apFA[internalcounter]);
 
 		/* outgoing nodes from the same position, create linked list */
 		while (current->position == apFA[internalcounter + 1].position) {
-			AirportFTA *newNode = MallocT<AirportFTA>(1);
-
-			newNode->position      = apFA[internalcounter + 1].position;
-			newNode->heading       = apFA[internalcounter + 1].heading;
-			newNode->block         = apFA[internalcounter + 1].block;
-			newNode->next_position = apFA[internalcounter + 1].next;
-			/* create link */
-			current->next = newNode;
-			current = current->next;
+			current->next = std::make_unique<AirportFTA>(apFA[internalcounter + 1]);
+			current = current->next.get();
 			internalcounter++;
 		}
-		current->next = nullptr;
 		internalcounter++;
 	}
-	return FAutomata;
 }
 
 /**
@@ -204,7 +185,7 @@ static AirportFTA *AirportBuildAutomata(uint nofelements, const AirportFTAbuildu
  * @param airport_type %Airport type to query FTA from. @see AirportTypes
  * @return Finite state machine of the airport.
  */
-const AirportFTAClass *GetAirport(const byte airport_type)
+const AirportFTAClass *GetAirport(const uint8_t airport_type)
 {
 	if (airport_type == AT_DUMMY) return &_airportfta_dummy;
 	return AirportSpec::Get(airport_type)->fsm;
@@ -215,7 +196,7 @@ const AirportFTAClass *GetAirport(const byte airport_type)
  * @param hangar_tile The tile on which the vehicle is build
  * @return The position (index in airport node array) where the aircraft ends up
  */
-byte GetVehiclePosOnBuild(TileIndex hangar_tile)
+uint8_t GetVehiclePosOnBuild(TileIndex hangar_tile)
 {
 	const Station *st = Station::GetByTile(hangar_tile);
 	const AirportFTAClass *apc = st->airport.GetFTA();

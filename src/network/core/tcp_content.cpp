@@ -2,69 +2,27 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/**
- * @file tcp_content.cpp Basic functions to receive and send Content packets.
- */
+/** @file tcp_content.cpp Basic functions to receive and send Content packets. */
 
 #include "../../stdafx.h"
-#ifndef OPENTTD_MSU
 #include "../../textfile_gui.h"
 #include "../../newgrf_config.h"
+#include "../../newgrf.h"
 #include "../../base_media_base.h"
+#include "../../base_media_graphics.h"
+#include "../../base_media_music.h"
+#include "../../base_media_sounds.h"
 #include "../../ai/ai.hpp"
 #include "../../game/game.hpp"
 #include "../../fios.h"
-#endif /* OPENTTD_MSU */
 #include "tcp_content.h"
 
+#include "table/strings.h"
+
 #include "../../safeguards.h"
-
-/** Clear everything in the struct */
-ContentInfo::ContentInfo()
-{
-	memset(this, 0, sizeof(*this));
-}
-
-/** Free everything allocated */
-ContentInfo::~ContentInfo()
-{
-	free(this->dependencies);
-	free(this->tags);
-}
-
-/**
- * Copy data from other #ContentInfo and take ownership of allocated stuff.
- * @param other Source to copy from. #dependencies and #tags will be NULLed.
- */
-void ContentInfo::TransferFrom(ContentInfo *other)
-{
-	if (other != this) {
-		free(this->dependencies);
-		free(this->tags);
-		memcpy(this, other, sizeof(ContentInfo));
-		other->dependencies = nullptr;
-		other->tags = nullptr;
-	}
-}
-
-/**
- * Get the size of the data as send over the network.
- * @return the size.
- */
-size_t ContentInfo::Size() const
-{
-	size_t len = 0;
-	for (uint i = 0; i < this->tag_count; i++) len += strlen(this->tags[i]) + 1;
-
-	/* The size is never larger than the content info size plus the size of the
-	 * tags and dependencies */
-	return sizeof(*this) +
-			sizeof(this->dependency_count) +
-			sizeof(*this->dependencies) * this->dependency_count;
-}
 
 /**
  * Is the state either selected or autoselected?
@@ -73,9 +31,9 @@ size_t ContentInfo::Size() const
 bool ContentInfo::IsSelected() const
 {
 	switch (this->state) {
-		case ContentInfo::SELECTED:
-		case ContentInfo::AUTOSELECTED:
-		case ContentInfo::ALREADY_HERE:
+		case ContentInfo::State::Selected:
+		case ContentInfo::State::Autoselected:
+		case ContentInfo::State::AlreadyHere:
 			return true;
 
 		default:
@@ -89,65 +47,53 @@ bool ContentInfo::IsSelected() const
  */
 bool ContentInfo::IsValid() const
 {
-	return this->state < ContentInfo::INVALID && this->type >= CONTENT_TYPE_BEGIN && this->type < CONTENT_TYPE_END;
+	return this->state < ContentInfo::State::Invalid && this->type >= ContentType::Begin && this->type < ContentType::End;
 }
 
-#ifndef OPENTTD_MSU
 /**
  * Search a textfile file next to this file in the content list.
  * @param type The type of the textfile to search for.
- * @return The filename for the textfile, \c nullptr otherwise.
+ * @return The filename for the textfile.
  */
-const char *ContentInfo::GetTextfile(TextfileType type) const
+std::optional<std::string> ContentInfo::GetTextfile(TextfileType type) const
 {
-	if (this->state == INVALID) return nullptr;
-	const char *tmp;
+	if (this->state == ContentInfo::State::Invalid) return std::nullopt;
+	std::optional<std::string_view> tmp;
 	switch (this->type) {
 		default: NOT_REACHED();
-		case CONTENT_TYPE_AI:
-			tmp = AI::GetScannerInfo()->FindMainScript(this, true);
+		case ContentType::Ai:
+			tmp = AI::GetScannerInfo()->FindMainScript(*this, true);
 			break;
-		case CONTENT_TYPE_AI_LIBRARY:
-			tmp = AI::GetScannerLibrary()->FindMainScript(this, true);
+		case ContentType::AiLibrary:
+			tmp = AI::GetScannerLibrary()->FindMainScript(*this, true);
 			break;
-		case CONTENT_TYPE_GAME:
-			tmp = Game::GetScannerInfo()->FindMainScript(this, true);
+		case ContentType::Gs:
+			tmp = Game::GetScannerInfo()->FindMainScript(*this, true);
 			break;
-		case CONTENT_TYPE_GAME_LIBRARY:
-			tmp = Game::GetScannerLibrary()->FindMainScript(this, true);
+		case ContentType::GsLibrary:
+			tmp = Game::GetScannerLibrary()->FindMainScript(*this, true);
 			break;
-		case CONTENT_TYPE_NEWGRF: {
-			const GRFConfig *gc = FindGRFConfig(BSWAP32(this->unique_id), FGCM_EXACT, this->md5sum);
-			tmp = gc != nullptr ? gc->filename : nullptr;
+		case ContentType::NewGRF: {
+			const GRFConfig *gc = FindGRFConfig(UnflattenNewGRFLabel<GrfID>(std::byteswap(this->unique_id)), FindGRFConfigMode::Exact, &this->md5sum);
+			if (gc != nullptr) tmp = gc->filename;
 			break;
 		}
-		case CONTENT_TYPE_BASE_GRAPHICS:
-			tmp = TryGetBaseSetFile(this, true, BaseGraphics::GetAvailableSets());
+		case ContentType::BaseGraphics:
+			tmp = TryGetBaseSetFile(*this, true, BaseGraphics::GetAvailableSets());
 			break;
-		case CONTENT_TYPE_BASE_SOUNDS:
-			tmp = TryGetBaseSetFile(this, true, BaseSounds::GetAvailableSets());
+		case ContentType::BaseSounds:
+			tmp = TryGetBaseSetFile(*this, true, BaseSounds::GetAvailableSets());
 			break;
-		case CONTENT_TYPE_BASE_MUSIC:
-			tmp = TryGetBaseSetFile(this, true, BaseMusic::GetAvailableSets());
+		case ContentType::BaseMusic:
+			tmp = TryGetBaseSetFile(*this, true, BaseMusic::GetAvailableSets());
 			break;
-		case CONTENT_TYPE_SCENARIO:
-		case CONTENT_TYPE_HEIGHTMAP:
-			extern const char *FindScenario(const ContentInfo *ci, bool md5sum);
-			tmp = FindScenario(this, true);
+		case ContentType::Scenario:
+		case ContentType::Heightmap:
+			tmp = FindScenario(*this, true);
 			break;
 	}
-	if (tmp == nullptr) return nullptr;
-	return ::GetTextfile(type, GetContentInfoSubDir(this->type), tmp);
-}
-#endif /* OPENTTD_MSU */
-
-void NetworkContentSocketHandler::Close()
-{
-	CloseConnection();
-	if (this->sock == INVALID_SOCKET) return;
-
-	closesocket(this->sock);
-	this->sock = INVALID_SOCKET;
+	if (!tmp.has_value()) return std::nullopt;
+	return ::GetTextfile(type, GetContentInfoSubDir(this->type), *tmp);
 }
 
 /**
@@ -156,25 +102,21 @@ void NetworkContentSocketHandler::Close()
  * @param p the packet to handle
  * @return true if we should immediately handle further packets, false otherwise
  */
-bool NetworkContentSocketHandler::HandlePacket(Packet *p)
+bool NetworkContentSocketHandler::HandlePacket(Packet &p)
 {
-	PacketContentType type = (PacketContentType)p->Recv_uint8();
+	PacketContentType type = static_cast<PacketContentType>(p.Recv_uint8());
 
-	switch (this->HasClientQuit() ? PACKET_CONTENT_END : type) {
-		case PACKET_CONTENT_CLIENT_INFO_LIST:      return this->Receive_CLIENT_INFO_LIST(p);
-		case PACKET_CONTENT_CLIENT_INFO_ID:        return this->Receive_CLIENT_INFO_ID(p);
-		case PACKET_CONTENT_CLIENT_INFO_EXTID:     return this->Receive_CLIENT_INFO_EXTID(p);
-		case PACKET_CONTENT_CLIENT_INFO_EXTID_MD5: return this->Receive_CLIENT_INFO_EXTID_MD5(p);
-		case PACKET_CONTENT_SERVER_INFO:           return this->Receive_SERVER_INFO(p);
-		case PACKET_CONTENT_CLIENT_CONTENT:        return this->Receive_CLIENT_CONTENT(p);
-		case PACKET_CONTENT_SERVER_CONTENT:        return this->Receive_SERVER_CONTENT(p);
+	switch (type) {
+		case PacketContentType::ClientInfoList: return this->ReceiveClientInfoList(p);
+		case PacketContentType::ClientInfoID: return this->ReceiveClientInfoID(p);
+		case PacketContentType::ClientInfoExternalID: return this->ReceiveClientInfoExternalID(p);
+		case PacketContentType::ClientInfoExternalIDMD5: return this->ReceiveClientInfoExternalIDMD5(p);
+		case PacketContentType::ServerInfo: return this->ReceiveServerInfo(p);
+		case PacketContentType::ClientContent: return this->ReceiveClientContent(p);
+		case PacketContentType::ServerContent: return this->ReceiveServerContent(p);
 
 		default:
-			if (this->HasClientQuit()) {
-				DEBUG(net, 0, "[tcp/content] received invalid packet type %d from %s", type, this->client_addr.GetAddressAsString().c_str());
-			} else {
-				DEBUG(net, 0, "[tcp/content] received illegal packet from %s", this->client_addr.GetAddressAsString().c_str());
-			}
+			Debug(Facility::Net, Severity::Critical, "[tcp/content] Received invalid packet type {}", type);
 			return false;
 	}
 }
@@ -200,16 +142,15 @@ bool NetworkContentSocketHandler::ReceivePackets()
 	 * As a result, we simple handle an arbitrary number of packets in one cycle,
 	 * and let the rest be handled in subsequent cycles. These are ran, almost,
 	 * immediately after this cycle so in speed it does not matter much, except
-	 * that the user inferface will appear better responding.
+	 * that the user interface will appear better responding.
 	 *
 	 * What arbitrary number to choose is the ultimate question though.
 	 */
-	Packet *p;
+	std::unique_ptr<Packet> p;
 	static const int MAX_PACKETS_TO_RECEIVE = 42;
 	int i = MAX_PACKETS_TO_RECEIVE;
 	while (--i != 0 && (p = this->ReceivePacket()) != nullptr) {
-		bool cont = this->HandlePacket(p);
-		delete p;
+		bool cont = this->HandlePacket(*p);
 		if (!cont) return true;
 	}
 
@@ -224,19 +165,18 @@ bool NetworkContentSocketHandler::ReceivePackets()
  */
 bool NetworkContentSocketHandler::ReceiveInvalidPacket(PacketContentType type)
 {
-	DEBUG(net, 0, "[tcp/content] received illegal packet type %d from %s", type, this->client_addr.GetAddressAsString().c_str());
+	Debug(Facility::Net, Severity::Critical, "[tcp/content] Received illegal packet type {}", type);
 	return false;
 }
 
-bool NetworkContentSocketHandler::Receive_CLIENT_INFO_LIST(Packet *p) { return this->ReceiveInvalidPacket(PACKET_CONTENT_CLIENT_INFO_LIST); }
-bool NetworkContentSocketHandler::Receive_CLIENT_INFO_ID(Packet *p) { return this->ReceiveInvalidPacket(PACKET_CONTENT_CLIENT_INFO_ID); }
-bool NetworkContentSocketHandler::Receive_CLIENT_INFO_EXTID(Packet *p) { return this->ReceiveInvalidPacket(PACKET_CONTENT_CLIENT_INFO_EXTID); }
-bool NetworkContentSocketHandler::Receive_CLIENT_INFO_EXTID_MD5(Packet *p) { return this->ReceiveInvalidPacket(PACKET_CONTENT_CLIENT_INFO_EXTID_MD5); }
-bool NetworkContentSocketHandler::Receive_SERVER_INFO(Packet *p) { return this->ReceiveInvalidPacket(PACKET_CONTENT_SERVER_INFO); }
-bool NetworkContentSocketHandler::Receive_CLIENT_CONTENT(Packet *p) { return this->ReceiveInvalidPacket(PACKET_CONTENT_CLIENT_CONTENT); }
-bool NetworkContentSocketHandler::Receive_SERVER_CONTENT(Packet *p) { return this->ReceiveInvalidPacket(PACKET_CONTENT_SERVER_CONTENT); }
+bool NetworkContentSocketHandler::ReceiveClientInfoList(Packet &) { return this->ReceiveInvalidPacket(PacketContentType::ClientInfoList); }
+bool NetworkContentSocketHandler::ReceiveClientInfoID(Packet &) { return this->ReceiveInvalidPacket(PacketContentType::ClientInfoID); }
+bool NetworkContentSocketHandler::ReceiveClientInfoExternalID(Packet &) { return this->ReceiveInvalidPacket(PacketContentType::ClientInfoExternalID); }
+bool NetworkContentSocketHandler::ReceiveClientInfoExternalIDMD5(Packet &) { return this->ReceiveInvalidPacket(PacketContentType::ClientInfoExternalIDMD5); }
+bool NetworkContentSocketHandler::ReceiveServerInfo(Packet &) { return this->ReceiveInvalidPacket(PacketContentType::ServerInfo); }
+bool NetworkContentSocketHandler::ReceiveClientContent(Packet &) { return this->ReceiveInvalidPacket(PacketContentType::ClientContent); }
+bool NetworkContentSocketHandler::ReceiveServerContent(Packet &) { return this->ReceiveInvalidPacket(PacketContentType::ServerContent); }
 
-#ifndef OPENTTD_MSU
 /**
  * Helper to get the subdirectory a #ContentInfo is located in.
  * @param type The type of content.
@@ -245,20 +185,19 @@ bool NetworkContentSocketHandler::Receive_SERVER_CONTENT(Packet *p) { return thi
 Subdirectory GetContentInfoSubDir(ContentType type)
 {
 	switch (type) {
-		default: return NO_DIRECTORY;
-		case CONTENT_TYPE_AI:           return AI_DIR;
-		case CONTENT_TYPE_AI_LIBRARY:   return AI_LIBRARY_DIR;
-		case CONTENT_TYPE_GAME:         return GAME_DIR;
-		case CONTENT_TYPE_GAME_LIBRARY: return GAME_LIBRARY_DIR;
-		case CONTENT_TYPE_NEWGRF:       return NEWGRF_DIR;
+		default: return Subdirectory::None;
+		case ContentType::Ai: return Subdirectory::Ai;
+		case ContentType::AiLibrary: return Subdirectory::AiLibrary;
+		case ContentType::Gs: return Subdirectory::Gs;
+		case ContentType::GsLibrary: return Subdirectory::GsLibrary;
+		case ContentType::NewGRF: return Subdirectory::NewGrf;
 
-		case CONTENT_TYPE_BASE_GRAPHICS:
-		case CONTENT_TYPE_BASE_SOUNDS:
-		case CONTENT_TYPE_BASE_MUSIC:
-			return BASESET_DIR;
+		case ContentType::BaseGraphics:
+		case ContentType::BaseSounds:
+		case ContentType::BaseMusic:
+			return Subdirectory::Baseset;
 
-		case CONTENT_TYPE_SCENARIO:     return SCENARIO_DIR;
-		case CONTENT_TYPE_HEIGHTMAP:    return HEIGHTMAP_DIR;
+		case ContentType::Scenario: return Subdirectory::Scenario;
+		case ContentType::Heightmap: return Subdirectory::Heightmap;
 	}
 }
-#endif /* OPENTTD_MSU */

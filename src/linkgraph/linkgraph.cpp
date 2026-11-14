@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file linkgraph.cpp Definition of link graph classes used for cargo distribution. */
@@ -23,25 +23,27 @@ INSTANTIATE_POOL_METHODS(LinkGraph)
  * @param st ID of the associated station.
  * @param demand Demand for cargo at the station.
  */
-inline void LinkGraph::BaseNode::Init(TileIndex xy, StationID st, uint demand)
+LinkGraph::BaseNode::BaseNode(TileIndex xy, StationID st, uint demand)
 {
 	this->xy = xy;
 	this->supply = 0;
 	this->demand = demand;
 	this->station = st;
-	this->last_update = INVALID_DATE;
+	this->last_update = EconomyTime::INVALID_DATE;
 }
 
 /**
  * Create an edge.
+ * @param dest_node The destination of this edge.
  */
-inline void LinkGraph::BaseEdge::Init()
+LinkGraph::BaseEdge::BaseEdge(NodeID dest_node)
 {
 	this->capacity = 0;
 	this->usage = 0;
-	this->last_unrestricted_update = INVALID_DATE;
-	this->last_restricted_update = INVALID_DATE;
-	this->next_edge = INVALID_NODE;
+	this->travel_time_sum = 0;
+	this->last_unrestricted_update = EconomyTime::INVALID_DATE;
+	this->last_restricted_update = EconomyTime::INVALID_DATE;
+	this->dest_node = dest_node;
 }
 
 /**
@@ -49,29 +51,33 @@ inline void LinkGraph::BaseEdge::Init()
  * This is useful if the date has been modified with the cheat menu.
  * @param interval Number of days to be added or subtracted.
  */
-void LinkGraph::ShiftDates(int interval)
+void LinkGraph::ShiftDates(TimerGameEconomy::Date interval)
 {
 	this->last_compression += interval;
 	for (NodeID node1 = 0; node1 < this->Size(); ++node1) {
 		BaseNode &source = this->nodes[node1];
-		if (source.last_update != INVALID_DATE) source.last_update += interval;
-		for (NodeID node2 = 0; node2 < this->Size(); ++node2) {
-			BaseEdge &edge = this->edges[node1][node2];
-			if (edge.last_unrestricted_update != INVALID_DATE) edge.last_unrestricted_update += interval;
-			if (edge.last_restricted_update != INVALID_DATE) edge.last_restricted_update += interval;
+		if (source.last_update != EconomyTime::INVALID_DATE) source.last_update += interval;
+		for (BaseEdge &edge : this->nodes[node1].edges) {
+			if (edge.last_unrestricted_update != EconomyTime::INVALID_DATE) edge.last_unrestricted_update += interval;
+			if (edge.last_restricted_update != EconomyTime::INVALID_DATE) edge.last_restricted_update += interval;
 		}
 	}
 }
 
 void LinkGraph::Compress()
 {
-	this->last_compression = (_date + this->last_compression) / 2;
+	this->last_compression = TimerGameEconomy::Date{(TimerGameEconomy::date + this->last_compression).base() / 2};
 	for (NodeID node1 = 0; node1 < this->Size(); ++node1) {
 		this->nodes[node1].supply /= 2;
-		for (NodeID node2 = 0; node2 < this->Size(); ++node2) {
-			BaseEdge &edge = this->edges[node1][node2];
+		for (BaseEdge &edge : this->nodes[node1].edges) {
 			if (edge.capacity > 0) {
-				edge.capacity = max(1U, edge.capacity / 2);
+				uint new_capacity = std::max(1U, edge.capacity / 2);
+				if (edge.capacity < (1 << 16)) {
+					edge.travel_time_sum = edge.travel_time_sum * new_capacity / edge.capacity;
+				} else if (edge.travel_time_sum != 0) {
+					edge.travel_time_sum = std::max<uint64_t>(1, edge.travel_time_sum / 2);
+				}
+				edge.capacity = new_capacity;
 				edge.usage /= 2;
 			}
 		}
@@ -84,8 +90,8 @@ void LinkGraph::Compress()
  */
 void LinkGraph::Merge(LinkGraph *other)
 {
-	Date age = _date - this->last_compression + 1;
-	Date other_age = _date - other->last_compression + 1;
+	TimerGameEconomy::Date age = TimerGameEconomy::date - this->last_compression + 1;
+	TimerGameEconomy::Date other_age = TimerGameEconomy::date - other->last_compression + 1;
 	NodeID first = this->Size();
 	for (NodeID node1 = 0; node1 < other->Size(); ++node1) {
 		Station *st = Station::Get(other->nodes[node1].station);
@@ -93,21 +99,13 @@ void LinkGraph::Merge(LinkGraph *other)
 		this->nodes[new_node].supply = LinkGraph::Scale(other->nodes[node1].supply, age, other_age);
 		st->goods[this->cargo].link_graph = this->index;
 		st->goods[this->cargo].node = new_node;
-		for (NodeID node2 = 0; node2 < node1; ++node2) {
-			BaseEdge &forward = this->edges[new_node][first + node2];
-			BaseEdge &backward = this->edges[first + node2][new_node];
-			forward = other->edges[node1][node2];
-			backward = other->edges[node2][node1];
-			forward.capacity = LinkGraph::Scale(forward.capacity, age, other_age);
-			forward.usage = LinkGraph::Scale(forward.usage, age, other_age);
-			if (forward.next_edge != INVALID_NODE) forward.next_edge += first;
-			backward.capacity = LinkGraph::Scale(backward.capacity, age, other_age);
-			backward.usage = LinkGraph::Scale(backward.usage, age, other_age);
-			if (backward.next_edge != INVALID_NODE) backward.next_edge += first;
+
+		for (BaseEdge &e : other->nodes[node1].edges) {
+			BaseEdge &new_edge = this->nodes[new_node].edges.emplace_back(first + e.dest_node);
+			new_edge.capacity = LinkGraph::Scale(e.capacity, age, other_age);
+			new_edge.usage = LinkGraph::Scale(e.usage, age, other_age);
+			new_edge.travel_time_sum = LinkGraph::Scale(e.travel_time_sum, age, other_age);
 		}
-		BaseEdge &new_start = this->edges[new_node][new_node];
-		new_start = other->edges[node1][node1];
-		if (new_start.next_edge != INVALID_NODE) new_start.next_edge += first;
 	}
 	delete other;
 }
@@ -121,30 +119,24 @@ void LinkGraph::RemoveNode(NodeID id)
 	assert(id < this->Size());
 
 	NodeID last_node = this->Size() - 1;
-	for (NodeID i = 0; i <= last_node; ++i) {
-		(*this)[i].RemoveEdge(id);
-		BaseEdge *node_edges = this->edges[i];
-		NodeID prev = i;
-		NodeID next = node_edges[i].next_edge;
-		while (next != INVALID_NODE) {
-			if (next == last_node) {
-				node_edges[prev].next_edge = id;
-				break;
-			}
-			prev = next;
-			next = node_edges[prev].next_edge;
-		}
-		node_edges[id] = node_edges[last_node];
-	}
 	Station::Get(this->nodes[last_node].station)->goods[this->cargo].node = id;
 	/* Erase node by swapping with the last element. Node index is referenced
 	 * directly from station goods entries so the order and position must remain. */
 	this->nodes[id] = this->nodes.back();
 	this->nodes.pop_back();
-	this->edges.EraseColumn(id);
-	/* Not doing EraseRow here, as having the extra invalid row doesn't hurt
-	 * and removing it would trigger a lot of memmove. The data has already
-	 * been copied around in the loop above. */
+	for (auto &n : this->nodes) {
+		/* Find iterator position where an edge to id would be. */
+		auto [first, last] = std::equal_range(n.edges.begin(), n.edges.end(), id);
+		/* Remove potential node (erasing an empty range is safe). */
+		auto insert = n.edges.erase(first, last);
+		/* As the edge list is sorted, a potential edge to last_node will always be the last edge. */
+		if (!n.edges.empty() && n.edges.back().dest_node == last_node) {
+			/* Change dest ID and move into the spot of the deleted edge. */
+			n.edges.back().dest_node = id;
+			n.edges.insert(insert, n.edges.back());
+			n.edges.pop_back();
+		}
+	}
 }
 
 /**
@@ -160,24 +152,8 @@ NodeID LinkGraph::AddNode(const Station *st)
 	const GoodsEntry &good = st->goods[this->cargo];
 
 	NodeID new_node = this->Size();
-	this->nodes.emplace_back();
-	/* Avoid reducing the height of the matrix as that is expensive and we
-	 * most likely will increase it again later which is again expensive. */
-	this->edges.Resize(new_node + 1U,
-			max(new_node + 1U, this->edges.Height()));
+	this->nodes.emplace_back(st->xy, st->index, good.status.Test(GoodsEntry::State::Acceptance));
 
-	this->nodes[new_node].Init(st->xy, st->index,
-			HasBit(good.status, GoodsEntry::GES_ACCEPTANCE));
-
-	BaseEdge *new_edges = this->edges[new_node];
-
-	/* Reset the first edge starting at the new node */
-	new_edges[new_node].next_edge = INVALID_NODE;
-
-	for (NodeID i = 0; i <= new_node; ++i) {
-		new_edges[i].Init();
-		this->edges[i][new_node].Init();
-	}
 	return new_node;
 }
 
@@ -187,19 +163,19 @@ NodeID LinkGraph::AddNode(const Station *st)
  * @param to Destination node of the link.
  * @param capacity Capacity of the link.
  * @param usage Usage to be added.
- * @param mode Update mode to be used.
+ * @param travel_time Travel time to be added, in ticks.
+ * @param modes Update modes to be used.
  */
-void LinkGraph::Node::AddEdge(NodeID to, uint capacity, uint usage, EdgeUpdateMode mode)
+void LinkGraph::BaseNode::AddEdge(NodeID to, uint capacity, uint usage, uint32_t travel_time, EdgeUpdateModes modes)
 {
-	assert(this->index != to);
-	BaseEdge &edge = this->edges[to];
-	BaseEdge &first = this->edges[this->index];
+	assert(!this->HasEdgeTo(to));
+
+	BaseEdge &edge = *this->edges.emplace(std::upper_bound(this->edges.begin(), this->edges.end(), to), to);
 	edge.capacity = capacity;
 	edge.usage = usage;
-	edge.next_edge = first.next_edge;
-	first.next_edge = to;
-	if (mode & EUM_UNRESTRICTED)  edge.last_unrestricted_update = _date;
-	if (mode & EUM_RESTRICTED) edge.last_restricted_update = _date;
+	edge.travel_time_sum = static_cast<uint64_t>(travel_time) * capacity;
+	if (modes.Test(EdgeUpdateMode::Unrestricted)) edge.last_unrestricted_update = TimerGameEconomy::date;
+	if (modes.Test(EdgeUpdateMode::Restricted)) edge.last_restricted_update = TimerGameEconomy::date;
 }
 
 /**
@@ -207,16 +183,17 @@ void LinkGraph::Node::AddEdge(NodeID to, uint capacity, uint usage, EdgeUpdateMo
  * @param to Target node.
  * @param capacity Capacity of the link.
  * @param usage Usage to be added.
- * @param mode Update mode to be used.
+ * @param travel_time Travel time to be added, in ticks.
+ * @param modes Update modes to be used.
  */
-void LinkGraph::Node::UpdateEdge(NodeID to, uint capacity, uint usage, EdgeUpdateMode mode)
+void LinkGraph::BaseNode::UpdateEdge(NodeID to, uint capacity, uint usage, uint32_t travel_time, EdgeUpdateModes modes)
 {
 	assert(capacity > 0);
 	assert(usage <= capacity);
-	if (this->edges[to].capacity == 0) {
-		this->AddEdge(to, capacity, usage, mode);
+	if (!this->HasEdgeTo(to)) {
+		this->AddEdge(to, capacity, usage, travel_time, modes);
 	} else {
-		(*this)[to].Update(capacity, usage, mode);
+		this->GetEdge(to)->Update(capacity, usage, travel_time, modes);
 	}
 }
 
@@ -224,53 +201,49 @@ void LinkGraph::Node::UpdateEdge(NodeID to, uint capacity, uint usage, EdgeUpdat
  * Remove an outgoing edge from this node.
  * @param to ID of destination node.
  */
-void LinkGraph::Node::RemoveEdge(NodeID to)
+void LinkGraph::BaseNode::RemoveEdge(NodeID to)
 {
-	if (this->index == to) return;
-	BaseEdge &edge = this->edges[to];
-	edge.capacity = 0;
-	edge.last_unrestricted_update = INVALID_DATE;
-	edge.last_restricted_update = INVALID_DATE;
-	edge.usage = 0;
-
-	NodeID prev = this->index;
-	NodeID next = this->edges[this->index].next_edge;
-	while (next != INVALID_NODE) {
-		if (next == to) {
-			/* Will be removed, skip it. */
-			this->edges[prev].next_edge = edge.next_edge;
-			edge.next_edge = INVALID_NODE;
-			break;
-		} else {
-			prev = next;
-			next = this->edges[next].next_edge;
-		}
-	}
+	auto [first, last] = std::equal_range(this->edges.begin(), this->edges.end(), to);
+	this->edges.erase(first, last);
 }
 
 /**
  * Update an edge. If mode contains UM_REFRESH refresh the edge to have at
- * least the given capacity and usage, otherwise add the capacity and usage.
+ * least the given capacity and usage, otherwise add the capacity, usage and travel time.
  * In any case set the respective update timestamp(s), according to the given
  * mode.
  * @param capacity Capacity to be added/updated.
  * @param usage Usage to be added.
- * @param mode Update mode to be applied.
+ * @param travel_time Travel time to be added, in ticks.
+ * @param modes Update modes to be applied.
  */
-void LinkGraph::Edge::Update(uint capacity, uint usage, EdgeUpdateMode mode)
+void LinkGraph::BaseEdge::Update(uint capacity, uint usage, uint32_t travel_time, EdgeUpdateModes modes)
 {
-	assert(this->edge.capacity > 0);
+	assert(this->capacity > 0);
 	assert(capacity >= usage);
 
-	if (mode & EUM_INCREASE) {
-		this->edge.capacity += capacity;
-		this->edge.usage += usage;
-	} else if (mode & EUM_REFRESH) {
-		this->edge.capacity = max(this->edge.capacity, capacity);
-		this->edge.usage = max(this->edge.usage, usage);
+	if (modes.Test(EdgeUpdateMode::Increase)) {
+		if (this->travel_time_sum == 0) {
+			this->travel_time_sum = static_cast<uint64_t>(this->capacity + capacity) * travel_time;
+		} else if (travel_time == 0) {
+			this->travel_time_sum += this->travel_time_sum / this->capacity * capacity;
+		} else {
+			this->travel_time_sum += static_cast<uint64_t>(travel_time) * capacity;
+		}
+		this->capacity += capacity;
+		this->usage += usage;
+	} else if (modes.Test(EdgeUpdateMode::Refresh)) {
+		if (this->travel_time_sum == 0) {
+			this->capacity = std::max(this->capacity, capacity);
+			this->travel_time_sum = static_cast<uint64_t>(travel_time) * this->capacity;
+		} else if (capacity > this->capacity) {
+			this->travel_time_sum = this->travel_time_sum / this->capacity * capacity;
+			this->capacity = capacity;
+		}
+		this->usage = std::max(this->usage, usage);
 	}
-	if (mode & EUM_UNRESTRICTED) this->edge.last_unrestricted_update = _date;
-	if (mode & EUM_RESTRICTED) this->edge.last_restricted_update = _date;
+	if (modes.Test(EdgeUpdateMode::Unrestricted)) this->last_unrestricted_update = TimerGameEconomy::date;
+	if (modes.Test(EdgeUpdateMode::Restricted)) this->last_restricted_update = TimerGameEconomy::date;
 }
 
 /**
@@ -281,12 +254,5 @@ void LinkGraph::Edge::Update(uint capacity, uint usage, EdgeUpdateMode mode)
 void LinkGraph::Init(uint size)
 {
 	assert(this->Size() == 0);
-	this->edges.Resize(size, size);
 	this->nodes.resize(size);
-
-	for (uint i = 0; i < size; ++i) {
-		this->nodes[i].Init();
-		BaseEdge *column = this->edges[i];
-		for (uint j = 0; j < size; ++j) column[j].Init();
-	}
 }

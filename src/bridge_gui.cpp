@@ -2,12 +2,13 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file bridge_gui.cpp Graphical user interface for bridge construction */
+/** @file bridge_gui.cpp Graphical user interface for bridge construction. */
 
 #include "stdafx.h"
+#include "bridge.h"
 #include "error.h"
 #include "command_func.h"
 #include "rail.h"
@@ -18,11 +19,11 @@
 #include "gfx_func.h"
 #include "tunnelbridge.h"
 #include "sortlist_type.h"
-#include "widgets/dropdown_func.h"
+#include "dropdown_func.h"
 #include "core/geometry_func.hpp"
-#include "cmd_helper.h"
 #include "tunnelbridge_map.h"
 #include "road_gui.h"
+#include "tunnelbridge_cmd.h"
 
 #include "widgets/bridge_widget.h"
 
@@ -51,26 +52,20 @@ typedef GUIList<BuildBridgeData> GUIBridgeList; ///< List of bridges, used in #B
  *
  * @param result Whether the build succeeded
  * @param end_tile End tile of the bridge.
- * @param p1 packed start tile coords (~ dx)
- * @param p2 various bitstuffed elements
- * - p2 = (bit  0- 7) - bridge type (hi bh)
- * - p2 = (bit  8-13) - rail type or road types.
- * - p2 = (bit 15-16) - transport type.
- * @param cmd unused
+ * @param tile_start start tile
+ * @param transport_type transport type.
  */
-void CcBuildBridge(const CommandCost &result, TileIndex end_tile, uint32 p1, uint32 p2, uint32 cmd)
+void CcBuildBridge(Commands, const CommandCost &result, TileIndex end_tile, TileIndex tile_start, TransportType transport_type, BridgeType, RailType, RoadType)
 {
 	if (result.Failed()) return;
-	if (_settings_client.sound.confirm) SndPlayTileFx(SND_27_BLACKSMITH_ANVIL, end_tile);
+	if (_settings_client.sound.confirm) SndPlayTileFx(SND_27_CONSTRUCTION_BRIDGE, end_tile);
 
-	TransportType transport_type = Extract<TransportType, 15, 2>(p2);
-
-	if (transport_type == TRANSPORT_ROAD) {
+	if (transport_type == TransportType::Road) {
 		DiagDirection end_direction = ReverseDiagDir(GetTunnelBridgeDirection(end_tile));
 		ConnectRoadToStructure(end_tile, end_direction);
 
-		DiagDirection start_direction = ReverseDiagDir(GetTunnelBridgeDirection(p1));
-		ConnectRoadToStructure(p1, start_direction);
+		DiagDirection start_direction = ReverseDiagDir(GetTunnelBridgeDirection(tile_start));
+		ConnectRoadToStructure(tile_start, start_direction);
 	}
 }
 
@@ -80,134 +75,160 @@ private:
 	/* Runtime saved values */
 	static Listing last_sorting; ///< Last setting of the sort.
 
-	/* Constants for sorting the bridges */
-	static const StringID sorter_names[];
-	static GUIBridgeList::SortFunction * const sorter_funcs[];
+	/** Strings describing how bridges are sorted. */
+	static inline const StringID sorter_names[] = {
+		STR_SORT_BY_NUMBER,
+		STR_SORT_BY_COST,
+		STR_SORT_BY_MAX_SPEED,
+	};
+	static const std::initializer_list<GUIBridgeList::SortFunction * const> sorter_funcs; ///< Functions to sort bridges.
 
-	/* Internal variables */
-	TileIndex start_tile;
-	TileIndex end_tile;
-	uint32 type;
-	GUIBridgeList *bridges;
-	int bridgetext_offset; ///< Horizontal offset of the text describing the bridge properties in #WID_BBS_BRIDGE_LIST relative to the left edge.
-	Scrollbar *vscroll;
+	TileIndex start_tile = INVALID_TILE;
+	TileIndex end_tile = INVALID_TILE;
+	TransportType transport_type = TransportType::Invalid;
+	RailType railtype = INVALID_RAILTYPE; ///< Rail type to build if building a rail bridge.
+	RoadType roadtype = INVALID_ROADTYPE; ///< Road type to build if building a road bridge.
+	GUIBridgeList bridges{};
+	int icon_width = 0; ///< Scaled width of the the bridge icon sprite.
+	Scrollbar *vscroll = nullptr;
 
-	/** Sort the bridges by their index */
+	/** Sort the bridges by their index. @copydoc GUIList::Sorter */
 	static bool BridgeIndexSorter(const BuildBridgeData &a, const BuildBridgeData &b)
 	{
 		return a.index < b.index;
 	}
 
-	/** Sort the bridges by their price */
+	/** Sort the bridges by their price. @copydoc GUIList::Sorter */
 	static bool BridgePriceSorter(const BuildBridgeData &a, const BuildBridgeData &b)
 	{
 		return a.cost < b.cost;
 	}
 
-	/** Sort the bridges by their maximum speed */
+	/** Sort the bridges by their maximum speed. @copydoc GUIList::Sorter */
 	static bool BridgeSpeedSorter(const BuildBridgeData &a, const BuildBridgeData &b)
 	{
 		return a.spec->speed < b.spec->speed;
 	}
 
-	void BuildBridge(uint8 i)
+	void BuildBridge(BridgeType type)
 	{
-		switch ((TransportType)(this->type >> 15)) {
-			case TRANSPORT_RAIL: _last_railbridge_type = this->bridges->at(i).index; break;
-			case TRANSPORT_ROAD: _last_roadbridge_type = this->bridges->at(i).index; break;
+		switch (this->transport_type) {
+			case TransportType::Rail: _last_railbridge_type = type; break;
+			case TransportType::Road: _last_roadbridge_type = type; break;
 			default: break;
 		}
-		DoCommandP(this->end_tile, this->start_tile, this->type | this->bridges->at(i).index,
-					CMD_BUILD_BRIDGE | CMD_MSG(STR_ERROR_CAN_T_BUILD_BRIDGE_HERE), CcBuildBridge);
+		Command<Commands::BuildBridge>::Post(STR_ERROR_CAN_T_BUILD_BRIDGE_HERE, CcBuildBridge,
+					this->end_tile, this->start_tile, this->transport_type, type, this->railtype, this->roadtype);
 	}
 
 	/** Sort the builable bridges */
 	void SortBridgeList()
 	{
-		this->bridges->Sort();
+		this->bridges.Sort();
 
 		/* Display the current sort variant */
-		this->GetWidget<NWidgetCore>(WID_BBS_DROPDOWN_CRITERIA)->widget_data = this->sorter_names[this->bridges->SortType()];
+		this->GetWidget<NWidgetCore>(WID_BBS_DROPDOWN_CRITERIA)->SetString(BuildBridgeWindow::sorter_names[this->bridges.SortType()]);
 
 		/* Set the modified widgets dirty */
 		this->SetWidgetDirty(WID_BBS_DROPDOWN_CRITERIA);
 		this->SetWidgetDirty(WID_BBS_BRIDGE_LIST);
 	}
 
+	/**
+	 * Get the StringID to draw in the selection list and set the appropriate DParams.
+	 * @param bridge_data the bridge to get the StringID of.
+	 * @return the StringID.
+	 */
+	std::string GetBridgeSelectString(const BuildBridgeData &bridge_data) const
+	{
+		/* If the bridge has no meaningful speed limit, don't display it. */
+		if (bridge_data.spec->speed == UINT16_MAX) {
+			return _game_mode == GameMode::Editor
+				? GetString(STR_SELECT_BRIDGE_INFO_NAME, bridge_data.spec->material)
+				: GetString(STR_SELECT_BRIDGE_INFO_NAME_COST, bridge_data.spec->material, bridge_data.cost);
+		}
+
+		uint64_t packed_velocity = PackVelocity(bridge_data.spec->speed, static_cast<VehicleType>(this->transport_type));
+		return _game_mode == GameMode::Editor
+			? GetString(STR_SELECT_BRIDGE_INFO_NAME_MAX_SPEED, bridge_data.spec->material, packed_velocity)
+			: GetString(STR_SELECT_BRIDGE_INFO_NAME_MAX_SPEED_COST, bridge_data.spec->material, packed_velocity, bridge_data.cost);
+	}
+
 public:
-	BuildBridgeWindow(WindowDesc *desc, TileIndex start, TileIndex end, uint32 br_type, GUIBridgeList *bl) : Window(desc),
+	/**
+	 * Create this BuildBridgeWindoow.
+	 * @param desc Window description.
+	 * @param start Start tile of bridge.
+	 * @param end End tile of bridge.
+	 * @param transport_type Transport type of bridge (i.e. rail, road, or water).
+	 * @param railtype Rail type for a rail bridge.
+	 * @param roadtype Road type for a road bridge.
+	 * @param bl List of bridges that can be built.
+	 */
+	BuildBridgeWindow(WindowDesc &desc, TileIndex start, TileIndex end, TransportType transport_type, RailType railtype, RoadType roadtype, GUIBridgeList &&bl) : Window(desc),
 		start_tile(start),
 		end_tile(end),
-		type(br_type),
-		bridges(bl)
+		transport_type(transport_type),
+		railtype(railtype),
+		roadtype(roadtype),
+		bridges(std::move(bl))
 	{
 		this->CreateNestedTree();
 		this->vscroll = this->GetScrollbar(WID_BBS_SCROLLBAR);
 		/* Change the data, or the caption of the gui. Set it to road or rail, accordingly. */
-		this->GetWidget<NWidgetCore>(WID_BBS_CAPTION)->widget_data = (GB(this->type, 15, 2) == TRANSPORT_ROAD) ? STR_SELECT_ROAD_BRIDGE_CAPTION : STR_SELECT_RAIL_BRIDGE_CAPTION;
-		this->FinishInitNested(GB(br_type, 15, 2)); // Initializes 'this->bridgetext_offset'.
+		this->GetWidget<NWidgetCore>(WID_BBS_CAPTION)->SetString((transport_type == TransportType::Road) ? STR_SELECT_ROAD_BRIDGE_CAPTION : STR_SELECT_RAIL_BRIDGE_CAPTION);
+		this->FinishInitNested(transport_type); // Initializes 'this->icon_width'.
 
-		this->parent = FindWindowById(WC_BUILD_TOOLBAR, GB(this->type, 15, 2));
-		this->bridges->SetListing(this->last_sorting);
-		this->bridges->SetSortFuncs(this->sorter_funcs);
-		this->bridges->NeedResort();
+		this->parent = FindWindowById(WindowClass::BuildToolbar, transport_type);
+		this->bridges.SetListing(BuildBridgeWindow::last_sorting);
+		this->bridges.SetSortFuncs(BuildBridgeWindow::sorter_funcs);
+		this->bridges.NeedResort();
 		this->SortBridgeList();
 
-		this->vscroll->SetCount((uint)bl->size());
+		this->vscroll->SetCount(this->bridges.size());
 	}
 
-	~BuildBridgeWindow()
+	/** Save the last sorting state. */
+	~BuildBridgeWindow() override
 	{
-		this->last_sorting = this->bridges->GetListing();
-
-		delete bridges;
+		BuildBridgeWindow::last_sorting = this->bridges.GetListing();
 	}
 
-	void UpdateWidgetSize(int widget, Dimension *size, const Dimension &padding, Dimension *fill, Dimension *resize) override
+	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding, [[maybe_unused]] Dimension &fill, [[maybe_unused]] Dimension &resize) override
 	{
 		switch (widget) {
 			case WID_BBS_DROPDOWN_ORDER: {
-				Dimension d = GetStringBoundingBox(this->GetWidget<NWidgetCore>(widget)->widget_data);
+				Dimension d = GetStringBoundingBox(this->GetWidget<NWidgetCore>(widget)->GetString());
 				d.width += padding.width + Window::SortButtonWidth() * 2; // Doubled since the string is centred and it also looks better.
 				d.height += padding.height;
-				*size = maxdim(*size, d);
+				size = maxdim(size, d);
 				break;
 			}
 			case WID_BBS_DROPDOWN_CRITERIA: {
-				Dimension d = {0, 0};
-				for (const StringID *str = this->sorter_names; *str != INVALID_STRING_ID; str++) {
-					d = maxdim(d, GetStringBoundingBox(*str));
-				}
+				Dimension d = GetStringListBoundingBox(BuildBridgeWindow::sorter_names);
 				d.width += padding.width;
 				d.height += padding.height;
-				*size = maxdim(*size, d);
+				size = maxdim(size, d);
 				break;
 			}
 			case WID_BBS_BRIDGE_LIST: {
 				Dimension sprite_dim = {0, 0}; // Biggest bridge sprite dimension
 				Dimension text_dim   = {0, 0}; // Biggest text dimension
-				for (int i = 0; i < (int)this->bridges->size(); i++) {
-					const BridgeSpec *b = this->bridges->at(i).spec;
-					sprite_dim = maxdim(sprite_dim, GetSpriteSize(b->sprite));
-
-					SetDParam(2, this->bridges->at(i).cost);
-					SetDParam(1, b->speed);
-					SetDParam(0, b->material);
-					text_dim = maxdim(text_dim, GetStringBoundingBox(_game_mode == GM_EDITOR ? STR_SELECT_BRIDGE_SCENEDIT_INFO : STR_SELECT_BRIDGE_INFO));
+				for (const BuildBridgeData &bridge_data : this->bridges) {
+					sprite_dim = maxdim(sprite_dim, GetScaledSpriteSize(bridge_data.spec->sprite));
+					text_dim = maxdim(text_dim, GetStringBoundingBox(GetBridgeSelectString(bridge_data)));
 				}
-				sprite_dim.height++; // Sprite is rendered one pixel down in the matrix field.
-				text_dim.height++; // Allowing the bottom row pixels to be rendered on the edge of the matrix field.
-				resize->height = max(sprite_dim.height, text_dim.height) + 2; // Max of both sizes + account for matrix edges.
+				fill.height = resize.height = std::max(sprite_dim.height, text_dim.height) + padding.height; // Max of both sizes + account for matrix edges.
 
-				this->bridgetext_offset = WD_MATRIX_LEFT + sprite_dim.width + 1; // Left edge of text, 1 pixel distance from the sprite.
-				size->width = this->bridgetext_offset + text_dim.width + WD_MATRIX_RIGHT;
-				size->height = 4 * resize->height; // Smallest bridge gui is 4 entries high in the matrix.
+				this->icon_width = sprite_dim.width; // Width of bridge icon.
+				size.width = this->icon_width + WidgetDimensions::scaled.hsep_normal + text_dim.width + padding.width;
+				size.height = 4 * resize.height; // Smallest bridge gui is 4 entries high in the matrix.
 				break;
 			}
 		}
 	}
 
-	Point OnInitialPosition(int16 sm_width, int16 sm_height, int window_number) override
+	Point OnInitialPosition([[maybe_unused]] int16_t sm_width, [[maybe_unused]] int16_t sm_height, [[maybe_unused]] int window_number) override
 	{
 		/* Position the window so hopefully the first bridge from the list is under the mouse pointer. */
 		NWidgetBase *list = this->GetWidget<NWidgetBase>(WID_BBS_BRIDGE_LIST);
@@ -217,72 +238,68 @@ public:
 		return corner;
 	}
 
-	void DrawWidget(const Rect &r, int widget) const override
+	void DrawWidget(const Rect &r, WidgetID widget) const override
 	{
 		switch (widget) {
 			case WID_BBS_DROPDOWN_ORDER:
-				this->DrawSortButtonState(widget, this->bridges->IsDescSortOrder() ? SBS_DOWN : SBS_UP);
+				this->DrawSortButton(widget, this->bridges.IsDescSortOrder());
 				break;
 
 			case WID_BBS_BRIDGE_LIST: {
-				uint y = r.top;
-				for (int i = this->vscroll->GetPosition(); this->vscroll->IsVisible(i) && i < (int)this->bridges->size(); i++) {
-					const BridgeSpec *b = this->bridges->at(i).spec;
-
-					SetDParam(2, this->bridges->at(i).cost);
-					SetDParam(1, b->speed);
-					SetDParam(0, b->material);
-
-					DrawSprite(b->sprite, b->pal, r.left + WD_MATRIX_LEFT, y + this->resize.step_height - 1 - GetSpriteSize(b->sprite).height);
-					DrawStringMultiLine(r.left + this->bridgetext_offset, r.right, y + 2, y + this->resize.step_height,
-							_game_mode == GM_EDITOR ? STR_SELECT_BRIDGE_SCENEDIT_INFO : STR_SELECT_BRIDGE_INFO);
-					y += this->resize.step_height;
+				Rect tr = r.WithHeight(this->resize.step_height).Shrink(WidgetDimensions::scaled.matrix);
+				bool rtl = _current_text_dir == TD_RTL;
+				auto [first, last] = this->vscroll->GetVisibleRangeIterators(this->bridges);
+				for (auto it = first; it != last; ++it) {
+					const BridgeSpec *b = it->spec;
+					DrawSpriteIgnorePadding(b->sprite, b->pal, tr.WithWidth(this->icon_width, rtl), {AlignmentH::Centre, AlignmentV::Bottom});
+					DrawStringMultiLineWithClipping(tr.Indent(this->icon_width + WidgetDimensions::scaled.hsep_normal, rtl), GetBridgeSelectString(*it));
+					tr = tr.Translate(0, this->resize.step_height);
 				}
 				break;
 			}
 		}
 	}
 
-	EventState OnKeyPress(WChar key, uint16 keycode) override
+	EventState OnKeyPress([[maybe_unused]] char32_t key, uint16_t keycode) override
 	{
-		const uint8 i = keycode - '1';
-		if (i < 9 && i < this->bridges->size()) {
+		const uint8_t i = keycode - '1';
+		if (i < 9 && i < this->bridges.size()) {
 			/* Build the requested bridge */
-			this->BuildBridge(i);
-			delete this;
-			return ES_HANDLED;
+			this->BuildBridge(this->bridges[i].index);
+			this->Close();
+			return EventState::Handled;
 		}
-		return ES_NOT_HANDLED;
+		return EventState::NotHandled;
 	}
 
-	void OnClick(Point pt, int widget, int click_count) override
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
 	{
 		switch (widget) {
 			default: break;
 			case WID_BBS_BRIDGE_LIST: {
-				uint i = this->vscroll->GetScrolledRowFromWidget(pt.y, this, WID_BBS_BRIDGE_LIST);
-				if (i < this->bridges->size()) {
-					this->BuildBridge(i);
-					delete this;
+				auto it = this->vscroll->GetScrolledItemFromWidget(this->bridges, pt.y, this, WID_BBS_BRIDGE_LIST);
+				if (it != this->bridges.end()) {
+					this->BuildBridge(it->index);
+					this->Close();
 				}
 				break;
 			}
 
 			case WID_BBS_DROPDOWN_ORDER:
-				this->bridges->ToggleSortOrder();
+				this->bridges.ToggleSortOrder();
 				this->SetDirty();
 				break;
 
 			case WID_BBS_DROPDOWN_CRITERIA:
-				ShowDropDownMenu(this, this->sorter_names, this->bridges->SortType(), WID_BBS_DROPDOWN_CRITERIA, 0, 0);
+				ShowDropDownMenu(this, BuildBridgeWindow::sorter_names, this->bridges.SortType(), WID_BBS_DROPDOWN_CRITERIA, 0, 0);
 				break;
 		}
 	}
 
-	void OnDropdownSelect(int widget, int index) override
+	void OnDropdownSelect(WidgetID widget, int index, int) override
 	{
-		if (widget == WID_BBS_DROPDOWN_CRITERIA && this->bridges->SortType() != index) {
-			this->bridges->SetSortType(index);
+		if (widget == WID_BBS_DROPDOWN_CRITERIA && this->bridges.SortType() != index) {
+			this->bridges.SetSortType(index);
 
 			this->SortBridgeList();
 		}
@@ -298,54 +315,46 @@ public:
 Listing BuildBridgeWindow::last_sorting = {true, 2};
 
 /** Available bridge sorting functions. */
-GUIBridgeList::SortFunction * const BuildBridgeWindow::sorter_funcs[] = {
+const std::initializer_list<GUIBridgeList::SortFunction * const> BuildBridgeWindow::sorter_funcs = {
 	&BridgeIndexSorter,
 	&BridgePriceSorter,
 	&BridgeSpeedSorter
 };
 
-/** Names of the sorting functions. */
-const StringID BuildBridgeWindow::sorter_names[] = {
-	STR_SORT_BY_NUMBER,
-	STR_SORT_BY_COST,
-	STR_SORT_BY_MAX_SPEED,
-	INVALID_STRING_ID
-};
-
 /** Widgets of the bridge gui. */
-static const NWidgetPart _nested_build_bridge_widgets[] = {
+static constexpr std::initializer_list<NWidgetPart> _nested_build_bridge_widgets = {
 	/* Header */
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_CLOSEBOX, COLOUR_DARK_GREEN),
-		NWidget(WWT_CAPTION, COLOUR_DARK_GREEN, WID_BBS_CAPTION), SetDataTip(STR_SELECT_RAIL_BRIDGE_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
-		NWidget(WWT_DEFSIZEBOX, COLOUR_DARK_GREEN),
+		NWidget(WWT_CLOSEBOX, Colours::DarkGreen),
+		NWidget(WWT_CAPTION, Colours::DarkGreen, WID_BBS_CAPTION), SetStringTip(STR_SELECT_RAIL_BRIDGE_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS),
+		NWidget(WWT_DEFSIZEBOX, Colours::DarkGreen),
 	EndContainer(),
 
 	NWidget(NWID_HORIZONTAL),
 		NWidget(NWID_VERTICAL),
 			/* Sort order + criteria buttons */
 			NWidget(NWID_HORIZONTAL),
-				NWidget(WWT_TEXTBTN, COLOUR_DARK_GREEN, WID_BBS_DROPDOWN_ORDER), SetFill(1, 0), SetDataTip(STR_BUTTON_SORT_BY, STR_TOOLTIP_SORT_ORDER),
-				NWidget(WWT_DROPDOWN, COLOUR_DARK_GREEN, WID_BBS_DROPDOWN_CRITERIA), SetFill(1, 0), SetDataTip(0x0, STR_TOOLTIP_SORT_CRITERIA),
+				NWidget(WWT_TEXTBTN, Colours::DarkGreen, WID_BBS_DROPDOWN_ORDER), SetFill(1, 0), SetStringTip(STR_BUTTON_SORT_BY, STR_TOOLTIP_SORT_ORDER),
+				NWidget(WWT_DROPDOWN, Colours::DarkGreen, WID_BBS_DROPDOWN_CRITERIA), SetFill(1, 0), SetToolTip(STR_TOOLTIP_SORT_CRITERIA),
 			EndContainer(),
 			/* Matrix. */
-			NWidget(WWT_MATRIX, COLOUR_DARK_GREEN, WID_BBS_BRIDGE_LIST), SetFill(1, 0), SetResize(0, 22), SetMatrixDataTip(1, 0, STR_SELECT_BRIDGE_SELECTION_TOOLTIP), SetScrollbar(WID_BBS_SCROLLBAR),
+			NWidget(WWT_MATRIX, Colours::DarkGreen, WID_BBS_BRIDGE_LIST), SetFill(1, 0), SetResize(0, 22), SetMatrixDataTip(1, 0, STR_SELECT_BRIDGE_SELECTION_TOOLTIP), SetScrollbar(WID_BBS_SCROLLBAR),
 		EndContainer(),
 
 		/* scrollbar + resize button */
 		NWidget(NWID_VERTICAL),
-			NWidget(NWID_VSCROLLBAR, COLOUR_DARK_GREEN, WID_BBS_SCROLLBAR),
-			NWidget(WWT_RESIZEBOX, COLOUR_DARK_GREEN),
+			NWidget(NWID_VSCROLLBAR, Colours::DarkGreen, WID_BBS_SCROLLBAR),
+			NWidget(WWT_RESIZEBOX, Colours::DarkGreen),
 		EndContainer(),
 	EndContainer(),
 };
 
 /** Window definition for the rail bridge selection window. */
 static WindowDesc _build_bridge_desc(
-	WDP_AUTO, "build_bridge", 200, 114,
-	WC_BUILD_BRIDGE, WC_BUILD_TOOLBAR,
-	WDF_CONSTRUCTION,
-	_nested_build_bridge_widgets, lengthof(_nested_build_bridge_widgets)
+	WindowPosition::Automatic, "build_bridge", 200, 114,
+	WindowClass::BuildBridge, WindowClass::BuildToolbar,
+	WindowDefaultFlag::Construction,
+	_nested_build_bridge_widgets
 );
 
 /**
@@ -356,17 +365,12 @@ static WindowDesc _build_bridge_desc(
  * @param start The start tile of the bridge
  * @param end The end tile of the bridge
  * @param transport_type The transport type
- * @param road_rail_type The road/rail type
+ * @param railtype The rail type for a rail bridge, or \c INVALID_RAILTYPE
+ * @param roadtype The road type for a road bridge, or \c INVALID_ROADTYPE
  */
-void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transport_type, byte road_rail_type)
+void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transport_type, RailType railtype, RoadType roadtype)
 {
-	DeleteWindowByClass(WC_BUILD_BRIDGE);
-
-	/* Data type for the bridge.
-	 * Bit 16,15 = transport type,
-	 *     14..8 = road/rail types,
-	 *      7..0 = type of bridge */
-	uint32 type = (transport_type << 15) | (road_rail_type << 8);
+	CloseWindowByClass(WindowClass::BuildBridge);
 
 	/* The bridge length without ramps. */
 	const uint bridge_len = GetTunnelBridgeLength(start, end);
@@ -378,32 +382,27 @@ void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transpo
 	 */
 	BridgeType last_bridge_type = 0;
 	switch (transport_type) {
-		case TRANSPORT_ROAD: last_bridge_type = _last_roadbridge_type; break;
-		case TRANSPORT_RAIL: last_bridge_type = _last_railbridge_type; break;
+		case TransportType::Road: last_bridge_type = _last_roadbridge_type; break;
+		case TransportType::Rail: last_bridge_type = _last_railbridge_type; break;
 		default: break; // water ways and air routes don't have bridge types
 	}
-	if (_ctrl_pressed && CheckBridgeAvailability(last_bridge_type, bridge_len).Succeeded()) {
-		DoCommandP(end, start, type | last_bridge_type, CMD_BUILD_BRIDGE | CMD_MSG(STR_ERROR_CAN_T_BUILD_BRIDGE_HERE), CcBuildBridge);
+	if (IsCtrlPressed() && CheckBridgeAvailability(last_bridge_type, bridge_len).Succeeded()) {
+		Command<Commands::BuildBridge>::Post(STR_ERROR_CAN_T_BUILD_BRIDGE_HERE, CcBuildBridge, end, start, transport_type, last_bridge_type, railtype, roadtype);
 		return;
 	}
 
 	/* only query bridge building possibility once, result is the same for all bridges!
 	 * returns CMD_ERROR on failure, and price on success */
-	StringID errmsg = INVALID_STRING_ID;
-	CommandCost ret = DoCommand(end, start, type, CommandFlagsToDCFlags(GetCommandFlags(CMD_BUILD_BRIDGE)) | DC_QUERY_COST, CMD_BUILD_BRIDGE);
+	CommandCost ret = Command<Commands::BuildBridge>::Do(CommandFlagsToDCFlags(GetCommandFlags<Commands::BuildBridge>()) | DoCommandFlag::QueryCost, end, start, transport_type, 0, railtype, roadtype);
 
-	GUIBridgeList *bl = nullptr;
-	if (ret.Failed()) {
-		errmsg = ret.GetErrorMessage();
-	} else {
+	GUIBridgeList bl;
+	if (!ret.Failed()) {
 		/* check which bridges can be built */
 		const uint tot_bridgedata_len = CalcBridgeLenCostFactor(bridge_len + 2);
 
-		bl = new GUIBridgeList();
-
 		Money infra_cost = 0;
 		switch (transport_type) {
-			case TRANSPORT_ROAD: {
+			case TransportType::Road: {
 				/* In case we add a new road type as well, we must be aware of those costs. */
 				RoadType road_rt = INVALID_ROADTYPE;
 				RoadType tram_rt = INVALID_ROADTYPE;
@@ -411,10 +410,10 @@ void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transpo
 					road_rt = GetRoadTypeRoad(start);
 					tram_rt = GetRoadTypeTram(start);
 				}
-				if (RoadTypeIsRoad((RoadType)road_rail_type)) {
-					road_rt = (RoadType)road_rail_type;
+				if (RoadTypeIsRoad(roadtype)) {
+					road_rt = roadtype;
 				} else {
-					tram_rt = (RoadType)road_rail_type;
+					tram_rt = roadtype;
 				}
 
 				if (road_rt != INVALID_ROADTYPE) infra_cost += (bridge_len + 2) * 2 * RoadBuildCost(road_rt);
@@ -422,7 +421,7 @@ void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transpo
 
 				break;
 			}
-			case TRANSPORT_RAIL: infra_cost = (bridge_len + 2) * RailBuildCost((RailType)road_rail_type); break;
+			case TransportType::Rail: infra_cost = (bridge_len + 2) * RailBuildCost(railtype); break;
 			default: break;
 		}
 
@@ -433,26 +432,22 @@ void ShowBuildBridgeWindow(TileIndex start, TileIndex end, TransportType transpo
 			type_check = CheckBridgeAvailability(brd_type, bridge_len);
 			if (type_check.Succeeded()) {
 				/* bridge is accepted, add to list */
-				BuildBridgeData &item = bl->emplace_back();
+				BuildBridgeData &item = bl.emplace_back();
 				item.index = brd_type;
 				item.spec = GetBridgeSpec(brd_type);
 				/* Add to terraforming & bulldozing costs the cost of the
-				 * bridge itself (not computed with DC_QUERY_COST) */
-				item.cost = ret.GetCost() + (((int64)tot_bridgedata_len * _price[PR_BUILD_BRIDGE] * item.spec->price) >> 8) + infra_cost;
+				 * bridge itself (not computed with DoCommandFlag::QueryCost) */
+				item.cost = ret.GetCost() + (((int64_t)tot_bridgedata_len * _price[Price::BuildBridge] * item.spec->price) >> 8) + infra_cost;
 				any_available = true;
 			}
 		}
 		/* give error cause if no bridges available here*/
-		if (!any_available)
-		{
-			errmsg = type_check.GetErrorMessage();
-		}
+		if (!any_available) ret = std::move(type_check);
 	}
 
-	if (bl != nullptr && bl->size() != 0) {
-		new BuildBridgeWindow(&_build_bridge_desc, start, end, type, bl);
+	if (!bl.empty()) {
+		new BuildBridgeWindow(_build_bridge_desc, start, end, transport_type, railtype, roadtype, std::move(bl));
 	} else {
-		delete bl;
-		ShowErrorMessage(STR_ERROR_CAN_T_BUILD_BRIDGE_HERE, errmsg, WL_INFO, TileX(end) * TILE_SIZE, TileY(end) * TILE_SIZE);
+		ShowErrorMessage(GetEncodedString(STR_ERROR_CAN_T_BUILD_BRIDGE_HERE), TileX(end) * TILE_SIZE, TileY(end) * TILE_SIZE, ret);
 	}
 }

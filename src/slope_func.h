@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file slope_func.h Functions related to slopes. */
@@ -21,9 +21,9 @@
  * @param corner A #Corner.
  * @return true iff corner is in a valid range.
  */
-static inline bool IsValidCorner(Corner corner)
+static constexpr bool IsValidCorner(Corner corner)
 {
-	return IsInsideMM(corner, 0, CORNER_END);
+	return corner < Corner::End;
 }
 
 
@@ -33,9 +33,19 @@ static inline bool IsValidCorner(Corner corner)
  * @param s The given #Slope.
  * @return True if the slope is steep, else false.
  */
-static inline bool IsSteepSlope(Slope s)
+static constexpr bool IsSteepSlope(Slope s)
 {
 	return (s & SLOPE_STEEP) != 0;
+}
+
+/**
+ * Removes a steep flag from a slope
+ * @param s A #Slope to get modified version of.
+ * @return The slope s without the steep flag.
+ */
+static constexpr Slope RemoveSteepSlope(Slope s)
+{
+	return s & ~SLOPE_STEEP;
 }
 
 /**
@@ -44,7 +54,7 @@ static inline bool IsSteepSlope(Slope s)
  * @param s The given #Slope.
  * @return True if the slope is non-continuous, else false.
  */
-static inline bool IsHalftileSlope(Slope s)
+static constexpr bool IsHalftileSlope(Slope s)
 {
 	return (s & SLOPE_HALFTILE) != 0;
 }
@@ -57,7 +67,7 @@ static inline bool IsHalftileSlope(Slope s)
  * @param s A #Slope.
  * @return The slope s without its halftile slope.
  */
-static inline Slope RemoveHalftileSlope(Slope s)
+static constexpr Slope RemoveHalftileSlope(Slope s)
 {
 	return s & ~SLOPE_HALFTILE_MASK;
 }
@@ -73,7 +83,7 @@ static inline Slope RemoveHalftileSlope(Slope s)
  * @param s The #Slope to get the complement.
  * @return a complement Slope of the given slope.
  */
-static inline Slope ComplementSlope(Slope s)
+inline Slope ComplementSlope(Slope s)
 {
 	assert(!IsSteepSlope(s) && !IsHalftileSlope(s));
 	return s ^ SLOPE_ELEVATED;
@@ -85,7 +95,7 @@ static inline Slope ComplementSlope(Slope s)
  * @param s The #Slope
  * @return true iff exactly one corner is raised
  */
-static inline bool IsSlopeWithOneCornerRaised(Slope s)
+inline bool IsSlopeWithOneCornerRaised(Slope s)
 {
 	return (s == SLOPE_W) || (s == SLOPE_S) || (s == SLOPE_E) || (s == SLOPE_N);
 }
@@ -96,10 +106,10 @@ static inline bool IsSlopeWithOneCornerRaised(Slope s)
  * @param corner The #Corner.
  * @return The #Slope with corner "corner" raised.
  */
-static inline Slope SlopeWithOneCornerRaised(Corner corner)
+inline Slope SlopeWithOneCornerRaised(Corner corner)
 {
 	assert(IsValidCorner(corner));
-	return (Slope)(1 << corner);
+	return static_cast<Slope>(1 << to_underlying(corner));
 }
 
 /**
@@ -110,7 +120,7 @@ static inline Slope SlopeWithOneCornerRaised(Corner corner)
  * @param s The #Slope.
  * @return  true iff the slope has a highest corner.
  */
-static inline bool HasSlopeHighestCorner(Slope s)
+inline bool HasSlopeHighestCorner(Slope s)
 {
 	s = RemoveHalftileSlope(s);
 	return IsSteepSlope(s) || IsSlopeWithOneCornerRaised(s);
@@ -123,17 +133,17 @@ static inline bool HasSlopeHighestCorner(Slope s)
  * @param s  The #Slope.
  * @return   Highest corner.
  */
-static inline Corner GetHighestSlopeCorner(Slope s)
+inline Corner GetHighestSlopeCorner(Slope s)
 {
 	switch (RemoveHalftileSlope(s)) {
 		case SLOPE_W:
-		case SLOPE_STEEP_W: return CORNER_W;
+		case SLOPE_STEEP_W: return Corner::W;
 		case SLOPE_S:
-		case SLOPE_STEEP_S: return CORNER_S;
+		case SLOPE_STEEP_S: return Corner::S;
 		case SLOPE_E:
-		case SLOPE_STEEP_E: return CORNER_E;
+		case SLOPE_STEEP_E: return Corner::E;
 		case SLOPE_N:
-		case SLOPE_STEEP_N: return CORNER_N;
+		case SLOPE_STEEP_N: return Corner::N;
 		default: NOT_REACHED();
 	}
 }
@@ -145,7 +155,7 @@ static inline Corner GetHighestSlopeCorner(Slope s)
  * @param s The #Slope.
  * @return  The corner of the leveled halftile.
  */
-static inline Corner GetHalftileSlopeCorner(Slope s)
+static constexpr Corner GetHalftileSlopeCorner(Slope s)
 {
 	assert(IsHalftileSlope(s));
 	return (Corner)((s >> 6) & 3);
@@ -157,7 +167,7 @@ static inline Corner GetHalftileSlopeCorner(Slope s)
  * @param s The #Slope.
  * @return Relative height of highest corner.
  */
-static inline int GetSlopeMaxZ(Slope s)
+static constexpr int GetSlopeMaxZ(Slope s)
 {
 	if (s == SLOPE_FLAT) return 0;
 	if (IsSteepSlope(s)) return 2;
@@ -170,7 +180,7 @@ static inline int GetSlopeMaxZ(Slope s)
  * @param s The #Slope.
  * @return Relative height of highest corner.
  */
-static inline int GetSlopeMaxPixelZ(Slope s)
+static constexpr int GetSlopeMaxPixelZ(Slope s)
 {
 	return GetSlopeMaxZ(s) * TILE_HEIGHT;
 }
@@ -181,9 +191,9 @@ static inline int GetSlopeMaxPixelZ(Slope s)
  * @param corner A #Corner.
  * @return The opposite corner to "corner".
  */
-static inline Corner OppositeCorner(Corner corner)
+inline Corner OppositeCorner(Corner corner)
 {
-	return (Corner)(corner ^ 2);
+	return static_cast<Corner>(to_underlying(corner) ^ 2);
 }
 
 /**
@@ -192,7 +202,7 @@ static inline Corner OppositeCorner(Corner corner)
  * @param s The #Slope
  * @return true iff exactly three corners are raised
  */
-static inline bool IsSlopeWithThreeCornersRaised(Slope s)
+inline bool IsSlopeWithThreeCornersRaised(Slope s)
 {
 	return !IsHalftileSlope(s) && !IsSteepSlope(s) && IsSlopeWithOneCornerRaised(ComplementSlope(s));
 }
@@ -203,7 +213,7 @@ static inline bool IsSlopeWithThreeCornersRaised(Slope s)
  * @param corner The #Corner.
  * @return The #Slope with all corners but "corner" raised.
  */
-static inline Slope SlopeWithThreeCornersRaised(Corner corner)
+inline Slope SlopeWithThreeCornersRaised(Corner corner)
 {
 	return ComplementSlope(SlopeWithOneCornerRaised(corner));
 }
@@ -214,7 +224,7 @@ static inline Slope SlopeWithThreeCornersRaised(Corner corner)
  * @param corner A #Corner.
  * @return The steep #Slope with "corner" as highest corner.
  */
-static inline Slope SteepSlope(Corner corner)
+inline Slope SteepSlope(Corner corner)
 {
 	return SLOPE_STEEP | SlopeWithThreeCornersRaised(OppositeCorner(corner));
 }
@@ -225,7 +235,7 @@ static inline Slope SteepSlope(Corner corner)
  * @param s The #Slope
  * @return true iff the slope is inclined.
  */
-static inline bool IsInclinedSlope(Slope s)
+inline bool IsInclinedSlope(Slope s)
 {
 	return (s == SLOPE_NW) || (s == SLOPE_SW) || (s == SLOPE_SE) || (s == SLOPE_NE);
 }
@@ -234,16 +244,16 @@ static inline bool IsInclinedSlope(Slope s)
  * Returns the direction of an inclined slope.
  *
  * @param s A #Slope
- * @return The direction the slope goes up in. Or INVALID_DIAGDIR if the slope is not an inclined slope.
+ * @return The direction the slope goes up in. Or DiagDirection::Invalid if the slope is not an inclined slope.
  */
-static inline DiagDirection GetInclinedSlopeDirection(Slope s)
+inline DiagDirection GetInclinedSlopeDirection(Slope s)
 {
 	switch (s) {
-		case SLOPE_NE: return DIAGDIR_NE;
-		case SLOPE_SE: return DIAGDIR_SE;
-		case SLOPE_SW: return DIAGDIR_SW;
-		case SLOPE_NW: return DIAGDIR_NW;
-		default: return INVALID_DIAGDIR;
+		case SLOPE_NE: return DiagDirection::NE;
+		case SLOPE_SE: return DiagDirection::SE;
+		case SLOPE_SW: return DiagDirection::SW;
+		case SLOPE_NW: return DiagDirection::NW;
+		default: return DiagDirection::Invalid;
 	}
 }
 
@@ -253,13 +263,13 @@ static inline DiagDirection GetInclinedSlopeDirection(Slope s)
  * @param dir A #DiagDirection
  * @return The #Slope that goes up in direction dir.
  */
-static inline Slope InclinedSlope(DiagDirection dir)
+inline Slope InclinedSlope(DiagDirection dir)
 {
 	switch (dir) {
-		case DIAGDIR_NE: return SLOPE_NE;
-		case DIAGDIR_SE: return SLOPE_SE;
-		case DIAGDIR_SW: return SLOPE_SW;
-		case DIAGDIR_NW: return SLOPE_NW;
+		case DiagDirection::NE: return SLOPE_NE;
+		case DiagDirection::SE: return SLOPE_SE;
+		case DiagDirection::SW: return SLOPE_SW;
+		case DiagDirection::NW: return SLOPE_NW;
 		default: NOT_REACHED();
 	}
 }
@@ -271,22 +281,22 @@ static inline Slope InclinedSlope(DiagDirection dir)
  * @param corner The #Corner of the halftile.
  * @return The #Slope s with the halftile slope added.
  */
-static inline Slope HalftileSlope(Slope s, Corner corner)
+static constexpr Slope HalftileSlope(Slope s, Corner corner)
 {
 	assert(IsValidCorner(corner));
-	return (Slope)(s | SLOPE_HALFTILE | (corner << 6));
+	return static_cast<Slope>(s | SLOPE_HALFTILE | (to_underlying(corner) << 6));
 }
 
 
 /**
- * Tests for FOUNDATION_NONE.
+ * Tests whether the given foundation is a foundation.
  *
  * @param f  Maybe a #Foundation.
  * @return   true iff f is a foundation.
  */
-static inline bool IsFoundation(Foundation f)
+inline bool IsFoundation(Foundation f)
 {
-	return f != FOUNDATION_NONE;
+	return f != Foundation::None;
 }
 
 /**
@@ -295,9 +305,9 @@ static inline bool IsFoundation(Foundation f)
  * @param f  The #Foundation.
  * @return   true iff f is a leveled foundation.
  */
-static inline bool IsLeveledFoundation(Foundation f)
+inline bool IsLeveledFoundation(Foundation f)
 {
-	return f == FOUNDATION_LEVELED;
+	return f == Foundation::Leveled;
 }
 
 /**
@@ -306,34 +316,34 @@ static inline bool IsLeveledFoundation(Foundation f)
  * @param f  The #Foundation.
  * @return   true iff f is an inclined foundation.
  */
-static inline bool IsInclinedFoundation(Foundation f)
+inline bool IsInclinedFoundation(Foundation f)
 {
-	return (f == FOUNDATION_INCLINED_X) || (f == FOUNDATION_INCLINED_Y);
+	return (f == Foundation::InclinedX) || (f == Foundation::InclinedY);
 }
 
 /**
- * Tests if a foundation is a non-continuous foundation, i.e. halftile-foundation or FOUNDATION_STEEP_BOTH.
+ * Tests if a foundation is a non-continuous foundation, i.e. halftile-foundation or Foundation::SteepBoth.
  *
  * @param f  The #Foundation.
  * @return   true iff f is a non-continuous foundation
  */
-static inline bool IsNonContinuousFoundation(Foundation f)
+inline bool IsNonContinuousFoundation(Foundation f)
 {
-	return IsInsideMM(f, FOUNDATION_STEEP_BOTH, FOUNDATION_HALFTILE_N + 1);
+	return IsInsideMM(f, Foundation::SteepBoth, Foundation::HalfTileEnd);
 }
 
 /**
  * Returns the halftile corner of a halftile-foundation
  *
- * @pre f != FOUNDATION_STEEP_BOTH
+ * @pre f != Foundation::SteepBoth
  *
  * @param f  The #Foundation.
  * @return   The #Corner with track.
  */
-static inline Corner GetHalftileFoundationCorner(Foundation f)
+inline Corner GetHalftileFoundationCorner(Foundation f)
 {
-	assert(IsInsideMM(f, FOUNDATION_HALFTILE_W, FOUNDATION_HALFTILE_N + 1));
-	return (Corner)(f - FOUNDATION_HALFTILE_W);
+	assert(IsInsideMM(f, Foundation::HalfTileW, Foundation::HalfTileEnd));
+	return static_cast<Corner>(to_underlying(f) - to_underlying(Foundation::HalfTileW));
 }
 
 /**
@@ -342,9 +352,9 @@ static inline Corner GetHalftileFoundationCorner(Foundation f)
  * @param f  The #Foundation.
  * @return   true iff f is a special rail foundation for single horizontal/vertical track.
  */
-static inline bool IsSpecialRailFoundation(Foundation f)
+inline bool IsSpecialRailFoundation(Foundation f)
 {
-	return IsInsideMM(f, FOUNDATION_RAIL_W, FOUNDATION_RAIL_N + 1);
+	return IsInsideMM(f, Foundation::RailW, Foundation::End);
 }
 
 /**
@@ -353,22 +363,20 @@ static inline bool IsSpecialRailFoundation(Foundation f)
  * @param f  The #Foundation.
  * @return   The #Corner with track.
  */
-static inline Corner GetRailFoundationCorner(Foundation f)
+inline Corner GetRailFoundationCorner(Foundation f)
 {
 	assert(IsSpecialRailFoundation(f));
-	return (Corner)(f - FOUNDATION_RAIL_W);
+	return static_cast<Corner>(to_underlying(f) - to_underlying(Foundation::RailW));
 }
 
 /**
  * Returns the foundation needed to flatten a slope.
- * The returned foundation is either FOUNDATION_NONE if the tile was already flat, or FOUNDATION_LEVELED.
- *
  * @param s  The current #Slope.
- * @return   The needed #Foundation.
+ * @return Either Foundation::None if the tile was already flat, or Foundation::Leveled.
  */
-static inline Foundation FlatteningFoundation(Slope s)
+inline Foundation FlatteningFoundation(Slope s)
 {
-	return (s == SLOPE_FLAT ? FOUNDATION_NONE : FOUNDATION_LEVELED);
+	return (s == SLOPE_FLAT ? Foundation::None : Foundation::Leveled);
 }
 
 /**
@@ -377,9 +385,9 @@ static inline Foundation FlatteningFoundation(Slope s)
  * @param axis  The #Axis.
  * @return      The needed #Foundation.
  */
-static inline Foundation InclinedFoundation(Axis axis)
+inline Foundation InclinedFoundation(Axis axis)
 {
-	return (axis == AXIS_X ? FOUNDATION_INCLINED_X : FOUNDATION_INCLINED_Y);
+	return (axis == Axis::X ? Foundation::InclinedX : Foundation::InclinedY);
 }
 
 /**
@@ -388,10 +396,10 @@ static inline Foundation InclinedFoundation(Axis axis)
  * @param corner The #Corner with the track.
  * @return       The wanted #Foundation.
  */
-static inline Foundation HalftileFoundation(Corner corner)
+inline Foundation HalftileFoundation(Corner corner)
 {
 	assert(IsValidCorner(corner));
-	return (Foundation)(FOUNDATION_HALFTILE_W + corner);
+	return static_cast<Foundation>(static_cast<uint>(Foundation::HalfTileW) + static_cast<uint>(corner));
 }
 
 /**
@@ -400,10 +408,10 @@ static inline Foundation HalftileFoundation(Corner corner)
  * @param corner The #Corner with the track.
  * @return       The wanted #Foundation.
  */
-static inline Foundation SpecialRailFoundation(Corner corner)
+inline Foundation SpecialRailFoundation(Corner corner)
 {
 	assert(IsValidCorner(corner));
-	return (Foundation)(FOUNDATION_RAIL_W + corner);
+	return static_cast<Foundation>(static_cast<uint>(Foundation::RailW) + static_cast<uint>(corner));
 }
 
 /**
@@ -412,9 +420,9 @@ static inline Foundation SpecialRailFoundation(Corner corner)
  * @param s The #Slope to get the offset for.
  * @return The sprite offset for this #Slope.
  */
-static inline uint SlopeToSpriteOffset(Slope s)
+inline uint SlopeToSpriteOffset(Slope s)
 {
-	extern const byte _slope_to_sprite_offset[32];
+	extern const SlopeIndexArray<uint8_t> _slope_to_sprite_offset;
 	return _slope_to_sprite_offset[s];
 }
 

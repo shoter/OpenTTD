@@ -2,12 +2,18 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file company_sl.cpp Code handling saving and loading of company data */
+/** @file company_sl.cpp Code handling saving and loading of company data. */
 
 #include "../stdafx.h"
+
+#include "saveload.h"
+#include "saveload_error.hpp"
+#include "compat/company_sl_compat.h"
+
+#include "../autoreplace_base.h"
 #include "../company_func.h"
 #include "../company_manager_face.h"
 #include "../fios.h"
@@ -16,11 +22,23 @@
 #include "../station_base.h"
 #include "../strings_func.h"
 
-#include "saveload.h"
-
 #include "table/strings.h"
 
 #include "../safeguards.h"
+
+/**
+ * Search for a face variable by type and name.
+ * @param style Face style to find variable in.
+ * @param type Type of variable to look up.
+ * @param name Name (string) of variable to look up.
+ * @return Face variable if present, otherwise nullptr.
+ */
+static const FaceVar *FindFaceVar(FaceVars style, FaceVarType type, StringID name)
+{
+	auto it = std::ranges::find_if(style, [type, name](const FaceVar &facevar) { return facevar.type == type && facevar.name == name; });
+	if (it != std::end(style)) return &*it;
+	return nullptr;
+}
 
 /**
  * Converts an old company manager's face format to the new company manager's face format
@@ -40,51 +58,67 @@
  * @param face the face in the old format
  * @return the face in the new format
  */
-CompanyManagerFace ConvertFromOldCompanyManagerFace(uint32 face)
+CompanyManagerFace ConvertFromOldCompanyManagerFace(uint32_t face)
 {
-	CompanyManagerFace cmf = 0;
-	GenderEthnicity ge = GE_WM;
+	CompanyManagerFace cmf{};
 
-	if (HasBit(face, 31)) SetBit(ge, GENDER_FEMALE);
-	if (HasBit(face, 27) && (HasBit(face, 26) == HasBit(face, 19))) SetBit(ge, ETHNICITY_BLACK);
+	if (HasBit(face, 31)) cmf.style += 1;
+	if (HasBit(face, 27) && (HasBit(face, 26) == HasBit(face, 19))) cmf.style += 2;
 
-	SetCompanyManagerFaceBits(cmf, CMFV_GEN_ETHN,    ge, ge);
-	SetCompanyManagerFaceBits(cmf, CMFV_HAS_GLASSES, ge, GB(face, 28, 3) <= 1);
-	SetCompanyManagerFaceBits(cmf, CMFV_EYE_COLOUR,  ge, HasBit(ge, ETHNICITY_BLACK) ? 0 : ClampU(GB(face, 20, 3), 5, 7) - 5);
-	SetCompanyManagerFaceBits(cmf, CMFV_CHIN,        ge, ScaleCompanyManagerFaceValue(CMFV_CHIN,     ge, GB(face,  4, 2)));
-	SetCompanyManagerFaceBits(cmf, CMFV_EYEBROWS,    ge, ScaleCompanyManagerFaceValue(CMFV_EYEBROWS, ge, GB(face,  6, 4)));
-	SetCompanyManagerFaceBits(cmf, CMFV_HAIR,        ge, ScaleCompanyManagerFaceValue(CMFV_HAIR,     ge, GB(face, 16, 4)));
-	SetCompanyManagerFaceBits(cmf, CMFV_JACKET,      ge, ScaleCompanyManagerFaceValue(CMFV_JACKET,   ge, GB(face, 20, 2)));
-	SetCompanyManagerFaceBits(cmf, CMFV_COLLAR,      ge, ScaleCompanyManagerFaceValue(CMFV_COLLAR,   ge, GB(face, 22, 2)));
-	SetCompanyManagerFaceBits(cmf, CMFV_GLASSES,     ge, GB(face, 28, 1));
+	const FaceSpec *spec = GetCompanyManagerFaceSpec(cmf.style);
+	FaceVars vars = spec->GetFaceVars();
+
+	cmf.style_label = spec->label;
+
+	if (auto var = FindFaceVar(vars, FaceVarType::Toggle, STR_FACE_GLASSES); var != nullptr) var->SetBits(cmf, GB(face, 28, 3) <= 1);
+	if (auto var = FindFaceVar(vars, FaceVarType::Palette, STR_FACE_EYECOLOUR); var != nullptr) var->SetBits(cmf, ClampU(GB(face, 20, 3), 5, 7) - 5);
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_CHIN); var != nullptr) var->SetBits(cmf, var->ScaleBits(GB(face, 4, 2)));
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_EYEBROWS); var != nullptr) var->SetBits(cmf, var->ScaleBits(GB(face, 6, 4)));
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_HAIR); var != nullptr) var->SetBits(cmf, var->ScaleBits(GB(face, 16, 4)));
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_JACKET); var != nullptr) var->SetBits(cmf, var->ScaleBits(GB(face, 20, 2)));
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_COLLAR); var != nullptr) var->SetBits(cmf, var->ScaleBits(GB(face, 22, 2)));
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_GLASSES); var != nullptr) var->SetBits(cmf, GB(face, 28, 1));
 
 	uint lips = GB(face, 10, 4);
-	if (!HasBit(ge, GENDER_FEMALE) && lips < 4) {
-		SetCompanyManagerFaceBits(cmf, CMFV_HAS_MOUSTACHE, ge, true);
-		SetCompanyManagerFaceBits(cmf, CMFV_MOUSTACHE,     ge, max(lips, 1U) - 1);
+	if (cmf.style != 1 && cmf.style != 3 && lips < 4) {
+		if (auto var = FindFaceVar(vars, FaceVarType::Toggle, STR_FACE_MOUSTACHE); var != nullptr) var->SetBits(cmf, true);
+		if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_MOUSTACHE); var != nullptr) var->SetBits(cmf, std::max(lips, 1U) - 1);
 	} else {
-		if (!HasBit(ge, GENDER_FEMALE)) {
-			lips = lips * 15 / 16;
-			lips -= 3;
-			if (HasBit(ge, ETHNICITY_BLACK) && lips > 8) lips = 0;
-		} else {
-			lips = ScaleCompanyManagerFaceValue(CMFV_LIPS, ge, lips);
+		if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_LIPS); var != nullptr) {
+			if (cmf.style == 0 || cmf.style == 2) {
+				lips = lips * 15 / 16;
+				lips -= 3;
+				if (cmf.style == 2 && lips > 8) lips = 0;
+			} else {
+				lips = var->ScaleBits(lips);
+			}
+			var->SetBits(cmf, lips);
 		}
-		SetCompanyManagerFaceBits(cmf, CMFV_LIPS, ge, lips);
 
-		uint nose = GB(face, 13, 3);
-		if (ge == GE_WF) {
-			nose = (nose * 3 >> 3) * 3 >> 2; // There is 'hole' in the nose sprites for females
-		} else {
-			nose = ScaleCompanyManagerFaceValue(CMFV_NOSE, ge, nose);
+		if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_NOSE); var != nullptr) {
+			uint nose = GB(face, 13, 3);
+			if (cmf.style == 1) {
+				nose = (nose * 3 >> 3) * 3 >> 2; // There is 'hole' in the nose sprites for women
+			} else {
+				nose = var->ScaleBits(nose);
+			}
+			var->SetBits(cmf, nose);
 		}
-		SetCompanyManagerFaceBits(cmf, CMFV_NOSE, ge, nose);
 	}
 
-	uint tie_earring = GB(face, 24, 4);
-	if (!HasBit(ge, GENDER_FEMALE) || tie_earring < 3) { // Not all females have an earring
-		if (HasBit(ge, GENDER_FEMALE)) SetCompanyManagerFaceBits(cmf, CMFV_HAS_TIE_EARRING, ge, true);
-		SetCompanyManagerFaceBits(cmf, CMFV_TIE_EARRING, ge, HasBit(ge, GENDER_FEMALE) ? tie_earring : ScaleCompanyManagerFaceValue(CMFV_TIE_EARRING, ge, tie_earring / 2));
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_TIE); var != nullptr) {
+		uint tie = GB(face, 24, 4);
+		var->SetBits(cmf, var->ScaleBits(tie / 2));
+	}
+
+	if (auto var = FindFaceVar(vars, FaceVarType::Sprite, STR_FACE_EARRING); var != nullptr) {
+		uint earring = GB(face, 24, 4);
+		if (earring < 3) { // Not all women have an earring
+			if (auto has_earring = FindFaceVar(vars, FaceVarType::Toggle, STR_FACE_EARRING)) {
+				has_earring->SetBits(cmf, true);
+				var->SetBits(cmf, earring);
+			}
+		}
 	}
 
 	return cmf;
@@ -94,25 +128,25 @@ CompanyManagerFace ConvertFromOldCompanyManagerFace(uint32 face)
 void AfterLoadCompanyStats()
 {
 	/* Reset infrastructure statistics to zero. */
-	for (Company *c : Company::Iterate()) MemSetT(&c->infrastructure, 0);
+	for (Company *c : Company::Iterate()) c->infrastructure = {};
 
 	/* Collect airport count. */
 	for (const Station *st : Station::Iterate()) {
-		if ((st->facilities & FACIL_AIRPORT) && Company::IsValidID(st->owner)) {
+		if (st->facilities.Test(StationFacility::Airport) && Company::IsValidID(st->owner)) {
 			Company::Get(st->owner)->infrastructure.airport++;
 		}
 	}
 
 	Company *c;
-	for (TileIndex tile = 0; tile < MapSize(); tile++) {
+	for (const auto tile : Map::Iterate()) {
 		switch (GetTileType(tile)) {
-			case MP_RAILWAY:
+			case TileType::Railway:
 				c = Company::GetIfValid(GetTileOwner(tile));
 				if (c != nullptr) {
 					uint pieces = 1;
 					if (IsPlainRail(tile)) {
 						TrackBits bits = GetTrackBits(tile);
-						pieces = CountBits(bits);
+						pieces = bits.Count();
 						if (TracksOverlap(bits)) pieces *= pieces;
 					}
 					c->infrastructure.rail[GetRailType(tile)] += pieces;
@@ -121,37 +155,38 @@ void AfterLoadCompanyStats()
 				}
 				break;
 
-			case MP_ROAD: {
+			case TileType::Road: {
 				if (IsLevelCrossing(tile)) {
 					c = Company::GetIfValid(GetTileOwner(tile));
 					if (c != nullptr) c->infrastructure.rail[GetRailType(tile)] += LEVELCROSSING_TRACKBIT_FACTOR;
 				}
 
 				/* Iterate all present road types as each can have a different owner. */
-				FOR_ALL_ROADTRAMTYPES(rtt) {
+				for (RoadTramType rtt : ROADTRAMTYPES_ALL) {
 					RoadType rt = GetRoadType(tile, rtt);
 					if (rt == INVALID_ROADTYPE) continue;
 					c = Company::GetIfValid(IsRoadDepot(tile) ? GetTileOwner(tile) : GetRoadOwner(tile, rtt));
 					/* A level crossings and depots have two road bits. */
-					if (c != nullptr) c->infrastructure.road[rt] += IsNormalRoad(tile) ? CountBits(GetRoadBits(tile, rtt)) : 2;
+					if (c != nullptr) c->infrastructure.road[rt] += IsNormalRoad(tile) ? GetRoadBits(tile, rtt).Count() : 2;
 				}
 				break;
 			}
 
-			case MP_STATION:
+			case TileType::Station:
 				c = Company::GetIfValid(GetTileOwner(tile));
-				if (c != nullptr && GetStationType(tile) != STATION_AIRPORT && !IsBuoy(tile)) c->infrastructure.station++;
+				if (c != nullptr && GetStationType(tile) != StationType::Airport && !IsBuoy(tile)) c->infrastructure.station++;
 
 				switch (GetStationType(tile)) {
-					case STATION_RAIL:
-					case STATION_WAYPOINT:
+					case StationType::Rail:
+					case StationType::RailWaypoint:
 						if (c != nullptr && !IsStationTileBlocked(tile)) c->infrastructure.rail[GetRailType(tile)]++;
 						break;
 
-					case STATION_BUS:
-					case STATION_TRUCK: {
+					case StationType::Bus:
+					case StationType::Truck:
+					case StationType::RoadWaypoint: {
 						/* Iterate all present road types as each can have a different owner. */
-						FOR_ALL_ROADTRAMTYPES(rtt) {
+						for (RoadTramType rtt : ROADTRAMTYPES_ALL) {
 							RoadType rt = GetRoadType(tile, rtt);
 							if (rt == INVALID_ROADTYPE) continue;
 							c = Company::GetIfValid(GetRoadOwner(tile, rtt));
@@ -160,9 +195,9 @@ void AfterLoadCompanyStats()
 						break;
 					}
 
-					case STATION_DOCK:
-					case STATION_BUOY:
-						if (GetWaterClass(tile) == WATER_CLASS_CANAL) {
+					case StationType::Dock:
+					case StationType::Buoy:
+						if (GetWaterClass(tile) == WaterClass::Canal) {
 							if (c != nullptr) c->infrastructure.water++;
 						}
 						break;
@@ -172,28 +207,28 @@ void AfterLoadCompanyStats()
 				}
 				break;
 
-			case MP_WATER:
+			case TileType::Water:
 				if (IsShipDepot(tile) || IsLock(tile)) {
 					c = Company::GetIfValid(GetTileOwner(tile));
 					if (c != nullptr) {
 						if (IsShipDepot(tile)) c->infrastructure.water += LOCK_DEPOT_TILE_FACTOR;
-						if (IsLock(tile) && GetLockPart(tile) == LOCK_PART_MIDDLE) {
+						if (IsLock(tile) && GetLockPart(tile) == LockPart::Middle) {
 							/* The middle tile specifies the owner of the lock. */
 							c->infrastructure.water += 3 * LOCK_DEPOT_TILE_FACTOR; // the middle tile specifies the owner of the
 							break; // do not count the middle tile as canal
 						}
 					}
 				}
-				FALLTHROUGH;
+				[[fallthrough]];
 
-			case MP_OBJECT:
-				if (GetWaterClass(tile) == WATER_CLASS_CANAL) {
+			case TileType::Object:
+				if (GetWaterClass(tile) == WaterClass::Canal) {
 					c = Company::GetIfValid(GetTileOwner(tile));
 					if (c != nullptr) c->infrastructure.water++;
 				}
 				break;
 
-			case MP_TUNNELBRIDGE: {
+			case TileType::TunnelBridge: {
 				/* Only count the tunnel/bridge if we're on the northern end tile. */
 				TileIndex other_end = GetOtherTunnelBridgeEnd(tile);
 				if (tile < other_end) {
@@ -202,14 +237,14 @@ void AfterLoadCompanyStats()
 					uint len = (GetTunnelBridgeLength(tile, other_end) + 2) * TUNNELBRIDGE_TRACKBIT_FACTOR;
 
 					switch (GetTunnelBridgeTransportType(tile)) {
-						case TRANSPORT_RAIL:
+						case TransportType::Rail:
 							c = Company::GetIfValid(GetTileOwner(tile));
 							if (c != nullptr) c->infrastructure.rail[GetRailType(tile)] += len;
 							break;
 
-						case TRANSPORT_ROAD: {
+						case TransportType::Road: {
 							/* Iterate all present road types as each can have a different owner. */
-							FOR_ALL_ROADTRAMTYPES(rtt) {
+							for (RoadTramType rtt : ROADTRAMTYPES_ALL) {
 								RoadType rt = GetRoadType(tile, rtt);
 								if (rt == INVALID_ROADTYPE) continue;
 								c = Company::GetIfValid(GetRoadOwner(tile, rtt));
@@ -218,7 +253,7 @@ void AfterLoadCompanyStats()
 							break;
 						}
 
-						case TRANSPORT_WATER:
+						case TransportType::Water:
 							c = Company::GetIfValid(GetTileOwner(tile));
 							if (c != nullptr) c->infrastructure.water += len;
 							break;
@@ -236,308 +271,357 @@ void AfterLoadCompanyStats()
 	}
 }
 
-
-
-/* Save/load of companies */
-static const SaveLoad _company_desc[] = {
-	    SLE_VAR(CompanyProperties, name_2,          SLE_UINT32),
-	    SLE_VAR(CompanyProperties, name_1,          SLE_STRINGID),
-	SLE_CONDSSTR(CompanyProperties, name,            SLE_STR | SLF_ALLOW_CONTROL, SLV_84, SL_MAX_VERSION),
-
-	    SLE_VAR(CompanyProperties, president_name_1, SLE_STRINGID),
-	    SLE_VAR(CompanyProperties, president_name_2, SLE_UINT32),
-	SLE_CONDSSTR(CompanyProperties, president_name,  SLE_STR | SLF_ALLOW_CONTROL, SLV_84, SL_MAX_VERSION),
-
-	    SLE_VAR(CompanyProperties, face,            SLE_UINT32),
-
-	/* money was changed to a 64 bit field in savegame version 1. */
-	SLE_CONDVAR(CompanyProperties, money,                 SLE_VAR_I64 | SLE_FILE_I32,  SL_MIN_VERSION, SLV_1),
-	SLE_CONDVAR(CompanyProperties, money,                 SLE_INT64,                   SLV_1, SL_MAX_VERSION),
-
-	SLE_CONDVAR(CompanyProperties, current_loan,          SLE_VAR_I64 | SLE_FILE_I32,  SL_MIN_VERSION, SLV_65),
-	SLE_CONDVAR(CompanyProperties, current_loan,          SLE_INT64,                  SLV_65, SL_MAX_VERSION),
-
-	    SLE_VAR(CompanyProperties, colour,                SLE_UINT8),
-	    SLE_VAR(CompanyProperties, money_fraction,        SLE_UINT8),
-	SLE_CONDNULL(1,  SL_MIN_VERSION,  SLV_58), ///< avail_railtypes
-	    SLE_VAR(CompanyProperties, block_preview,         SLE_UINT8),
-
-	SLE_CONDNULL(2,  SL_MIN_VERSION,  SLV_94), ///< cargo_types
-	SLE_CONDNULL(4, SLV_94, SLV_170), ///< cargo_types
-	SLE_CONDVAR(CompanyProperties, location_of_HQ,        SLE_FILE_U16 | SLE_VAR_U32,  SL_MIN_VERSION,  SLV_6),
-	SLE_CONDVAR(CompanyProperties, location_of_HQ,        SLE_UINT32,                  SLV_6, SL_MAX_VERSION),
-	SLE_CONDVAR(CompanyProperties, last_build_coordinate, SLE_FILE_U16 | SLE_VAR_U32,  SL_MIN_VERSION,  SLV_6),
-	SLE_CONDVAR(CompanyProperties, last_build_coordinate, SLE_UINT32,                  SLV_6, SL_MAX_VERSION),
-	SLE_CONDVAR(CompanyProperties, inaugurated_year,      SLE_FILE_U8  | SLE_VAR_I32,  SL_MIN_VERSION, SLV_31),
-	SLE_CONDVAR(CompanyProperties, inaugurated_year,      SLE_INT32,                  SLV_31, SL_MAX_VERSION),
-
-	    SLE_ARR(CompanyProperties, share_owners,          SLE_UINT8, 4),
-
-	    SLE_VAR(CompanyProperties, num_valid_stat_ent,    SLE_UINT8),
-
-	    SLE_VAR(CompanyProperties, months_of_bankruptcy,  SLE_UINT8),
-	SLE_CONDVAR(CompanyProperties, bankrupt_asked,        SLE_FILE_U8  | SLE_VAR_U16,  SL_MIN_VERSION, SLV_104),
-	SLE_CONDVAR(CompanyProperties, bankrupt_asked,        SLE_UINT16,                SLV_104, SL_MAX_VERSION),
-	    SLE_VAR(CompanyProperties, bankrupt_timeout,      SLE_INT16),
-	SLE_CONDVAR(CompanyProperties, bankrupt_value,        SLE_VAR_I64 | SLE_FILE_I32,  SL_MIN_VERSION, SLV_65),
-	SLE_CONDVAR(CompanyProperties, bankrupt_value,        SLE_INT64,                  SLV_65, SL_MAX_VERSION),
-
-	/* yearly expenses was changed to 64-bit in savegame version 2. */
-	SLE_CONDARR(CompanyProperties, yearly_expenses,       SLE_FILE_I32 | SLE_VAR_I64, 3 * 13, SL_MIN_VERSION, SLV_2),
-	SLE_CONDARR(CompanyProperties, yearly_expenses,       SLE_INT64, 3 * 13,                  SLV_2, SL_MAX_VERSION),
-
-	SLE_CONDVAR(CompanyProperties, is_ai,                 SLE_BOOL,                    SLV_2, SL_MAX_VERSION),
-	SLE_CONDNULL(1, SLV_107, SLV_112), ///< is_noai
-	SLE_CONDNULL(1, SLV_4, SLV_100),
-
-	SLE_CONDVAR(CompanyProperties, terraform_limit,       SLE_UINT32,                SLV_156, SL_MAX_VERSION),
-	SLE_CONDVAR(CompanyProperties, clear_limit,           SLE_UINT32,                SLV_156, SL_MAX_VERSION),
-	SLE_CONDVAR(CompanyProperties, tree_limit,            SLE_UINT32,                SLV_175, SL_MAX_VERSION),
-
-	SLE_END()
-};
-
-static const SaveLoad _company_settings_desc[] = {
-	/* Engine renewal settings */
-	SLE_CONDNULL(512, SLV_16, SLV_19),
-	SLE_CONDREF(Company, engine_renew_list,            REF_ENGINE_RENEWS,   SLV_19, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.engine_renew,        SLE_BOOL,            SLV_16, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.engine_renew_months, SLE_INT16,           SLV_16, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.engine_renew_money,  SLE_UINT32,          SLV_16, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.renew_keep_length,   SLE_BOOL,             SLV_2, SL_MAX_VERSION),
-
-	/* Default vehicle settings */
-	SLE_CONDVAR(Company, settings.vehicle.servint_ispercent,   SLE_BOOL,     SLV_120, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.vehicle.servint_trains,    SLE_UINT16,     SLV_120, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.vehicle.servint_roadveh,   SLE_UINT16,     SLV_120, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.vehicle.servint_aircraft,  SLE_UINT16,     SLV_120, SL_MAX_VERSION),
-	SLE_CONDVAR(Company, settings.vehicle.servint_ships,     SLE_UINT16,     SLV_120, SL_MAX_VERSION),
-
-	SLE_CONDNULL(63, SLV_2, SLV_144), // old reserved space
-
-	SLE_END()
-};
-
-static const SaveLoad _company_settings_skip_desc[] = {
-	/* Engine renewal settings */
-	SLE_CONDNULL(512, SLV_16, SLV_19),
-	SLE_CONDNULL(2, SLV_19, SLV_69),                 // engine_renew_list
-	SLE_CONDNULL(4, SLV_69, SL_MAX_VERSION),     // engine_renew_list
-	SLE_CONDNULL(1, SLV_16, SL_MAX_VERSION),     // settings.engine_renew
-	SLE_CONDNULL(2, SLV_16, SL_MAX_VERSION),     // settings.engine_renew_months
-	SLE_CONDNULL(4, SLV_16, SL_MAX_VERSION),     // settings.engine_renew_money
-	SLE_CONDNULL(1,  SLV_2, SL_MAX_VERSION),     // settings.renew_keep_length
-
-	/* Default vehicle settings */
-	SLE_CONDNULL(1, SLV_120, SL_MAX_VERSION),    // settings.vehicle.servint_ispercent
-	SLE_CONDNULL(2, SLV_120, SL_MAX_VERSION),    // settings.vehicle.servint_trains
-	SLE_CONDNULL(2, SLV_120, SL_MAX_VERSION),    // settings.vehicle.servint_roadveh
-	SLE_CONDNULL(2, SLV_120, SL_MAX_VERSION),    // settings.vehicle.servint_aircraft
-	SLE_CONDNULL(2, SLV_120, SL_MAX_VERSION),    // settings.vehicle.servint_ships
-
-	SLE_CONDNULL(63, SLV_2, SLV_144), // old reserved space
-
-	SLE_END()
-};
-
-static const SaveLoad _company_economy_desc[] = {
-	/* these were changed to 64-bit in savegame format 2 */
-	SLE_CONDVAR(CompanyEconomyEntry, income,              SLE_FILE_I32 | SLE_VAR_I64, SL_MIN_VERSION, SLV_2),
-	SLE_CONDVAR(CompanyEconomyEntry, income,              SLE_INT64,                  SLV_2, SL_MAX_VERSION),
-	SLE_CONDVAR(CompanyEconomyEntry, expenses,            SLE_FILE_I32 | SLE_VAR_I64, SL_MIN_VERSION, SLV_2),
-	SLE_CONDVAR(CompanyEconomyEntry, expenses,            SLE_INT64,                  SLV_2, SL_MAX_VERSION),
-	SLE_CONDVAR(CompanyEconomyEntry, company_value,       SLE_FILE_I32 | SLE_VAR_I64, SL_MIN_VERSION, SLV_2),
-	SLE_CONDVAR(CompanyEconomyEntry, company_value,       SLE_INT64,                  SLV_2, SL_MAX_VERSION),
-
-	SLE_CONDVAR(CompanyEconomyEntry, delivered_cargo[NUM_CARGO - 1], SLE_INT32,       SL_MIN_VERSION, SLV_170),
-	SLE_CONDARR(CompanyEconomyEntry, delivered_cargo,     SLE_UINT32, 32,           SLV_170, SLV_EXTEND_CARGOTYPES),
-	SLE_CONDARR(CompanyEconomyEntry, delivered_cargo,     SLE_UINT32, NUM_CARGO,    SLV_EXTEND_CARGOTYPES, SL_MAX_VERSION),
-	    SLE_VAR(CompanyEconomyEntry, performance_history, SLE_INT32),
-
-	SLE_END()
-};
-
-/* We do need to read this single value, as the bigger it gets, the more data is stored */
+/** We do need to read this single value, as the bigger it gets, the more data is stored. */
 struct CompanyOldAI {
-	uint8 num_build_rec;
+	uint8_t num_build_rec;
 };
 
-static const SaveLoad _company_ai_desc[] = {
-	SLE_CONDNULL(2,  SL_MIN_VERSION, SLV_107),
-	SLE_CONDNULL(2,  SL_MIN_VERSION, SLV_13),
-	SLE_CONDNULL(4, SLV_13, SLV_107),
-	SLE_CONDNULL(8,  SL_MIN_VERSION, SLV_107),
-	 SLE_CONDVAR(CompanyOldAI, num_build_rec, SLE_UINT8, SL_MIN_VERSION, SLV_107),
-	SLE_CONDNULL(3,  SL_MIN_VERSION, SLV_107),
+class SlCompanyOldAIBuildRec : public DefaultSaveLoadHandler<SlCompanyOldAIBuildRec, CompanyOldAI> {
+public:
+	static inline const SaveLoad description[] = {{}}; ///< Needed to keep DefaultSaveLoadHandler happy.
+	static inline const SaveLoadCompatTable compat_description = _company_old_ai_buildrec_compat;
 
-	SLE_CONDNULL(2,  SL_MIN_VERSION,  SLV_6),
-	SLE_CONDNULL(4,  SLV_6, SLV_107),
-	SLE_CONDNULL(2,  SL_MIN_VERSION,  SLV_6),
-	SLE_CONDNULL(4,  SLV_6, SLV_107),
-	SLE_CONDNULL(2,  SL_MIN_VERSION, SLV_107),
+	SaveLoadTable GetDescription() const override { return {}; }
 
-	SLE_CONDNULL(2,  SL_MIN_VERSION,  SLV_6),
-	SLE_CONDNULL(4,  SLV_6, SLV_107),
-	SLE_CONDNULL(2,  SL_MIN_VERSION,  SLV_6),
-	SLE_CONDNULL(4,  SLV_6, SLV_107),
-	SLE_CONDNULL(2,  SL_MIN_VERSION, SLV_107),
-
-	SLE_CONDNULL(2,  SL_MIN_VERSION, SLV_69),
-	SLE_CONDNULL(4,  SLV_69, SLV_107),
-
-	SLE_CONDNULL(18, SL_MIN_VERSION, SLV_107),
-	SLE_CONDNULL(20, SL_MIN_VERSION, SLV_107),
-	SLE_CONDNULL(32, SL_MIN_VERSION, SLV_107),
-
-	SLE_CONDNULL(64, SLV_2, SLV_107),
-	SLE_END()
-};
-
-static const SaveLoad _company_ai_build_rec_desc[] = {
-	SLE_CONDNULL(2, SL_MIN_VERSION, SLV_6),
-	SLE_CONDNULL(4, SLV_6, SLV_107),
-	SLE_CONDNULL(2, SL_MIN_VERSION, SLV_6),
-	SLE_CONDNULL(4, SLV_6, SLV_107),
-	SLE_CONDNULL(8, SL_MIN_VERSION, SLV_107),
-	SLE_END()
-};
-
-static const SaveLoad _company_livery_desc[] = {
-	SLE_CONDVAR(Livery, in_use,  SLE_UINT8, SLV_34, SL_MAX_VERSION),
-	SLE_CONDVAR(Livery, colour1, SLE_UINT8, SLV_34, SL_MAX_VERSION),
-	SLE_CONDVAR(Livery, colour2, SLE_UINT8, SLV_34, SL_MAX_VERSION),
-	SLE_END()
-};
-
-static void SaveLoad_PLYR_common(Company *c, CompanyProperties *cprops)
-{
-	int i;
-
-	SlObject(cprops, _company_desc);
-	if (c != nullptr) {
-		SlObject(c, _company_settings_desc);
-	} else {
-		char nothing;
-		SlObject(&nothing, _company_settings_skip_desc);
-	}
-
-	/* Keep backwards compatible for savegames, so load the old AI block */
-	if (IsSavegameVersionBefore(SLV_107) && cprops->is_ai) {
-		CompanyOldAI old_ai;
-		char nothing;
-
-		SlObject(&old_ai, _company_ai_desc);
-		for (i = 0; i != old_ai.num_build_rec; i++) {
-			SlObject(&nothing, _company_ai_build_rec_desc);
+	void Load(CompanyOldAI *old_ai) const override
+	{
+		for (int i = 0; i != old_ai->num_build_rec; i++) {
+			SlObject(nullptr, this->GetLoadDescription());
 		}
 	}
 
-	/* Write economy */
-	SlObject(&cprops->cur_economy, _company_economy_desc);
+	void LoadCheck(CompanyOldAI *old_ai) const override { this->Load(old_ai); }
+};
 
-	/* Write old economy entries. */
-	if (cprops->num_valid_stat_ent > lengthof(cprops->old_economy)) SlErrorCorrupt("Too many old economy entries");
-	for (i = 0; i < cprops->num_valid_stat_ent; i++) {
-		SlObject(&cprops->old_economy[i], _company_economy_desc);
+class SlCompanyOldAI : public DefaultSaveLoadHandler<SlCompanyOldAI, CompanyProperties> {
+public:
+	static inline const SaveLoad description[] = {
+		SaveLoad::Variable<VarFileType::U8>("num_build_rec", SLE_OBJECT_ADDRESS(CompanyOldAI, num_build_rec), SaveLoadVersion::MinVersion, SaveLoadVersion::NoAI),
+		SaveLoad::StructList<SlCompanyOldAIBuildRec>("buildrec"),
+	};
+	static inline const SaveLoadCompatTable compat_description = _company_old_ai_compat;
+
+	void Load(CompanyProperties *c) const override
+	{
+		if (!c->is_ai) return;
+
+		CompanyOldAI old_ai;
+		SlObject(&old_ai, this->GetLoadDescription());
 	}
 
-	/* Write each livery entry. */
-	int num_liveries = IsSavegameVersionBefore(SLV_63) ? LS_END - 4 : (IsSavegameVersionBefore(SLV_85) ? LS_END - 2: LS_END);
-	bool update_in_use = IsSavegameVersionBefore(SLV_GROUP_LIVERIES);
-	if (c != nullptr) {
-		for (i = 0; i < num_liveries; i++) {
-			SlObject(&c->livery[i], _company_livery_desc);
-			if (update_in_use && i != LS_DEFAULT) {
-				if (c->livery[i].in_use == 0) {
-					c->livery[i].colour1 = c->livery[LS_DEFAULT].colour1;
-					c->livery[i].colour2 = c->livery[LS_DEFAULT].colour2;
+	void LoadCheck(CompanyProperties *c) const override { this->Load(c); }
+};
+
+class SlCompanySettings : public DefaultSaveLoadHandler<SlCompanySettings, CompanyProperties> {
+public:
+	static inline const SaveLoad description[] = {
+		/* Engine renewal settings */
+		SaveLoad::Reference<SLRefType::EngineRenew>("engine_renew_list", SLE_OBJECT_ADDRESS(CompanyProperties, engine_renew_list), SaveLoadVersion::EngineRenewPool),
+		SaveLoad::Variable<VarFileType::Bool>("settings.engine_renew", SLE_OBJECT_ADDRESS(CompanyProperties, settings.engine_renew), SaveLoadVersion::EngineRenew),
+		SaveLoad::Variable<VarFileType::I16>("settings.engine_renew_months", SLE_OBJECT_ADDRESS(CompanyProperties, settings.engine_renew_months), SaveLoadVersion::EngineRenew),
+		SaveLoad::Variable<VarFileType::U32>("settings.engine_renew_money", SLE_OBJECT_ADDRESS(CompanyProperties, settings.engine_renew_money), SaveLoadVersion::EngineRenew),
+		SaveLoad::Variable<VarFileType::Bool>("settings.renew_keep_length", SLE_OBJECT_ADDRESS(CompanyProperties, settings.renew_keep_length), SaveLoadVersion::VehicleCurrencyStationChanges),
+
+		/* Default vehicle settings */
+		SaveLoad::Variable<VarFileType::Bool>("settings.vehicle.servint_ispercent", SLE_OBJECT_ADDRESS(CompanyProperties, settings.vehicle.servint_ispercent), SaveLoadVersion::CompanyServiceIntervals),
+		SaveLoad::Variable<VarFileType::U16>("settings.vehicle.servint_trains", SLE_OBJECT_ADDRESS(CompanyProperties, settings.vehicle.servint_trains), SaveLoadVersion::CompanyServiceIntervals),
+		SaveLoad::Variable<VarFileType::U16>("settings.vehicle.servint_roadveh", SLE_OBJECT_ADDRESS(CompanyProperties, settings.vehicle.servint_roadveh), SaveLoadVersion::CompanyServiceIntervals),
+		SaveLoad::Variable<VarFileType::U16>("settings.vehicle.servint_aircraft", SLE_OBJECT_ADDRESS(CompanyProperties, settings.vehicle.servint_aircraft), SaveLoadVersion::CompanyServiceIntervals),
+		SaveLoad::Variable<VarFileType::U16>("settings.vehicle.servint_ships", SLE_OBJECT_ADDRESS(CompanyProperties, settings.vehicle.servint_ships), SaveLoadVersion::CompanyServiceIntervals),
+	};
+	static inline const SaveLoadCompatTable compat_description = _company_settings_compat;
+
+	void Save(CompanyProperties *c) const override
+	{
+		SlObject(c, this->GetDescription());
+	}
+
+	void Load(CompanyProperties *c) const override
+	{
+		SlObject(c, this->GetLoadDescription());
+	}
+
+	void FixPointers(CompanyProperties *c) const override
+	{
+		SlObject(c, this->GetDescription());
+	}
+
+	void LoadCheck(CompanyProperties *c) const override { this->Load(c); }
+};
+
+class SlCompanyEconomy : public DefaultSaveLoadHandler<SlCompanyEconomy, CompanyProperties> {
+public:
+	static inline const SaveLoad description[] = {
+		SaveLoad::Variable<VarFileType::I32>("income", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, income), SaveLoadVersion::MinVersion, SaveLoadVersion::VehicleCurrencyStationChanges),
+		SaveLoad::Variable<VarFileType::I64>("income", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, income), SaveLoadVersion::VehicleCurrencyStationChanges),
+		SaveLoad::Variable<VarFileType::I32>("expenses", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, expenses), SaveLoadVersion::MinVersion, SaveLoadVersion::VehicleCurrencyStationChanges),
+		SaveLoad::Variable<VarFileType::I64>("expenses", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, expenses), SaveLoadVersion::VehicleCurrencyStationChanges),
+		SaveLoad::Variable<VarFileType::I32>("company_value", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, company_value), SaveLoadVersion::MinVersion, SaveLoadVersion::VehicleCurrencyStationChanges),
+		SaveLoad::Variable<VarFileType::I64>("company_value", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, company_value), SaveLoadVersion::VehicleCurrencyStationChanges),
+
+		SaveLoad::Variable<VarFileType::I32>("delivered_cargo[NUM_CARGO - 1]", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, delivered_cargo[NUM_CARGO - 1]), SaveLoadVersion::MinVersion, SaveLoadVersion::CountIndividualCargoes),
+		SaveLoad::Array<VarFileType::U32, 32>("delivered_cargo", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, delivered_cargo), SaveLoadVersion::CountIndividualCargoes, SaveLoadVersion::ExtendCargotypes),
+		SaveLoad::Array<VarFileType::U32, NUM_CARGO>("delivered_cargo", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, delivered_cargo), SaveLoadVersion::ExtendCargotypes),
+		SaveLoad::Variable<VarFileType::I32>("performance_history", SLE_OBJECT_ADDRESS(CompanyEconomyEntry, performance_history)),
+	};
+	static inline const SaveLoadCompatTable compat_description = _company_economy_compat;
+
+	void Save(CompanyProperties *c) const override
+	{
+		SlObject(&c->cur_economy, this->GetDescription());
+	}
+
+	void Load(CompanyProperties *c) const override
+	{
+		SlObject(&c->cur_economy, this->GetLoadDescription());
+	}
+
+	void FixPointers(CompanyProperties *c) const override
+	{
+		SlObject(&c->cur_economy, this->GetDescription());
+	}
+
+	void LoadCheck(CompanyProperties *c) const override { this->Load(c); }
+};
+
+class SlCompanyOldEconomy : public SlCompanyEconomy {
+public:
+	void Save(CompanyProperties *c) const override
+	{
+		SlSetStructListLength(c->num_valid_stat_ent);
+		for (int i = 0; i < c->num_valid_stat_ent; i++) {
+			SlObject(&c->old_economy[i], this->GetDescription());
+		}
+	}
+
+	void Load(CompanyProperties *c) const override
+	{
+		if (!IsSavegameVersionBefore(SaveLoadVersion::SaveloadListLength)) {
+			c->num_valid_stat_ent = (uint8_t)SlGetStructListLength(UINT8_MAX);
+		}
+		if (c->num_valid_stat_ent > std::size(c->old_economy)) SlErrorCorrupt("Too many old economy entries");
+
+		for (int i = 0; i < c->num_valid_stat_ent; i++) {
+			SlObject(&c->old_economy[i], this->GetLoadDescription());
+		}
+	}
+
+	void LoadCheck(CompanyProperties *c) const override { this->Load(c); }
+};
+
+class SlCompanyLiveries : public DefaultSaveLoadHandler<SlCompanyLiveries, CompanyProperties> {
+public:
+	static inline const SaveLoad description[] = {
+		SaveLoad::Variable<VarFileType::U8>("in_use", SLE_OBJECT_ADDRESS(Livery, in_use), SaveLoadVersion::Liveries),
+		SaveLoad::Variable<VarFileType::U8>("colour1", SLE_OBJECT_ADDRESS(Livery, colour1), SaveLoadVersion::Liveries),
+		SaveLoad::Variable<VarFileType::U8>("colour2", SLE_OBJECT_ADDRESS(Livery, colour2), SaveLoadVersion::Liveries),
+	};
+	static inline const SaveLoadCompatTable compat_description = _company_liveries_compat;
+
+	/**
+	 * Get the number of liveries used by this savegame version.
+	 * @return The number of liveries used by this savegame version.
+	 */
+	size_t GetNumLiveries() const
+	{
+		if (IsSavegameVersionBefore(SaveLoadVersion::TramLivery)) return to_underlying(LiveryScheme::End) - 4;
+		if (IsSavegameVersionBefore(SaveLoadVersion::MaglevMonorailPaxWagonLivery)) return to_underlying(LiveryScheme::End) - 2;
+		if (IsSavegameVersionBefore(SaveLoadVersion::SaveloadListLength)) return to_underlying(LiveryScheme::End);
+		/* Read from the savegame how long the list is. */
+		return SlGetStructListLength(to_underlying(LiveryScheme::End));
+	}
+
+	void Save(CompanyProperties *c) const override
+	{
+		SlSetStructListLength(to_underlying(LiveryScheme::End));
+		for (auto &livery : c->livery) {
+			SlObject(&livery, this->GetDescription());
+		}
+	}
+
+	void Load(CompanyProperties *c) const override
+	{
+		size_t num_liveries = this->GetNumLiveries();
+		bool update_in_use = IsSavegameVersionBefore(SaveLoadVersion::GroupLiveries);
+
+		for (size_t i = 0; i < num_liveries; i++) {
+			Livery &livery = c->livery[static_cast<LiveryScheme>(i)];
+			SlObject(&livery, this->GetLoadDescription());
+			if (update_in_use && i != 0) {
+				if (!livery.in_use.Any({Livery::Flag::Primary, Livery::Flag::Secondary})) {
+					livery.colour1 = c->livery[LiveryScheme::Default].colour1;
+					livery.colour2 = c->livery[LiveryScheme::Default].colour2;
 				} else {
-					c->livery[i].in_use = 3;
+					livery.in_use = {Livery::Flag::Primary, Livery::Flag::Secondary};
 				}
 			}
 		}
 
-		if (num_liveries < LS_END) {
+		if (IsSavegameVersionBefore(SaveLoadVersion::MaglevMonorailPaxWagonLivery)) {
 			/* We want to insert some liveries somewhere in between. This means some have to be moved. */
-			memmove(&c->livery[LS_FREIGHT_WAGON], &c->livery[LS_PASSENGER_WAGON_MONORAIL], (LS_END - LS_FREIGHT_WAGON) * sizeof(c->livery[0]));
-			c->livery[LS_PASSENGER_WAGON_MONORAIL] = c->livery[LS_MONORAIL];
-			c->livery[LS_PASSENGER_WAGON_MAGLEV]   = c->livery[LS_MAGLEV];
+			std::move_backward(std::begin(c->livery) + to_underlying(LiveryScheme::FreightWagon) - 2, std::end(c->livery) - 2, std::end(c->livery));
+			c->livery[LiveryScheme::PassengerWagonMonorail] = c->livery[LiveryScheme::Monorail];
+			c->livery[LiveryScheme::PassengerWagonMaglev] = c->livery[LiveryScheme::Maglev];
 		}
 
-		if (num_liveries == LS_END - 4) {
+		if (IsSavegameVersionBefore(SaveLoadVersion::TramLivery)) {
 			/* Copy bus/truck liveries over to trams */
-			c->livery[LS_PASSENGER_TRAM] = c->livery[LS_BUS];
-			c->livery[LS_FREIGHT_TRAM]   = c->livery[LS_TRUCK];
-		}
-	} else {
-		/* Skip liveries */
-		Livery dummy_livery;
-		for (i = 0; i < num_liveries; i++) {
-			SlObject(&dummy_livery, _company_livery_desc);
+			c->livery[LiveryScheme::PassengerTram] = c->livery[LiveryScheme::Bus];
+			c->livery[LiveryScheme::FreightTram] = c->livery[LiveryScheme::Truck];
 		}
 	}
-}
 
-static void SaveLoad_PLYR(Company *c)
-{
-	SaveLoad_PLYR_common(c, c);
-}
+	void LoadCheck(CompanyProperties *c) const override { this->Load(c); }
+};
 
-static void Save_PLYR()
-{
-	for (Company *c : Company::Iterate()) {
-		SlSetArrayIndex(c->index);
-		SlAutolength((AutolengthProc*)SaveLoad_PLYR, c);
+class SlAllowListData : public VectorSaveLoadHandler<SlAllowListData, CompanyProperties, std::string> {
+public:
+	struct KeyWrapper {
+		std::string key;
+	};
+
+	static inline const SaveLoad description[] = {
+		SaveLoad::String("key", SLE_OBJECT_ADDRESS(KeyWrapper, key)),
+	};
+	static inline const SaveLoadCompatTable compat_description = {};
+
+	std::vector<std::string> &GetVector(CompanyProperties *cprops) const override { return cprops->allow_list; }
+
+	void LoadCheck(CompanyProperties *cprops) const override { this->Load(cprops); }
+};
+
+/** Save/load of companies. */
+static const SaveLoad _company_desc[] = {
+	SaveLoad::Variable<VarFileType::U32>("name_2", SLE_OBJECT_ADDRESS(CompanyProperties, name_2)),
+	SaveLoad::Variable<VarFileType::StringID>("name_1", SLE_OBJECT_ADDRESS(CompanyProperties, name_1)),
+	SaveLoad::String("name", SLE_OBJECT_ADDRESS(CompanyProperties, name), StringValidationSetting::AllowControlCode, SaveLoadVersion::ReplaceCustomNameArray),
+
+	SaveLoad::Variable<VarFileType::StringID>("president_name_1", SLE_OBJECT_ADDRESS(CompanyProperties, president_name_1)),
+	SaveLoad::Variable<VarFileType::U32>("president_name_2", SLE_OBJECT_ADDRESS(CompanyProperties, president_name_2)),
+	SaveLoad::String("president_name", SLE_OBJECT_ADDRESS(CompanyProperties, president_name), StringValidationSetting::AllowControlCode, SaveLoadVersion::ReplaceCustomNameArray),
+
+	SaveLoad::Vector<VarFileType::String>("allow_list", SLE_OBJECT_ADDRESS(CompanyProperties, allow_list), SaveLoadVersion::CompanyAllowList, SaveLoadVersion::CompanyAllowListV2),
+	SaveLoad::StructList<SlAllowListData>("allow_list", SaveLoadVersion::CompanyAllowListV2),
+	SaveLoad::Variable<VarFileType::Bool>("allow_any", SLE_OBJECT_ADDRESS(CompanyProperties, allow_any)),
+
+	SaveLoad::Variable<VarFileType::U32>("face", SLE_OBJECT_ADDRESS(CompanyProperties, face.bits)),
+	SaveLoad::String("face_style", SLE_OBJECT_ADDRESS(CompanyProperties, face.style_label), {}, SaveLoadVersion::FaceStyles),
+
+	/* money was changed to a 64 bit field in savegame version 1. */
+	SaveLoad::Variable<VarFileType::I32>("money", SLE_OBJECT_ADDRESS(CompanyProperties, money), SaveLoadVersion::MinVersion, SaveLoadVersion::BigCurrency),
+	SaveLoad::Variable<VarFileType::I64>("money", SLE_OBJECT_ADDRESS(CompanyProperties, money), SaveLoadVersion::BigCurrency),
+
+	SaveLoad::Variable<VarFileType::I32>("current_loan", SLE_OBJECT_ADDRESS(CompanyProperties, current_loan), SaveLoadVersion::MinVersion, SaveLoadVersion::UnifyCurrency),
+	SaveLoad::Variable<VarFileType::I64>("current_loan", SLE_OBJECT_ADDRESS(CompanyProperties, current_loan), SaveLoadVersion::UnifyCurrency),
+	SaveLoad::Variable<VarFileType::I64>("max_loan", SLE_OBJECT_ADDRESS(CompanyProperties, max_loan), SaveLoadVersion::MaxLoanForCompany),
+
+	SaveLoad::Variable<VarFileType::U8>("colour", SLE_OBJECT_ADDRESS(CompanyProperties, colour)),
+	SaveLoad::Variable<VarFileType::U8>("money_fraction", SLE_OBJECT_ADDRESS(CompanyProperties, money_fraction)),
+	SaveLoad::Variable<VarFileType::U8>("block_preview", SLE_OBJECT_ADDRESS(CompanyProperties, block_preview)),
+
+	SaveLoad::Variable<VarFileType::U16>("location_of_HQ", SLE_OBJECT_ADDRESS(CompanyProperties, location_of_HQ), SaveLoadVersion::MinVersion, SaveLoadVersion::MultipleRoadStops),
+	SaveLoad::Variable<VarFileType::U32>("location_of_HQ", SLE_OBJECT_ADDRESS(CompanyProperties, location_of_HQ), SaveLoadVersion::MultipleRoadStops),
+	SaveLoad::Variable<VarFileType::U16>("last_build_coordinate", SLE_OBJECT_ADDRESS(CompanyProperties, last_build_coordinate), SaveLoadVersion::MinVersion, SaveLoadVersion::MultipleRoadStops),
+	SaveLoad::Variable<VarFileType::U32>("last_build_coordinate", SLE_OBJECT_ADDRESS(CompanyProperties, last_build_coordinate), SaveLoadVersion::MultipleRoadStops),
+	SaveLoad::Variable<VarFileType::U8>("inaugurated_year", SLE_OBJECT_ADDRESS(CompanyProperties, inaugurated_year), SaveLoadVersion::MinVersion, SaveLoadVersion::BigDates),
+	SaveLoad::Variable<VarFileType::I32>("inaugurated_year", SLE_OBJECT_ADDRESS(CompanyProperties, inaugurated_year), SaveLoadVersion::BigDates),
+	SaveLoad::Variable<VarFileType::I32>("inaugurated_year_calendar", SLE_OBJECT_ADDRESS(CompanyProperties, inaugurated_year_calendar), SaveLoadVersion::CompanyInauguratedPeriodV2),
+
+	SaveLoad::Variable<VarFileType::U8>("num_valid_stat_ent", SLE_OBJECT_ADDRESS(CompanyProperties, num_valid_stat_ent), SaveLoadVersion::MinVersion, SaveLoadVersion::SaveloadListLength),
+
+	SaveLoad::Variable<VarFileType::U8>("months_of_bankruptcy", SLE_OBJECT_ADDRESS(CompanyProperties, months_of_bankruptcy)),
+	SaveLoad::Variable<VarFileType::U8>("bankrupt_asked", SLE_OBJECT_ADDRESS(CompanyProperties, bankrupt_asked), SaveLoadVersion::MinVersion, SaveLoadVersion::MoreCompanies),
+	SaveLoad::Variable<VarFileType::U16>("bankrupt_asked", SLE_OBJECT_ADDRESS(CompanyProperties, bankrupt_asked), SaveLoadVersion::MoreCompanies),
+	SaveLoad::Variable<VarFileType::I16>("bankrupt_timeout", SLE_OBJECT_ADDRESS(CompanyProperties, bankrupt_timeout)),
+	SaveLoad::Variable<VarFileType::I32>("bankrupt_value", SLE_OBJECT_ADDRESS(CompanyProperties, bankrupt_value), SaveLoadVersion::MinVersion, SaveLoadVersion::UnifyCurrency),
+	SaveLoad::Variable<VarFileType::I64>("bankrupt_value", SLE_OBJECT_ADDRESS(CompanyProperties, bankrupt_value), SaveLoadVersion::UnifyCurrency),
+
+	/* yearly expenses was changed to 64-bit in savegame version 2. */
+	SaveLoad::Array<VarFileType::I32, 3 * 13>("yearly_expenses", SLE_OBJECT_ADDRESS(CompanyProperties, yearly_expenses), SaveLoadVersion::MinVersion, SaveLoadVersion::VehicleCurrencyStationChanges),
+	SaveLoad::Array<VarFileType::I64, 3 * 13>("yearly_expenses", SLE_OBJECT_ADDRESS(CompanyProperties, yearly_expenses), SaveLoadVersion::VehicleCurrencyStationChanges),
+
+	SaveLoad::Variable<VarFileType::Bool>("is_ai", SLE_OBJECT_ADDRESS(CompanyProperties, is_ai), SaveLoadVersion::VehicleCurrencyStationChanges),
+
+	SaveLoad::Variable<VarFileType::U32>("terraform_limit", SLE_OBJECT_ADDRESS(CompanyProperties, terraform_limit), SaveLoadVersion::TerraformLimits),
+	SaveLoad::Variable<VarFileType::U32>("clear_limit", SLE_OBJECT_ADDRESS(CompanyProperties, clear_limit), SaveLoadVersion::TerraformLimits),
+	SaveLoad::Variable<VarFileType::U32>("tree_limit", SLE_OBJECT_ADDRESS(CompanyProperties, tree_limit), SaveLoadVersion::AutoreplaceWhenOldTreeLimit),
+	SaveLoad::Struct<SlCompanySettings>("settings"),
+	SaveLoad::Struct<SlCompanyOldAI>("old_ai", SaveLoadVersion::MinVersion, SaveLoadVersion::NoAI),
+	SaveLoad::Struct<SlCompanyEconomy>("cur_economy"),
+	SaveLoad::StructList<SlCompanyOldEconomy>("old_economy"),
+	SaveLoad::StructList<SlCompanyLiveries>("liveries", SaveLoadVersion::Liveries),
+};
+
+struct PLYRChunkHandler : ChunkHandler {
+	PLYRChunkHandler() : ChunkHandler("PLYR", ChunkType::Table) {}
+
+	void Save() const override
+	{
+		SlTableHeader(_company_desc);
+
+		for (Company *c : Company::Iterate()) {
+			SlSetArrayIndex(c->index);
+			SlObject(c, _company_desc);
+		}
 	}
-}
 
-static void Load_PLYR()
-{
-	int index;
-	while ((index = SlIterateArray()) != -1) {
-		Company *c = new (index) Company();
-		SaveLoad_PLYR(c);
-		_company_colours[index] = (Colours)c->colour;
+	void Load() const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_company_desc, _company_sl_compat);
+
+		int index;
+		while ((index = SlIterateArray()) != -1) {
+			Company *c = Company::CreateAtIndex(CompanyID(index));
+			SlObject(c, slt);
+			_company_colours[c->index] = c->colour;
+		}
 	}
-}
 
-static void Check_PLYR()
-{
-	int index;
-	while ((index = SlIterateArray()) != -1) {
-		CompanyProperties *cprops = new CompanyProperties();
-		SaveLoad_PLYR_common(nullptr, cprops);
 
-		/* We do not load old custom names */
-		if (IsSavegameVersionBefore(SLV_84)) {
-			if (GetStringTab(cprops->name_1) == TEXT_TAB_OLD_CUSTOM) {
-				cprops->name_1 = STR_GAME_SAVELOAD_NOT_AVAILABLE;
+	void LoadCheck(size_t) const override
+	{
+		const std::vector<SaveLoad> slt = SlCompatTableHeader(_company_desc, _company_sl_compat);
+
+		int index;
+		while ((index = SlIterateArray()) != -1) {
+			std::unique_ptr<CompanyProperties> cprops = std::make_unique<CompanyProperties>();
+			SlObject(cprops.get(), slt);
+
+			/* We do not load old custom names */
+			if (IsSavegameVersionBefore(SaveLoadVersion::ReplaceCustomNameArray)) {
+				if (GetStringTab(cprops->name_1) == TEXT_TAB_OLD_CUSTOM) {
+					cprops->name_1 = STR_GAME_SAVELOAD_NOT_AVAILABLE;
+				}
+
+				if (GetStringTab(cprops->president_name_1) == TEXT_TAB_OLD_CUSTOM) {
+					cprops->president_name_1 = STR_GAME_SAVELOAD_NOT_AVAILABLE;
+				}
 			}
 
-			if (GetStringTab(cprops->president_name_1) == TEXT_TAB_OLD_CUSTOM) {
-				cprops->president_name_1 = STR_GAME_SAVELOAD_NOT_AVAILABLE;
-			}
-		}
-
-		if (cprops->name.empty() && !IsInsideMM(cprops->name_1, SPECSTR_COMPANY_NAME_START, SPECSTR_COMPANY_NAME_LAST + 1) &&
+			if (cprops->name.empty() && !IsInsideMM(cprops->name_1, SPECSTR_COMPANY_NAME_START, SPECSTR_COMPANY_NAME_END) &&
 				cprops->name_1 != STR_GAME_SAVELOAD_NOT_AVAILABLE && cprops->name_1 != STR_SV_UNNAMED &&
 				cprops->name_1 != SPECSTR_ANDCO_NAME && cprops->name_1 != SPECSTR_PRESIDENT_NAME &&
 				cprops->name_1 != SPECSTR_SILLY_NAME) {
-			cprops->name_1 = STR_GAME_SAVELOAD_NOT_AVAILABLE;
+				cprops->name_1 = STR_GAME_SAVELOAD_NOT_AVAILABLE;
+			}
+
+			if (_load_check_data.companies.count(index) == 0) {
+				_load_check_data.companies[index] = std::move(cprops);
+			}
 		}
-
-		if (!_load_check_data.companies.Insert(index, cprops)) delete cprops;
 	}
-}
 
-static void Ptrs_PLYR()
-{
-	for (Company *c : Company::Iterate()) {
-		SlObject(c, _company_settings_desc);
+	void FixPointers() const override
+	{
+		for (Company *c : Company::Iterate()) {
+			SlObject(c, _company_desc);
+		}
 	}
-}
-
-
-extern const ChunkHandler _company_chunk_handlers[] = {
-	{ 'PLYR', Save_PLYR, Load_PLYR, Ptrs_PLYR, Check_PLYR, CH_ARRAY | CH_LAST},
 };
+
+static const PLYRChunkHandler PLYR;
+static const ChunkHandlerRef company_chunk_handlers[] = {
+	PLYR,
+};
+
+extern const ChunkHandlerTable _company_chunk_handlers(company_chunk_handlers);

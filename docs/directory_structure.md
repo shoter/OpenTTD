@@ -19,14 +19,14 @@ your operating system:
     - Windows:
         - `C:\My Documents\OpenTTD` (95, 98, ME)
         - `C:\Documents and Settings\<username>\My Documents\OpenTTD` (2000, XP)
-        - `C:\Users\<username>\Documents\OpenTTD` (Vista, 7, 8.1, 10)
+        - `C:\Users\<username>\Documents\OpenTTD` (7, 8.1, 10, 11)
     - macOS: `~/Documents/OpenTTD`
     - Linux: `$XDG_DATA_HOME/openttd` which is usually `~/.local/share/openttd`
        when built with XDG base directory support, otherwise `~/.openttd`
 3. The shared directory
     - Windows:
         - `C:\Documents and Settings\All Users\Shared Documents\OpenTTD` (2000, XP)
-        - `C:\Users\Public\Documents\OpenTTD` (Vista, 7, 8.1, 10)
+        - `C:\Users\Public\Documents\OpenTTD` (7, 8.1, 10, 11)
     - macOS: `/Library/Application Support/OpenTTD`
     - Linux: not available
 4. The binary directory (where the OpenTTD executable is)
@@ -38,6 +38,17 @@ your operating system:
 
     It includes the OpenTTD files (grf+lng) and it will work as long as they
     are not touched
+7. The Atari Transport Tycoon Deluxe directory, if installed (path may vary)
+
+    This refers to the `CD` folder within the Transport Tycoon Deluxe
+    installation folder (2026 Atari re-release). OpenTTD detects the presence
+    of this folder based upon the contents of the `installpath.ini` file located
+    in:
+    - Windows: `%APPDATA%\Atari\Transport Tycoon Deluxe`
+    - macOS: `~/Library/Application Support/Atari/Transport Tycoon Deluxe`
+    - Linux: `$XDG_DATA_HOME/Atari/Transport Tycoon Deluxe`
+
+    This is used only for the loading of base sets (graphics, sound, music).
 
 Different types of data or extensions go into different subdirectories of the
 chosen main OpenTTD directory:

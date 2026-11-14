@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file network_gamelist.h Handling of the list of games. */
@@ -10,25 +10,38 @@
 #ifndef NETWORK_GAMELIST_H
 #define NETWORK_GAMELIST_H
 
-#include "core/address.h"
-#include "network_type.h"
+#include "core/network_game_info.h"
 
-/** Structure with information shown in the game list (GUI) */
-struct NetworkGameList {
-	NetworkGameInfo info;   ///< The game information of this server
-	NetworkAddress address; ///< The connection info of the game server
-	bool online;            ///< False if the server did not respond (default status)
-	bool manually;          ///< True if the server was added manually
-	uint8 retries;          ///< Number of retries (to stop requerying)
-	NetworkGameList *next;  ///< Next pointer to make a linked game list
+/** The status a server can be in. */
+enum class NetworkGameStatus : uint8_t {
+	Offline, ///< Server is offline (or cannot be queried).
+	Online, ///< Server is online.
+	Full, ///< Server is full and cannot be queried.
+	Banned, ///< You are banned from this server.
+	TooOld, ///< Server is too old to query.
 };
 
-/** Game list of this client */
-extern NetworkGameList *_network_game_list;
+/** Structure with information shown in the game list (GUI) */
+struct NetworkGame {
+	/**
+	 * Create the game.
+	 * @param connection_string The address of the server.
+	 */
+	NetworkGame(std::string_view connection_string) : connection_string(connection_string) {}
 
-void NetworkGameListAddItemDelayed(NetworkGameList *item);
-NetworkGameList *NetworkGameListAddItem(NetworkAddress address);
-void NetworkGameListRemoveItem(NetworkGameList *remove);
-void NetworkGameListRequery();
+	NetworkGameInfo info{};                  ///< The game information of this server.
+	std::string connection_string;           ///< Address of the server.
+	NetworkGameStatus status = NetworkGameStatus::Offline; ///< Stats of the server.
+	bool manually = false;                   ///< True if the server was added manually.
+	bool refreshing = false;                 ///< Whether this server is being queried.
+	int version = 0;                         ///< Used to see which servers are no longer available on the Game Coordinator and can be removed.
+};
+
+extern std::vector<std::unique_ptr<NetworkGame>> _network_game_list;
+extern int _network_game_list_version;
+
+NetworkGame *NetworkGameListAddItem(std::string_view connection_string);
+void NetworkGameListRemoveItem(NetworkGame *remove);
+void NetworkGameListRemoveExpired();
 
 #endif /* NETWORK_GAMELIST_H */

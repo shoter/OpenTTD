@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_viewport.hpp Everything to manipulate the user's viewport. */
@@ -33,8 +33,9 @@ public:
 	 * Scroll the viewport of all players to the given tile,
 	 *  where the tile will be in the center of the screen.
 	 * @param tile The tile to put in the center of the screen.
-	 * @pre ScriptObject::GetCompany() == OWNER_DEITY
+	 * @pre ScriptCompanyMode::IsDeity().
 	 * @pre ScriptMap::IsValidTile(tile)
+	 * @return True iff the command was executed successfully.
 	 */
 	static bool ScrollEveryoneTo(TileIndex tile);
 
@@ -43,9 +44,10 @@ public:
 	 *  where the tile will be in the center of the screen.
 	 * @param company The company which players to scroll the viewport of.
 	 * @param tile The tile to put in the center of the screen.
-	 * @pre ScriptObject::GetCompany() == OWNER_DEITY
+	 * @pre ScriptCompanyMode::IsDeity().
 	 * @pre ScriptMap::IsValidTile(tile)
 	 * @pre ResolveCompanyID(company) != COMPANY_INVALID
+	 * @return True iff the command was executed successfully.
 	 */
 	static bool ScrollCompanyClientsTo(ScriptCompany::CompanyID company, TileIndex tile);
 
@@ -55,9 +57,10 @@ public:
 	 * @param client The client to scroll the viewport of.
 	 * @param tile The tile to put in the center of the screen.
 	 * @pre ScriptGame::IsMultiplayer()
-	 * @pre ScriptObject::GetCompany() == OWNER_DEITY
+	 * @pre ScriptCompanyMode::IsDeity().
 	 * @pre ScriptMap::IsValidTile(tile)
 	 * @pre ResolveClientID(client) != CLIENT_INVALID
+	 * @return True iff the command was executed successfully.
 	 */
 	static bool ScrollClientTo(ScriptClient::ClientID client, TileIndex tile);
 };

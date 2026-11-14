@@ -3,6 +3,7 @@
  */
 
 #include "../../../stdafx.h"
+#include "../../fmt/format.h"
 
 #include <squirrel.h>
 #include "sqpcheader.h"
@@ -33,7 +34,7 @@ void SQVM::ClearStack(SQInteger last_top)
 		tOldType = o._type;
 		unOldVal = o._unVal;
 		o._type = OT_NULL;
-		o._unVal.pUserPointer = NULL;
+		o._unVal.pUserPointer = nullptr;
 		__Release(tOldType,unOldVal);
 	}
 }
@@ -50,11 +51,11 @@ bool SQVM::BW_OP(SQUnsignedInteger op,SQObjectPtr &trg,const SQObjectPtr &o1,con
 			case BW_XOR:	res = i1 ^ i2; break;
 			case BW_SHIFTL:	res = i1 << i2; break;
 			case BW_SHIFTR:	res = i1 >> i2; break;
-			case BW_USHIFTR:res = (SQInteger)(*((SQUnsignedInteger*)&i1) >> i2); break;
+			case BW_USHIFTR:res = (SQInteger)(std::bit_cast<SQUnsignedInteger>(i1) >> i2); break;
 			default: { Raise_Error("internal vm error bitwise op failed"); return false; }
 		}
 	}
-	else { Raise_Error("bitwise op between '%s' and '%s'",GetTypeName(o1),GetTypeName(o2)); return false;}
+	else { Raise_Error(fmt::format("bitwise op between '{}' and '{}'",GetTypeName(o1),GetTypeName(o2))); return false;}
 	trg = res;
 	return true;
 }
@@ -94,7 +95,7 @@ bool SQVM::ARITH_OP(SQUnsignedInteger op,SQObjectPtr &trg,const SQObjectPtr &o1,
 					if(!StringCat(o1, o2, trg)) return false;
 			}
 			else if(!ArithMetaMethod(op,o1,o2,trg)) {
-				Raise_Error("arith op %c on between '%s' and '%s'",(char)op,GetTypeName(o1),GetTypeName(o2)); return false;
+				Raise_Error(fmt::format("arith op {} on between '{}' and '{}'",(char)op,GetTypeName(o1),GetTypeName(o2))); return false;
 			}
 		}
 		return true;
@@ -107,7 +108,7 @@ SQVM::SQVM(SQSharedState *ss)
 	_suspended_target=-1;
 	_suspended_root = SQFalse;
 	_suspended_traps=0;
-	_foreignptr=NULL;
+	_foreignptr=nullptr;
 	_nnativecalls=0;
 	_lasterror = _null_;
 	_errorhandler = _null_;
@@ -115,12 +116,13 @@ SQVM::SQVM(SQSharedState *ss)
 	_can_suspend = false;
 	_in_stackoverflow = false;
 	_ops_till_suspend = 0;
-	_callsstack = NULL;
+	_ops_till_suspend_error_threshold = INT64_MIN;
+	_callsstack = nullptr;
 	_callsstacksize = 0;
 	_alloccallsstacksize = 0;
 	_top = 0;
 	_stackbase = 0;
-	ci = NULL;
+	ci = nullptr;
 	INIT_CHAIN();ADD_TO_CHAIN(&_ss(this)->_gc_chain,this);
 }
 
@@ -140,7 +142,6 @@ void SQVM::Finalize()
 SQVM::~SQVM()
 {
 	Finalize();
-	//sq_free(_callsstack,_alloccallsstacksize*sizeof(CallInfo));
 	REMOVE_FROM_CHAIN(&_ss(this)->_gc_chain,this);
 }
 
@@ -184,7 +185,7 @@ bool SQVM::NEG_OP(SQObjectPtr &trg,const SQObjectPtr &o)
 		}
 	default:break; //shutup compiler
 	}
-	Raise_Error("attempt to negate a %s", GetTypeName(o));
+	Raise_Error(fmt::format("attempt to negate a {}", GetTypeName(o)));
 	return false;
 }
 
@@ -196,7 +197,7 @@ bool SQVM::ObjCmp(const SQObjectPtr &o1,const SQObjectPtr &o2,SQInteger &result)
 		SQObjectPtr res;
 		switch(type(o1)){
 		case OT_STRING:
-			_RET_SUCCEED(strcmp(_stringval(o1),_stringval(o2)));
+			_RET_SUCCEED(_stringval(o1).compare(_stringval(o2)));
 		case OT_INTEGER:
 			/* FS#3954: wrong integer comparison */
 			_RET_SUCCEED((_integer(o1)<_integer(o2))?-1:(_integer(o1)==_integer(o2))?0:1);
@@ -215,7 +216,7 @@ bool SQVM::ObjCmp(const SQObjectPtr &o1,const SQObjectPtr &o2,SQInteger &result)
 					_RET_SUCCEED(_integer(res))
 				}
 			}
-			FALLTHROUGH;
+			[[fallthrough]];
 		default:
 			_RET_SUCCEED( _userpointer(o1) < _userpointer(o2)?-1:1 );
 		}
@@ -262,19 +263,19 @@ bool SQVM::CMP_OP(CmpOP op, const SQObjectPtr &o1,const SQObjectPtr &o2,SQObject
 
 void SQVM::ToString(const SQObjectPtr &o,SQObjectPtr &res)
 {
-	char buf[64];
+	std::string str;
 	switch(type(o)) {
 	case OT_STRING:
 		res = o;
 		return;
 	case OT_FLOAT:
-		seprintf(buf, lastof(buf),"%g",_float(o));
+		str = fmt::format("{}",_float(o));
 		break;
 	case OT_INTEGER:
-		seprintf(buf, lastof(buf),OTTD_PRINTF64,_integer(o));
+		str = fmt::format("{}",_integer(o));
 		break;
 	case OT_BOOL:
-		seprintf(buf, lastof(buf),_integer(o)?"true":"false");
+		str = _integer(o)?"true":"false";
 		break;
 	case OT_TABLE:
 	case OT_USERDATA:
@@ -287,11 +288,11 @@ void SQVM::ToString(const SQObjectPtr &o,SQObjectPtr &res)
 				//else keeps going to the default
 			}
 		}
-		FALLTHROUGH;
+		[[fallthrough]];
 	default:
-		seprintf(buf, lastof(buf),"(%s : 0x%p)",GetTypeName(o),(void*)_rawval(o));
+		str = fmt::format("({} : 0x{:08X})",GetTypeName(o),(size_t)(void*)_rawval(o));
 	}
-	res = SQString::Create(_ss(this),buf);
+	res = SQString::Create(_ss(this),str);
 }
 
 
@@ -300,11 +301,7 @@ bool SQVM::StringCat(const SQObjectPtr &str,const SQObjectPtr &obj,SQObjectPtr &
 	SQObjectPtr a, b;
 	ToString(str, a);
 	ToString(obj, b);
-	SQInteger l = _string(a)->_len , ol = _string(b)->_len;
-	SQChar *s = _sp(l + ol + 1);
-	memcpy(s, _stringval(a), (size_t)l);
-	memcpy(s + l, _stringval(b), (size_t)ol);
-	dest = SQString::Create(_ss(this), _spval, l + ol);
+	dest = SQString::Create(_ss(this), fmt::format("{}{}", _stringval(a), _stringval(b)));
 	return true;
 }
 
@@ -379,7 +376,7 @@ bool SQVM::StartCall(SQClosure *closure,SQInteger target,SQInteger args,SQIntege
 
 	if (!tailcall) {
 		CallInfo lc = {};
-		lc._generator = NULL;
+		lc._generator = nullptr;
 		lc._etraps = 0;
 		lc._prevstkbase = (SQInt32) ( stackbase - _stackbase );
 		lc._target = (SQInt32) target;
@@ -427,7 +424,7 @@ bool SQVM::Return(SQInteger _arg0, SQInteger _arg1, SQObjectPtr &retval)
 		else retval = _null_;
 	}
 	else {
-		if(target != -1) { //-1 is when a class contructor ret value has to be ignored
+		if(target != -1) { //-1 is when a class constructor ret value has to be ignored
 			if (_arg0 != MAX_FUNC_STACKSIZE)
 				STK(target) = _stack._vals[oldstackbase+_arg1];
 			else
@@ -437,7 +434,7 @@ bool SQVM::Return(SQInteger _arg0, SQInteger _arg1, SQObjectPtr &retval)
 
 	while (last_top > oldstackbase) _stack._vals[last_top--].Null();
 	assert(oldstackbase >= _stackbase);
-	return broot?true:false;
+	return broot != 0;
 }
 
 #define _RET_ON_FAIL(exp) { if(!exp) return false; }
@@ -470,10 +467,10 @@ bool SQVM::DerefInc(SQInteger op,SQObjectPtr &target, SQObjectPtr &self, SQObjec
 
 #define arg0 (_i_._arg0)
 #define arg1 (_i_._arg1)
-#define sarg1 (*(const_cast<SQInt32 *>(&_i_._arg1)))
+#define sarg1 (std::bit_cast<SQInt32>(_i_._arg1))
 #define arg2 (_i_._arg2)
 #define arg3 (_i_._arg3)
-#define sarg3 ((SQInteger)*((const signed char *)&_i_._arg3))
+#define sarg3 ((SQInteger)std::bit_cast<char>(_i_._arg3))
 
 SQRESULT SQVM::Suspend()
 {
@@ -539,16 +536,16 @@ bool SQVM::FOREACH_OP(SQObjectPtr &o1,SQObjectPtr &o2,SQObjectPtr
 			_generator(o1)->Resume(this, arg_2+1);
 			_FINISH(0);
 		}
-		FALLTHROUGH;
+		[[fallthrough]];
 	default:
-		Raise_Error("cannot iterate %s", GetTypeName(o1));
+		Raise_Error(fmt::format("cannot iterate {}", GetTypeName(o1)));
 	}
 	return false; //cannot be hit(just to avoid warnings)
 }
 
 bool SQVM::DELEGATE_OP(SQObjectPtr &trg,SQObjectPtr &o1,SQObjectPtr &o2)
 {
-	if(type(o1) != OT_TABLE) { Raise_Error("delegating a '%s'", GetTypeName(o1)); return false; }
+	if(type(o1) != OT_TABLE) { Raise_Error(fmt::format("delegating a '{}'", GetTypeName(o1))); return false; }
 	switch(type(o2)) {
 	case OT_TABLE:
 		if(!_table(o1)->SetDelegate(_table(o2))){
@@ -557,10 +554,10 @@ bool SQVM::DELEGATE_OP(SQObjectPtr &trg,SQObjectPtr &o1,SQObjectPtr &o2)
 		}
 		break;
 	case OT_NULL:
-		_table(o1)->SetDelegate(NULL);
+		_table(o1)->SetDelegate(nullptr);
 		break;
 	default:
-		Raise_Error("using '%s' as delegate", GetTypeName(o2));
+		Raise_Error(fmt::format("using '{}' as delegate", GetTypeName(o2)));
 		return false;
 		break;
 	}
@@ -616,7 +613,7 @@ bool SQVM::GETVARGV_OP(SQObjectPtr &target,SQObjectPtr &index,CallInfo *ci)
 		return false;
 	}
 	if(!sq_isnumeric(index)){
-		Raise_Error("indexing 'vargv' with %s",GetTypeName(index));
+		Raise_Error(fmt::format("indexing 'vargv' with {}",GetTypeName(index)));
 		return false;
 	}
 	SQInteger idx = tointeger(index);
@@ -627,10 +624,10 @@ bool SQVM::GETVARGV_OP(SQObjectPtr &target,SQObjectPtr &index,CallInfo *ci)
 
 bool SQVM::CLASS_OP(SQObjectPtr &target,SQInteger baseclass,SQInteger attributes)
 {
-	SQClass *base = NULL;
+	SQClass *base = nullptr;
 	SQObjectPtr attrs;
 	if(baseclass != -1) {
-		if(type(_stack._vals[_stackbase+baseclass]) != OT_CLASS) { Raise_Error("trying to inherit from a %s",GetTypeName(_stack._vals[_stackbase+baseclass])); return false; }
+		if(type(_stack._vals[_stackbase+baseclass]) != OT_CLASS) { Raise_Error(fmt::format("trying to inherit from a {}",GetTypeName(_stack._vals[_stackbase+baseclass]))); return false; }
 		base = _class(_stack._vals[_stackbase + baseclass]);
 	}
 	if(attributes != MAX_FUNC_STACKSIZE) {
@@ -653,7 +650,7 @@ bool SQVM::CLASS_OP(SQObjectPtr &target,SQInteger baseclass,SQInteger attributes
 bool SQVM::IsEqual(SQObjectPtr &o1,SQObjectPtr &o2,bool &res)
 {
 	if(type(o1) == type(o2)) {
-		res = ((_rawval(o1) == _rawval(o2)?true:false));
+		res = ((_rawval(o1) == _rawval(o2)));
 	}
 	else {
 		if(sq_isnumeric(o1) && sq_isnumeric(o2)) {
@@ -685,7 +682,7 @@ bool SQVM::GETPARENT_OP(SQObjectPtr &o,SQObjectPtr &target)
 		case OT_CLASS: target = _class(o)->_base?_class(o)->_base:_null_;
 			break;
 		default:
-			Raise_Error("the %s type doesn't have a parent slot", GetTypeName(o));
+			Raise_Error(fmt::format("the {} type doesn't have a parent slot", GetTypeName(o)));
 			return false;
 	}
 	return true;
@@ -708,11 +705,10 @@ bool SQVM::Execute(SQObjectPtr &closure, SQInteger target, SQInteger nargs, SQIn
 			temp_reg = closure;
 			if(!StartCall(_closure(temp_reg), _top - nargs, nargs, stackbase, false)) {
 				//call the handler if there are no calls in the stack, if not relies on the previous node
-				if(ci == NULL) CallErrorHandler(_lasterror);
+				if(ci == nullptr) CallErrorHandler(_lasterror);
 				return false;
 			}
 			if (_funcproto(_closure(temp_reg)->_function)->_bgenerator) {
-				//SQFunctionProto *f = _funcproto(_closure(temp_reg)->_function);
 				SQGenerator *gen = SQGenerator::Create(_ss(this), _closure(temp_reg));
 				_GUARD(gen->Yield(this));
 				Return(1, ci->_target, temp_reg);
@@ -745,10 +741,16 @@ exception_restore:
 		{
 			DecreaseOps(1);
 			if (ShouldSuspend()) { _suspended = SQTrue; _suspended_traps = traps; return true; }
+			if (IsOpsTillSuspendError()) {
+				Raise_Error(fmt::format("excessive CPU usage in {}", _ops_till_suspend_error_label));
+				SQ_THROW();
+			}
 
 			const SQInstruction &_i_ = *ci->_ip++;
-			//dumpstack(_stackbase);
-			//printf("%s %d %d %d %d\n",g_InstrDesc[_i_.op].name,arg0,arg1,arg2,arg3);
+#ifdef _DEBUG_DUMP
+			dumpstack(_stackbase);
+			printf("%s %d %d %d %d\n",g_InstrDesc[_i_.op].name,arg0,arg1,arg2,arg3);
+#endif
 			switch(_i_.op)
 			{
 			case _OP_LINE:
@@ -757,7 +759,7 @@ exception_restore:
 				continue;
 			case _OP_LOAD: TARGET = ci->_literals[arg1]; continue;
 			case _OP_LOADINT: TARGET = (SQInteger)arg1; continue;
-			case _OP_LOADFLOAT: TARGET = *((const SQFloat *)&arg1); continue;
+			case _OP_LOADFLOAT: TARGET = std::bit_cast<SQFloat>(arg1); continue;
 			case _OP_DLOAD: TARGET = ci->_literals[arg1]; STK(arg2) = ci->_literals[arg3];continue;
 			case _OP_TAILCALL:
 				temp_reg = STK(arg1);
@@ -769,7 +771,7 @@ exception_restore:
 					ct_stackbase = _stackbase;
 					goto common_call;
 				}
-				FALLTHROUGH;
+				[[fallthrough]];
 			case _OP_CALL: {
 					ct_tailcall = false;
 					ct_target = arg0;
@@ -839,11 +841,11 @@ common_call:
 							STK(ct_target) = clo;
 							break;
 						}
-						Raise_Error("attempt to call '%s'", GetTypeName(clo));
+						Raise_Error(fmt::format("attempt to call '{}'", GetTypeName(clo)));
 						SQ_THROW();
 					  }
 					default:
-						Raise_Error("attempt to call '%s'", GetTypeName(clo));
+						Raise_Error(fmt::format("attempt to call '{}'", GetTypeName(clo)));
 						SQ_THROW();
 					}
 				}
@@ -945,7 +947,7 @@ common_call:
 			case _OP_EXISTS: TARGET = Get(STK(arg1), STK(arg2), temp_reg, true,false)?_true_:_false_;continue;
 			case _OP_INSTANCEOF:
 				if(type(STK(arg1)) != OT_CLASS || type(STK(arg2)) != OT_INSTANCE)
-				{Raise_Error("cannot apply instanceof between a %s and a %s",GetTypeName(STK(arg1)),GetTypeName(STK(arg2))); SQ_THROW();}
+				{Raise_Error(fmt::format("cannot apply instanceof between a {} and a {}",GetTypeName(STK(arg1)),GetTypeName(STK(arg2)))); SQ_THROW();}
 				TARGET = _instance(STK(arg2))->InstanceOf(_class(STK(arg1)))?_true_:_false_;
 				continue;
 			case _OP_AND:
@@ -968,7 +970,7 @@ common_call:
 					TARGET = SQInteger(~t);
 					continue;
 				}
-				Raise_Error("attempt to perform a bitwise op on a %s", GetTypeName(STK(arg1)));
+				Raise_Error(fmt::format("attempt to perform a bitwise op on a {}", GetTypeName(STK(arg1))));
 				SQ_THROW();
 			case _OP_CLOSURE: {
 				SQClosure *c = ci->_closure._unVal.pClosure;
@@ -983,7 +985,7 @@ common_call:
 					traps -= ci->_etraps;
 					if(sarg1 != MAX_FUNC_STACKSIZE) STK(arg1) = temp_reg;
 				}
-				else { Raise_Error("trying to yield a '%s',only genenerator can be yielded", GetTypeName(ci->_closure)); SQ_THROW();}
+				else { Raise_Error(fmt::format("trying to yield a '{}',only genenerator can be yielded", GetTypeName(ci->_closure))); SQ_THROW();}
 				if(Return(arg0, arg1, temp_reg)){
 					assert(traps == 0);
 					outres = temp_reg;
@@ -993,7 +995,7 @@ common_call:
 				}
 				continue;
 			case _OP_RESUME:
-				if(type(STK(arg1)) != OT_GENERATOR){ Raise_Error("trying to resume a '%s',only genenerator can be resumed", GetTypeName(STK(arg1))); SQ_THROW();}
+				if(type(STK(arg1)) != OT_GENERATOR){ Raise_Error(fmt::format("trying to resume a '{}',only genenerator can be resumed", GetTypeName(STK(arg1)))); SQ_THROW();}
 				_GUARD(_generator(STK(arg1))->Resume(this, arg0));
 				traps += ci->_etraps;
                 continue;
@@ -1009,7 +1011,7 @@ common_call:
 			case _OP_DELEGATE: _GUARD(DELEGATE_OP(TARGET,STK(arg1),STK(arg2))); continue;
 			case _OP_CLONE:
 				if(!Clone(STK(arg1), TARGET))
-				{ Raise_Error("cloning a %s", GetTypeName(STK(arg1))); SQ_THROW();}
+				{ Raise_Error(fmt::format("cloning a {}", GetTypeName(STK(arg1)))); SQ_THROW();}
 				continue;
 			case _OP_TYPEOF: TypeOf(STK(arg1), TARGET); continue;
 			case _OP_PUSHTRAP:{
@@ -1028,7 +1030,7 @@ common_call:
 			case _OP_THROW:	Raise_Error(TARGET); SQ_THROW();
 			case _OP_CLASS: _GUARD(CLASS_OP(TARGET,arg1,arg2)); continue;
 			case _OP_NEWSLOTA:
-				bool bstatic = (arg0&NEW_SLOT_STATIC_FLAG)?true:false;
+				bool bstatic = (arg0&NEW_SLOT_STATIC_FLAG) != 0;
 				if(type(STK(arg1)) == OT_CLASS) {
 					if(type(_class(STK(arg1))->_metamethods[MT_NEWMEMBER]) != OT_NULL ) {
 						Push(STK(arg1)); Push(STK(arg2)); Push(STK(arg3));
@@ -1053,7 +1055,9 @@ common_call:
 exception_trap:
 	{
 		SQObjectPtr currerror = _lasterror;
-//		dumpstack(_stackbase);
+#ifdef _DEBUG_DUMP
+		dumpstack(_stackbase);
+#endif
 		SQInteger n = 0;
 		SQInteger last_top = _top;
 		if(ci) {
@@ -1062,11 +1066,11 @@ exception_trap:
 			if(traps) {
 				do {
 					if(ci->_etraps > 0) {
-						SQExceptionTrap &et = _etraps.top();
-						ci->_ip = et._ip;
-						_top = et._stacksize;
-						_stackbase = et._stackbase;
-						_stack._vals[_stackbase+et._extarget] = currerror;
+						SQExceptionTrap &trap = _etraps.top();
+						ci->_ip = trap._ip;
+						_top = trap._stacksize;
+						_stackbase = trap._stackbase;
+						_stack._vals[_stackbase+trap._extarget] = currerror;
 						_etraps.pop_back(); traps--; ci->_etraps--;
 						CLEARSTACK(last_top);
 						goto exception_restore;
@@ -1160,7 +1164,7 @@ bool SQVM::CallNative(SQNativeClosure *nclosure,SQInteger nargs,SQInteger stackb
 	_top = stackbase + nargs;
 	CallInfo lci = {};
 	lci._closure = nclosure;
-	lci._generator = NULL;
+	lci._generator = nullptr;
 	lci._etraps = 0;
 	lci._prevstkbase = (SQInt32) (stackbase - _stackbase);
 	lci._ncalls = 1;
@@ -1244,7 +1248,8 @@ bool SQVM::Get(const SQObjectPtr &self,const SQObjectPtr &key,SQObjectPtr &dest,
 	if(fetchroot) {
 		if(_rawval(STK(0)) == _rawval(self) &&
 			type(STK(0)) == type(self)) {
-				return _table(_roottable)->Get(key,dest);
+				if (_table(_roottable)->Get(key,dest)) return true;
+				return _table(_ss(this)->_consts)->Get(key,dest);
 		}
 	}
 	return false;
@@ -1279,9 +1284,10 @@ bool SQVM::FallBackGet(const SQObjectPtr &self,const SQObjectPtr &key,SQObjectPt
 	case OT_STRING:
 		if(sq_isnumeric(key)){
 			SQInteger n=tointeger(key);
-			if(abs((int)n)<_string(self)->_len){
-				if(n<0)n=_string(self)->_len-n;
-				dest=SQInteger(_stringval(self)[n]);
+			std::string_view str = _stringval(self);
+			if (n < 0) n = str.size() + n;
+			if (n >= 0 && n < static_cast<SQInteger>(str.size())) {
+				dest=SQInteger(str[n]);
 				return true;
 			}
 			return false;
@@ -1329,7 +1335,7 @@ bool SQVM::Set(const SQObjectPtr &self,const SQObjectPtr &key,const SQObjectPtr 
 				return true;
 			}
 		}
-		FALLTHROUGH;
+		[[fallthrough]];
 	case OT_USERDATA:
 		if(_delegable(self)->_delegate) {
 			SQObjectPtr t;
@@ -1346,10 +1352,10 @@ bool SQVM::Set(const SQObjectPtr &self,const SQObjectPtr &key,const SQObjectPtr 
 		}
 		break;
 	case OT_ARRAY:
-		if(!sq_isnumeric(key)) {Raise_Error("indexing %s with %s",GetTypeName(self),GetTypeName(key)); return false; }
+		if(!sq_isnumeric(key)) {Raise_Error(fmt::format("indexing {} with {}",GetTypeName(self),GetTypeName(key))); return false; }
 		return _array(self)->Set(tointeger(key),val);
 	default:
-		Raise_Error("trying to set '%s'",GetTypeName(self));
+		Raise_Error(fmt::format("trying to set '{}'",GetTypeName(self)));
 		return false;
 	}
 	if(fetchroot) {
@@ -1418,13 +1424,13 @@ bool SQVM::NewSlot(const SQObjectPtr &self,const SQObjectPtr &key,const SQObject
 			}
 			else {
 				SQObjectPtr oval = PrintObjVal(key);
-				Raise_Error("the property '%s' already exists",_stringval(oval));
+				Raise_Error(fmt::format("the property '{}' already exists",_stringval(oval)));
 				return false;
 			}
 		}
 		break;
 	default:
-		Raise_Error("indexing %s with %s",GetTypeName(self),GetTypeName(key));
+		Raise_Error(fmt::format("indexing {} with {}",GetTypeName(self),GetTypeName(key)));
 		return false;
 		break;
 	}
@@ -1455,15 +1461,15 @@ bool SQVM::DeleteSlot(const SQObjectPtr &self,const SQObjectPtr &key,SQObjectPtr
 				}
 			}
 			else {
-				Raise_Error("cannot delete a slot from %s",GetTypeName(self));
+				Raise_Error(fmt::format("cannot delete a slot from {}",GetTypeName(self)));
 				return false;
 			}
 		}
 		res = t;
-				}
+	}
 		break;
 	default:
-		Raise_Error("attempt to delete a slot from a %s",GetTypeName(self));
+		Raise_Error(fmt::format("attempt to delete a slot from a {}",GetTypeName(self)));
 		return false;
 	}
 	return true;
@@ -1471,9 +1477,6 @@ bool SQVM::DeleteSlot(const SQObjectPtr &self,const SQObjectPtr &key,SQObjectPtr
 
 bool SQVM::Call(SQObjectPtr &closure,SQInteger nparams,SQInteger stackbase,SQObjectPtr &outres,SQBool raiseerror,SQBool can_suspend)
 {
-#ifdef _DEBUG
-SQInteger prevstackbase = _stackbase;
-#endif
 	switch(type(closure)) {
 	case OT_CLOSURE: {
 		assert(!can_suspend || this->_can_suspend);
@@ -1482,14 +1485,13 @@ SQInteger prevstackbase = _stackbase;
 		bool ret = Execute(closure, _top - nparams, nparams, stackbase,outres,raiseerror);
 		this->_can_suspend = backup_suspend;
 		return ret;
-					 }
-		break;
-	case OT_NATIVECLOSURE:{
+	}
+
+	case OT_NATIVECLOSURE: {
 		bool suspend;
 		return CallNative(_nativeclosure(closure), nparams, stackbase, outres,suspend);
+	}
 
-						  }
-		break;
 	case OT_CLASS: {
 		SQObjectPtr constr;
 		SQObjectPtr temp;
@@ -1499,17 +1501,11 @@ SQInteger prevstackbase = _stackbase;
 			return Call(constr,nparams,stackbase,temp,raiseerror,false);
 		}
 		return true;
-				   }
-		break;
+	}
+
 	default:
 		return false;
 	}
-#ifdef _DEBUG
-	if(!_suspended) {
-		assert(_stackbase == prevstackbase);
-	}
-#endif
-	return true;
 }
 
 bool SQVM::CallMetaMethod(SQDelegable *del,SQMetaMethod mm,SQInteger nparams,SQObjectPtr &outres)

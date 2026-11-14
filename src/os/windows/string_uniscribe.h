@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file string_uniscribe.h Functions related to laying out text on Win32. */
@@ -12,7 +12,6 @@
 
 #include "../../gfx_layout.h"
 #include "../../string_base.h"
-#include <vector>
 
 
 void UniscribeResetScriptCache(FontSize size);
@@ -29,23 +28,24 @@ public:
 	static const bool SUPPORTS_RTL = true;
 
 	/**
-	* Get the actual ParagraphLayout for the given buffer.
-	* @param buff The begin of the buffer.
-	* @param buff_end The location after the last element in the buffer.
-	* @param fontMapping THe mapping of the fonts.
-	* @return The ParagraphLayout instance.
-	*/
-	static ParagraphLayouter *GetParagraphLayout(CharType *buff, CharType *buff_end, FontMap &fontMapping);
+	 * Get the actual ParagraphLayout for the given buffer.
+	 * @param buff The begin of the buffer.
+	 * @param buff_end The location after the last element in the buffer.
+	 * @param font_mapping The mapping of the fonts.
+	 * @return The ParagraphLayout instance.
+	 */
+	static std::unique_ptr<ParagraphLayouter> GetParagraphLayout(CharType *buff, CharType *buff_end, FontMap &font_mapping);
 
 	/**
-	* Append a wide character to the internal buffer.
-	* @param buff        The buffer to append to.
-	* @param buffer_last The end of the buffer.
-	* @param c           The character to add.
-	* @return The number of buffer spaces that were used.
-	*/
-	static size_t AppendToBuffer(CharType *buff, const CharType *buffer_last, WChar c)
+	 * Append a wide character to the internal buffer.
+	 * @param buff        The buffer to append to.
+	 * @param buffer_last The end of the buffer.
+	 * @param c           The character to add.
+	 * @return The number of buffer spaces that were used.
+	 */
+	static size_t AppendToBuffer(CharType *buff, const CharType *buffer_last, char32_t c)
 	{
+		assert(buff < buffer_last);
 		if (c >= 0x010000U) {
 			/* Character is encoded using surrogates in UTF-16. */
 			if (buff + 1 <= buffer_last) {
@@ -77,7 +77,7 @@ class UniscribeStringIterator : public StringIterator {
 	size_t cur_pos; ///< Current iteration position.
 
 public:
-	void SetString(const char *s) override;
+	void SetString(std::string_view s) override;
 	size_t SetCurPosition(size_t pos) override;
 	size_t Next(IterType what) override;
 	size_t Prev(IterType what) override;

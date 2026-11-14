@@ -13,13 +13,13 @@ private:
 public:
 	static SQArray* Create(SQSharedState *ss,SQInteger nInitialSize){
 		SQArray *newarray=(SQArray*)SQ_MALLOC(sizeof(SQArray));
-		new (newarray) SQArray(ss,nInitialSize);
+		new (newarray, sizeof(SQArray)) SQArray(ss,nInitialSize);
 		return newarray;
 	}
 #ifndef NO_GARBAGE_COLLECTOR
-	void Mark(SQCollectable **chain);
+	void EnqueueMarkObjectForChildren(SQGCMarkerQueue &queue) override;
 #endif
-	void Finalize(){
+	void Finalize() override {
 		_values.resize(0);
 	}
 	bool Get(const SQInteger nidx,SQObjectPtr &val)
@@ -78,9 +78,13 @@ public:
 		ShrinkIfNeeded();
 		return true;
 	}
-	void Release()
+	void Release() override
 	{
-		sq_delete(this,SQArray);
+		this->_sharedstate->DelayFinalFree(this);
+	}
+	void FinalFree() override
+	{
+		sq_delete(this, SQArray);
 	}
 	SQObjectPtrVec _values;
 };

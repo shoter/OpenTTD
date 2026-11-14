@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_admin.cpp Implementation of ScriptAdmin. */
@@ -12,13 +12,24 @@
 #include "script_log.hpp"
 #include "../../network/network_admin.h"
 #include "../script_instance.hpp"
-#include "../../string_func.h"
+#include "../../3rdparty/nlohmann/json.hpp"
 
 #include "../../safeguards.h"
 
-/* static */ bool ScriptAdmin::MakeJSON(HSQUIRRELVM vm, SQInteger index, int max_depth, std::string &data)
+/**
+ * Convert a Squirrel structure into a JSON object.
+ *
+ * This function is not "static", so it can be tested in unittests.
+ *
+ * @param json The resulting JSON object.
+ * @param vm The VM to operate on.
+ * @param index The index we are currently working for.
+ * @param depth The current depth in the squirrel struct.
+ * @return True iff the conversion was successful.
+ */
+bool ScriptAdminMakeJSON(nlohmann::json &json, HSQUIRRELVM vm, SQInteger index, int depth = 0)
 {
-	if (max_depth == 0) {
+	if (depth == SQUIRREL_MAX_DEPTH) {
 		ScriptLog::Error("Send parameters can only be nested to 25 deep. No data sent."); // SQUIRREL_MAX_DEPTH = 25
 		return false;
 	}
@@ -28,73 +39,60 @@
 			SQInteger res;
 			sq_getinteger(vm, index, &res);
 
-			char buf[10];
-			seprintf(buf, lastof(buf), "%d", (int32)res);
-			data = buf;
+			json = res;
 			return true;
 		}
 
 		case OT_STRING: {
-			const SQChar *buf;
-			sq_getstring(vm, index, &buf);
+			std::string_view view;
+			sq_getstring(vm, index, view);
 
-			size_t len = strlen(buf) + 1;
-			if (len >= 255) {
-				ScriptLog::Error("Maximum string length is 254 chars. No data sent.");
-				return false;
-			}
-
-			data = std::string("\"") + buf + "\"";
+			json = view;
 			return true;
 		}
 
 		case OT_ARRAY: {
-			data = "[ ";
+			json = nlohmann::json::array();
 
-			bool first = true;
 			sq_pushnull(vm);
 			while (SQ_SUCCEEDED(sq_next(vm, index - 1))) {
-				if (!first) data += ", ";
-				if (first) first = false;
+				nlohmann::json tmp;
 
-				std::string tmp;
-
-				bool res = MakeJSON(vm, -1, max_depth - 1, tmp);
+				bool res = ScriptAdminMakeJSON(tmp, vm, -1, depth + 1);
 				sq_pop(vm, 2);
 				if (!res) {
 					sq_pop(vm, 1);
 					return false;
 				}
-				data += tmp;
+
+				json.push_back(tmp);
 			}
 			sq_pop(vm, 1);
-			data += " ]";
 			return true;
 		}
 
 		case OT_TABLE: {
-			data = "{ ";
+			json = nlohmann::json::object();
 
-			bool first = true;
 			sq_pushnull(vm);
 			while (SQ_SUCCEEDED(sq_next(vm, index - 1))) {
-				if (!first) data += ", ";
-				if (first) first = false;
+				sq_tostring(vm, -2);
+				std::string_view view;
+				sq_getstring(vm, -1, view);
+				std::string key{view};
+				sq_pop(vm, 1);
 
-				std::string key;
-				std::string value;
-
-				/* Store the key + value */
-				bool res = MakeJSON(vm, -2, max_depth - 1, key) && MakeJSON(vm, -1, max_depth - 1, value);
+				nlohmann::json value;
+				bool res = ScriptAdminMakeJSON(value, vm, -1, depth + 1);
 				sq_pop(vm, 2);
 				if (!res) {
 					sq_pop(vm, 1);
 					return false;
 				}
-				data += key + ": " + value;
+
+				json[std::move(key)] = std::move(value);
 			}
 			sq_pop(vm, 1);
-			data += " }";
 			return true;
 		}
 
@@ -102,17 +100,12 @@
 			SQBool res;
 			sq_getbool(vm, index, &res);
 
-			if (res) {
-				data = "true";
-				return true;
-			}
-
-			data = "false";
+			json = res ? true : false;
 			return true;
 		}
 
 		case OT_NULL: {
-			data = "null";
+			json = nullptr;
 			return true;
 		}
 
@@ -130,16 +123,13 @@
 		return sq_throwerror(vm, "ScriptAdmin::Send requires a table as first parameter. No data sent.");
 	}
 
-	std::string json;
-	ScriptAdmin::MakeJSON(vm, -1, SQUIRREL_MAX_DEPTH, json);
-
-	if (json.length() > NETWORK_GAMESCRIPT_JSON_LENGTH) {
-		ScriptLog::Error("You are trying to send a table that is too large to the AdminPort. No data sent.");
+	nlohmann::json json;
+	if (!ScriptAdminMakeJSON(json, vm, -1)) {
 		sq_pushinteger(vm, 0);
 		return 1;
 	}
 
-	NetworkAdminGameScript(json.c_str());
+	NetworkAdminGameScript(json.dump());
 
 	sq_pushinteger(vm, 1);
 	return 1;

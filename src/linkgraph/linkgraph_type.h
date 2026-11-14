@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file linkgraph_type.h Declaration of link graph types used for cargo distribution. */
@@ -10,31 +10,25 @@
 #ifndef LINKGRAPH_TYPE_H
 #define LINKGRAPH_TYPE_H
 
-typedef uint16 LinkGraphID;
-static const LinkGraphID INVALID_LINK_GRAPH = UINT16_MAX;
+#include "../core/pool_type.hpp"
 
-typedef uint16 LinkGraphJobID;
-static const LinkGraphID INVALID_LINK_GRAPH_JOB = UINT16_MAX;
+using LinkGraphID = PoolID<uint16_t, struct LinkGraphIDTag, 0xFFFF, 0xFFFF>;
+using LinkGraphJobID = PoolID<uint16_t, struct LinkGraphJobIDTag, 0xFFFF, 0xFFFF>;
 
-typedef uint16 NodeID;
+typedef uint16_t NodeID;
 static const NodeID INVALID_NODE = UINT16_MAX;
 
-enum DistributionType : byte {
-	DT_BEGIN = 0,
-	DT_MIN = 0,
-	DT_MANUAL = 0,           ///< Manual distribution. No link graph calculations are run.
-	DT_ASYMMETRIC = 1,       ///< Asymmetric distribution. Usually cargo will only travel in one direction.
-	DT_MAX_NONSYMMETRIC = 1, ///< Maximum non-symmetric distribution.
-	DT_SYMMETRIC = 2,        ///< Symmetric distribution. The same amount of cargo travels in each direction between each pair of nodes.
-	DT_MAX = 2,
-	DT_NUM = 3,
-	DT_END = 3
-};
-
-/* It needs to be 8bits, because we save and load it as such
- * Define basic enum properties
+/**
+ * Distribution types.
  */
-template <> struct EnumPropsT<DistributionType> : MakeEnumPropsT<DistributionType, byte, DT_BEGIN, DT_END, DT_NUM> {};
+enum class DistributionType : uint8_t {
+	Min = 0, ///< Minimal value of Distribution type.
+	Manual = 0, ///< Manual distribution. No link graph calculations are run.
+	Asymmetric = 1, ///< Asymmetric distribution. Usually cargo will only travel in one direction.
+	MaxNonSymmetric = 1, ///< Maximum non-symmetric distribution.
+	Symmetric = 2, ///< Symmetric distribution. The same amount of cargo travels in each direction between each pair of nodes.
+	Max = 2, ///< Maximal value of Distribution type.
+};
 
 /**
  * Special modes for updating links. 'Restricted' means that vehicles with
@@ -49,13 +43,14 @@ template <> struct EnumPropsT<DistributionType> : MakeEnumPropsT<DistributionTyp
  * Refreshing a link makes just sure a minimum capacity is kept. Increasing
  * actually adds the given capacity.
  */
-enum EdgeUpdateMode {
-	EUM_INCREASE     = 1,      ///< Increase capacity.
-	EUM_REFRESH      = 1 << 1, ///< Refresh capacity.
-	EUM_RESTRICTED   = 1 << 2, ///< Use restricted link.
-	EUM_UNRESTRICTED = 1 << 3, ///< Use unrestricted link.
+enum class EdgeUpdateMode : uint8_t {
+	Increase, ///< Increase capacity.
+	Refresh, ///< Refresh capacity.
+	Restricted, ///< Use restricted link.
+	Unrestricted, ///< Use unrestricted link.
 };
 
-DECLARE_ENUM_AS_BIT_SET(EdgeUpdateMode)
+/** Bitset of \c EdgeUpdateMode elements. */
+using EdgeUpdateModes = EnumBitSet<EdgeUpdateMode, uint8_t>;
 
 #endif /* LINKGRAPH_TYPE_H */

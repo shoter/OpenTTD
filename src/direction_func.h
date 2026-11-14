@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file direction_func.h Different functions related to conversions between directions. */
@@ -18,9 +18,9 @@
  * @param d The value to check
  * @return True if the value belongs to a DiagDirection, else false
  */
-static inline bool IsValidDiagDirection(DiagDirection d)
+inline bool IsValidDiagDirection(DiagDirection d)
 {
-	return d < DIAGDIR_END;
+	return d < DiagDirection::End;
 }
 
 /**
@@ -29,9 +29,9 @@ static inline bool IsValidDiagDirection(DiagDirection d)
  * @param d The value to check
  * @return True if the value belongs to a Direction, else false
  */
-static inline bool IsValidDirection(Direction d)
+inline bool IsValidDirection(Direction d)
 {
-	return d < DIR_END;
+	return d < Direction::End;
 }
 
 /**
@@ -40,9 +40,9 @@ static inline bool IsValidDirection(Direction d)
  * @param d The value to check
  * @return True if the value belongs to an Axis, else false
  */
-static inline bool IsValidAxis(Axis d)
+inline bool IsValidAxis(Axis d)
 {
-	return d < AXIS_END;
+	return d < Axis::End;
 }
 
 /**
@@ -51,10 +51,10 @@ static inline bool IsValidAxis(Axis d)
  * @param d The direction to get the reverse from
  * @return The reverse Direction
  */
-static inline Direction ReverseDir(Direction d)
+inline Direction ReverseDir(Direction d)
 {
 	assert(IsValidDirection(d));
-	return (Direction)(4 ^ d);
+	return static_cast<Direction>(4 ^ to_underlying(d));
 }
 
 
@@ -65,30 +65,40 @@ static inline Direction ReverseDir(Direction d)
  * @param d1 The second direction as the offset from the base
  * @return The difference how the second direction drifts of the first one.
  */
-static inline DirDiff DirDifference(Direction d0, Direction d1)
+inline DirDiff DirDifference(Direction d0, Direction d1)
 {
 	assert(IsValidDirection(d0));
 	assert(IsValidDirection(d1));
 	/* Cast to uint so compiler can use bitmask. If the difference is negative
 	 * and we used int instead of uint, further "+ 8" would have to be added. */
-	return (DirDiff)((uint)(d0 - d1) % 8);
+	return static_cast<DirDiff>(static_cast<uint>(to_underlying(d0) - to_underlying(d1)) % 8);
 }
 
 /**
  * Applies two differences together
  *
  * This function adds two differences together and returns the resulting
- * difference. So adding two DIRDIFF_REVERSE together results in the
- * DIRDIFF_SAME difference.
+ * difference. So adding two DirDiff::Reverse together results in the
+ * DirDiff::Same difference.
  *
  * @param d The first difference
  * @param delta The second difference to add on
  * @return The resulting difference
  */
-static inline DirDiff ChangeDirDiff(DirDiff d, DirDiff delta)
+inline DirDiff ChangeDirDiff(DirDiff d, DirDiff delta)
 {
 	/* Cast to uint so compiler can use bitmask. Result can never be negative. */
-	return (DirDiff)((uint)(d + delta) % 8);
+	return static_cast<DirDiff>(static_cast<uint>(to_underlying(d) + to_underlying(delta)) % 8);
+}
+
+/**
+ * Limit a direction difference to up to 45 degrees.
+ * @param d direction difference to limit.
+ * @return limited difference.
+ */
+inline DirDiff LimitDirDiff(DirDiff d)
+{
+	return d > DirDiff::Reverse ? DirDiff::Left45 : DirDiff::Right45;
 }
 
 /**
@@ -101,11 +111,11 @@ static inline DirDiff ChangeDirDiff(DirDiff d, DirDiff delta)
  * @param delta The offset/drift applied to the direction
  * @return The new direction
  */
-static inline Direction ChangeDir(Direction d, DirDiff delta)
+inline Direction ChangeDir(Direction d, DirDiff delta)
 {
 	assert(IsValidDirection(d));
 	/* Cast to uint so compiler can use bitmask. Result can never be negative. */
-	return (Direction)((uint)(d + delta) % 8);
+	return static_cast<Direction>(static_cast<uint>(to_underlying(d) + to_underlying(delta)) % 8);
 }
 
 
@@ -115,10 +125,10 @@ static inline Direction ChangeDir(Direction d, DirDiff delta)
  * @param d The DiagDirection to get the reverse from
  * @return The reverse direction
  */
-static inline DiagDirection ReverseDiagDir(DiagDirection d)
+inline DiagDirection ReverseDiagDir(DiagDirection d)
 {
 	assert(IsValidDiagDirection(d));
-	return (DiagDirection)(2 ^ d);
+	return static_cast<DiagDirection>(2 ^ to_underlying(d));
 }
 
 /**
@@ -128,12 +138,12 @@ static inline DiagDirection ReverseDiagDir(DiagDirection d)
  * @param d1 The second direction as the offset from the base
  * @return The difference how the second direction drifts of the first one.
  */
-static inline DiagDirDiff DiagDirDifference(DiagDirection d0, DiagDirection d1)
+inline DiagDirDiff DiagDirDifference(DiagDirection d0, DiagDirection d1)
 {
 	assert(IsValidDiagDirection(d0));
 	assert(IsValidDiagDirection(d1));
 	/* Cast to uint so compiler can use bitmask. Result can never be negative. */
-	return (DiagDirDiff)((uint)(d0 - d1) % 4);
+	return static_cast<DiagDirDiff>(static_cast<uint>(to_underlying(d0) - to_underlying(d1)) % 4);
 }
 
 /**
@@ -146,11 +156,11 @@ static inline DiagDirDiff DiagDirDifference(DiagDirection d0, DiagDirection d1)
  * @param delta The difference to apply on
  * @return The new direction which was calculated
  */
-static inline DiagDirection ChangeDiagDir(DiagDirection d, DiagDirDiff delta)
+inline DiagDirection ChangeDiagDir(DiagDirection d, DiagDirDiff delta)
 {
 	assert(IsValidDiagDirection(d));
 	/* Cast to uint so compiler can use bitmask. Result can never be negative. */
-	return (DiagDirection)((uint)(d + delta) % 4);
+	return static_cast<DiagDirection>(static_cast<uint>(to_underlying(d) + to_underlying(delta)) % 4);
 }
 
 /**
@@ -158,15 +168,15 @@ static inline DiagDirection ChangeDiagDir(DiagDirection d, DiagDirDiff delta)
  *
  * This function can be used to convert the 8-way Direction to
  * the 4-way DiagDirection. If the direction cannot be mapped its
- * "rounded clockwise". So DIR_N becomes DIAGDIR_NE.
+ * "rounded clockwise". So Direction::N becomes DiagDirection::NE.
  *
  * @param dir The direction to convert
  * @return The resulting DiagDirection, maybe "rounded clockwise".
  */
-static inline DiagDirection DirToDiagDir(Direction dir)
+inline DiagDirection DirToDiagDir(Direction dir)
 {
 	assert(IsValidDirection(dir));
-	return (DiagDirection)(dir >> 1);
+	return static_cast<DiagDirection>(to_underlying(dir) >> 1);
 }
 
 /**
@@ -179,10 +189,10 @@ static inline DiagDirection DirToDiagDir(Direction dir)
  * @param dir The direction to convert
  * @return The resulting Direction
  */
-static inline Direction DiagDirToDir(DiagDirection dir)
+inline Direction DiagDirToDir(DiagDirection dir)
 {
 	assert(IsValidDiagDirection(dir));
-	return (Direction)(dir * 2 + 1);
+	return static_cast<Direction>(to_underlying(dir) * 2 + 1);
 }
 
 
@@ -194,10 +204,10 @@ static inline Direction DiagDirToDir(DiagDirection dir)
  * @param a The given axis
  * @return The other axis
  */
-static inline Axis OtherAxis(Axis a)
+inline Axis OtherAxis(Axis a)
 {
 	assert(IsValidAxis(a));
-	return (Axis)(a ^ 1);
+	return static_cast<Axis>(to_underlying(a) ^ 1);
 }
 
 
@@ -211,10 +221,10 @@ static inline Axis OtherAxis(Axis a)
  * @param d The DiagDirection
  * @return The axis which belongs to the direction
  */
-static inline Axis DiagDirToAxis(DiagDirection d)
+inline Axis DiagDirToAxis(DiagDirection d)
 {
 	assert(IsValidDiagDirection(d));
-	return (Axis)(d & 1);
+	return static_cast<Axis>(to_underlying(d) & 1);
 }
 
 
@@ -229,10 +239,27 @@ static inline Axis DiagDirToAxis(DiagDirection d)
  * @param a The axis
  * @return The direction pointed to south
  */
-static inline DiagDirection AxisToDiagDir(Axis a)
+inline DiagDirection AxisToDiagDir(Axis a)
 {
 	assert(IsValidAxis(a));
-	return (DiagDirection)(2 - a);
+	return static_cast<DiagDirection>(2 - to_underlying(a));
+}
+
+/**
+ * Converts an Axis to DiagDirections
+ *
+ * This function returns both DiagDirections which
+ * belong to the axis.
+ *
+ * @param a The axis
+ * @return The DiagDirections.
+ */
+inline DiagDirections AxisToDiagDirs(Axis a)
+{
+	assert(IsValidAxis(a));
+	return a == Axis::X
+		? DiagDirections{DiagDirection::NE, DiagDirection::SW}
+		: DiagDirections{DiagDirection::SE, DiagDirection::NW};
 }
 
 /**
@@ -246,10 +273,10 @@ static inline DiagDirection AxisToDiagDir(Axis a)
  * @param a The axis
  * @return The direction pointed to south
  */
-static inline Direction AxisToDirection(Axis a)
+inline Direction AxisToDirection(Axis a)
 {
 	assert(IsValidAxis(a));
-	return (Direction)(5 - 2 * a);
+	return static_cast<Direction>(5 - 2 * to_underlying(a));
 }
 
 /**
@@ -258,10 +285,10 @@ static inline Direction AxisToDirection(Axis a)
  * @param ns north -> 0, south -> 1
  * @return the desired DiagDirection
  */
-static inline DiagDirection XYNSToDiagDir(Axis xy, uint ns)
+inline DiagDirection XYNSToDiagDir(Axis xy, uint ns)
 {
 	assert(IsValidAxis(xy));
-	return (DiagDirection)(xy * 3 ^ ns * 2);
+	return static_cast<DiagDirection>(to_underlying(xy) * 3 ^ ns * 2);
 }
 
 /**
@@ -270,10 +297,10 @@ static inline DiagDirection XYNSToDiagDir(Axis xy, uint ns)
  * @param dir The given direction.
  * @return True if the direction is diagonal.
  */
-static inline bool IsDiagonalDirection(Direction dir)
+inline bool IsDiagonalDirection(Direction dir)
 {
 	assert(IsValidDirection(dir));
-	return (dir & 1) != 0;
+	return (to_underlying(dir) & 1) != 0;
 }
 
 #endif /* DIRECTION_FUNC_H */

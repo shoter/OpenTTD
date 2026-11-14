@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_order.hpp Everything to query and build orders. */
@@ -21,6 +21,8 @@ class ScriptOrder : public ScriptObject {
 public:
 	/**
 	 * All order related error messages.
+	 *
+	 * @see ScriptErrorType
 	 */
 	enum ErrorMessages {
 		/** Base for all order related errors */
@@ -55,9 +57,9 @@ public:
 		/** Never unload the vehicle; only for stations. Cannot be set when OF_UNLOAD, OF_TRANSFER or OF_NO_LOAD is set. */
 		OF_NO_UNLOAD         = 1 << 4,
 
-		/** Wt till the vehicle is fully loaded; only for stations. Cannot be set when OF_NO_LOAD is set. */
+		/** Wait till the vehicle is fully loaded; only for stations. Cannot be set when OF_NO_LOAD is set. */
 		OF_FULL_LOAD         = 2 << 5,
-		/** Wt till at least one cargo of the vehicle is fully loaded; only for stations. Cannot be set when OF_NO_LOAD is set. */
+		/** Wait till at least one cargo of the vehicle is fully loaded; only for stations. Cannot be set when OF_NO_LOAD is set. */
 		OF_FULL_LOAD_ANY     = 3 << 5,
 		/** Do not load any cargo; only for stations. Cannot be set when OF_NO_UNLOAD, OF_FULL_LOAD or OF_FULL_LOAD_ANY is set. */
 		OF_NO_LOAD           = 1 << 7,
@@ -87,14 +89,15 @@ public:
 	 */
 	enum OrderCondition {
 		/* Note: these values represent part of the in-game OrderConditionVariable enum */
-		OC_LOAD_PERCENTAGE     = ::OCV_LOAD_PERCENTAGE,    ///< Skip based on the amount of load, value is in tons.
-		OC_RELIABILITY         = ::OCV_RELIABILITY,        ///< Skip based on the reliability, value is percent (0..100).
-		OC_MAX_RELIABILITY     = ::OCV_MAX_RELIABILITY,    ///< Skip based on the maximum reliability.  Value in percent
-		OC_MAX_SPEED           = ::OCV_MAX_SPEED,          ///< Skip based on the maximum speed, value is in OpenTTD's internal speed unit, see ScriptEngine::GetMaxSpeed.
-		OC_AGE                 = ::OCV_AGE,                ///< Skip based on the age, value is in years.
-		OC_REQUIRES_SERVICE    = ::OCV_REQUIRES_SERVICE,   ///< Skip when the vehicle requires service, no value.
-		OC_UNCONDITIONALLY     = ::OCV_UNCONDITIONALLY,    ///< Always skip, no compare function, no value.
-		OC_REMAINING_LIFETIME  = ::OCV_REMAINING_LIFETIME, ///< Skip based on the remaining lifetime
+		OC_LOAD_PERCENTAGE     = to_underlying(::OrderConditionVariable::LoadPercentage), ///< Skip based on the amount of load, value is in tons.
+		OC_RELIABILITY         = to_underlying(::OrderConditionVariable::Reliability), ///< Skip based on the reliability, value is percent (0..100).
+		OC_MAX_RELIABILITY     = to_underlying(::OrderConditionVariable::MaxReliability), ///< Skip based on the maximum reliability.  Value in percent
+		OC_MAX_SPEED           = to_underlying(::OrderConditionVariable::MaxSpeed), ///< Skip based on the maximum speed, value is in OpenTTD's internal speed unit, see ScriptEngine::GetMaxSpeed.
+		OC_AGE                 = to_underlying(::OrderConditionVariable::Age), ///< Skip based on the age, value is in calendar-years. @see \ref ScriptCalendarTime
+		OC_REQUIRES_SERVICE    = to_underlying(::OrderConditionVariable::RequiresService), ///< Skip when the vehicle requires service, no value.
+		OC_UNCONDITIONALLY     = to_underlying(::OrderConditionVariable::Unconditionally), ///< Always skip, no compare function, no value.
+		OC_REMAINING_LIFETIME  = to_underlying(::OrderConditionVariable::RemainingLifetime), ///< Skip based on the remaining lifetime in calendar-years. @see \ref ScriptCalendarTime
+		OC_IS_REVERSING        = to_underlying(::OrderConditionVariable::DrivingBackwards), ///< Skip when the vehicle is reversing.
 
 		/* Custom added value, only valid for this API */
 		OC_INVALID             = -1,                       ///< An invalid condition, do not use.
@@ -105,14 +108,14 @@ public:
 	 */
 	enum CompareFunction {
 		/* Note: these values represent part of the in-game OrderConditionComparator enum */
-		CF_EQUALS        = ::OCC_EQUALS,       ///< Skip if both values are equal
-		CF_NOT_EQUALS    = ::OCC_NOT_EQUALS,   ///< Skip if both values are not equal
-		CF_LESS_THAN     = ::OCC_LESS_THAN,    ///< Skip if the value is less than the limit
-		CF_LESS_EQUALS   = ::OCC_LESS_EQUALS,  ///< Skip if the value is less or equal to the limit
-		CF_MORE_THAN     = ::OCC_MORE_THAN,    ///< Skip if the value is more than the limit
-		CF_MORE_EQUALS   = ::OCC_MORE_EQUALS,  ///< Skip if the value is more or equal to the limit
-		CF_IS_TRUE       = ::OCC_IS_TRUE,      ///< Skip if the variable is true
-		CF_IS_FALSE      = ::OCC_IS_FALSE,     ///< Skip if the variable is false
+		CF_EQUALS        = to_underlying(::OrderConditionComparator::Equal), ///< Skip if both values are equal
+		CF_NOT_EQUALS    = to_underlying(::OrderConditionComparator::NotEqual), ///< Skip if both values are not equal
+		CF_LESS_THAN     = to_underlying(::OrderConditionComparator::LessThan), ///< Skip if the value is less than the limit
+		CF_LESS_EQUALS   = to_underlying(::OrderConditionComparator::LessThanOrEqual), ///< Skip if the value is less or equal to the limit
+		CF_MORE_THAN     = to_underlying(::OrderConditionComparator::MoreThan), ///< Skip if the value is more than the limit
+		CF_MORE_EQUALS   = to_underlying(::OrderConditionComparator::MoreThanOrEqual), ///< Skip if the value is more or equal to the limit
+		CF_IS_TRUE       = to_underlying(::OrderConditionComparator::IsTrue), ///< Skip if the variable is true
+		CF_IS_FALSE      = to_underlying(::OrderConditionComparator::IsFalse), ///< Skip if the variable is false
 
 		/* Custom added value, only valid for this API */
 		CF_INVALID       = -1,                 ///< Invalid compare function, do not use.
@@ -142,7 +145,7 @@ public:
 	 * Checks whether the given order id is valid for the given vehicle.
 	 * @param vehicle_id The vehicle to check the order index for.
 	 * @param order_position The order index to check.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
 	 * @return True if and only if the order_position is valid for the given vehicle.
 	 */
 	static bool IsValidVehicleOrder(VehicleID vehicle_id, OrderPosition order_position);
@@ -207,7 +210,7 @@ public:
 	/**
 	 * Checks whether the current order is part of the orderlist.
 	 * @param vehicle_id The vehicle to check.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
 	 * @return True if and only if the current order is part of the order list.
 	 * @note If the order is a non-'non-stop' order, and the vehicle is currently
 	 * (un)loading at a station that is not the final destination, this function
@@ -222,7 +225,7 @@ public:
 	 *  given index does not exist it will return ORDER_INVALID.
 	 * @param vehicle_id The vehicle to check the order index for.
 	 * @param order_position The order index to resolve.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
 	 * @return The resolved order index.
 	 */
 	static OrderPosition ResolveOrderPosition(VehicleID vehicle_id, OrderPosition order_position);
@@ -246,11 +249,11 @@ public:
 	/**
 	 * Returns the number of orders for the given vehicle.
 	 * @param vehicle_id The vehicle to get the order count of.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
 	 * @return The number of orders for the given vehicle or a negative
 	 *   value when the vehicle does not exist.
 	 */
-	static int32 GetOrderCount(VehicleID vehicle_id);
+	static SQInteger GetOrderCount(VehicleID vehicle_id);
 
 	/**
 	 * Gets the destination of the given order for the given vehicle.
@@ -320,7 +323,7 @@ public:
 	 * @pre order_position != ORDER_CURRENT && IsConditionalOrder(vehicle_id, order_position).
 	 * @return The value to compare against of the order.
 	 */
-	static int32 GetOrderCompareValue(VehicleID vehicle_id, OrderPosition order_position);
+	static SQInteger GetOrderCompareValue(VehicleID vehicle_id, OrderPosition order_position);
 
 	/**
 	 * Gets the stoplocation of the given order for the given train.
@@ -346,7 +349,7 @@ public:
 	 *  in the orderlist, but they can be the current order of a vehicle.
 	 * @return The refit cargo of the order or CT_NO_REFIT if no refit is set.
 	 */
-	static CargoID GetOrderRefit(VehicleID vehicle_id, OrderPosition order_position);
+	static CargoType GetOrderRefit(VehicleID vehicle_id, OrderPosition order_position);
 
 	/**
 	 * Sets the OrderPosition to jump to if the check succeeds of the given order for the given vehicle.
@@ -356,8 +359,8 @@ public:
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre IsValidVehicleOrder(vehicle_id, jump_to).
 	 * @pre order_position != ORDER_CURRENT && IsConditionalOrder(vehicle_id, order_position).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @return Whether the order has been/can be changed.
-	 * @api -game
 	 */
 	static bool SetOrderJumpTo(VehicleID vehicle_id, OrderPosition order_position, OrderPosition jump_to);
 
@@ -369,8 +372,8 @@ public:
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre order_position != ORDER_CURRENT && IsConditionalOrder(vehicle_id, order_position).
 	 * @pre condition >= OC_LOAD_PERCENTAGE && condition <= OC_UNCONDITIONALLY.
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @return Whether the order has been/can be changed.
-	 * @api -game
 	 */
 	static bool SetOrderCondition(VehicleID vehicle_id, OrderPosition order_position, OrderCondition condition);
 
@@ -382,8 +385,8 @@ public:
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre order_position != ORDER_CURRENT && IsConditionalOrder(vehicle_id, order_position).
 	 * @pre compare >= CF_EQUALS && compare <= CF_IS_FALSE.
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @return Whether the order has been/can be changed.
-	 * @api -game
 	 */
 	static bool SetOrderCompareFunction(VehicleID vehicle_id, OrderPosition order_position, CompareFunction compare);
 
@@ -395,10 +398,10 @@ public:
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre order_position != ORDER_CURRENT && IsConditionalOrder(vehicle_id, order_position).
 	 * @pre value >= 0 && value < 2048.
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @return Whether the order has been/can be changed.
-	 * @api -game
 	 */
-	static bool SetOrderCompareValue(VehicleID vehicle_id, OrderPosition order_position, int32 value);
+	static bool SetOrderCompareValue(VehicleID vehicle_id, OrderPosition order_position, SQInteger value);
 
 	/**
 	 * Sets the stoplocation of the given order for the given train.
@@ -409,8 +412,8 @@ public:
 	 * @pre ScriptVehicle::GetVehicleType(vehicle_id) == ScriptVehicle::VT_RAIL.
 	 * @pre IsGotoStationOrder(vehicle_id, order_position).
 	 * @pre stop_location >= STOPLOCATION_NEAR && stop_location <= STOPLOCATION_FAR
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @return Whether the order has been/can be changed.
-	 * @api -game
 	 */
 	static bool SetStopLocation(VehicleID vehicle_id, OrderPosition order_position, StopLocation stop_location);
 
@@ -422,23 +425,23 @@ public:
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre IsGotoStationOrder(vehicle_id, order_position) || (IsGotoDepotOrder(vehicle_id, order_position) && refit_cargo != CT_AUTO_REFIT).
 	 * @pre ScriptCargo::IsValidCargo(refit_cargo) || refit_cargo == CT_AUTO_REFIT || refit_cargo == CT_NO_REFIT
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @return Whether the order has been/can be changed.
-	 * @api -game
 	 */
-	static bool SetOrderRefit(VehicleID vehicle_id, OrderPosition order_position, CargoID refit_cargo);
+	static bool SetOrderRefit(VehicleID vehicle_id, OrderPosition order_position, CargoType refit_cargo);
 
 	/**
 	 * Appends an order to the end of the vehicle's order list.
 	 * @param vehicle_id The vehicle to append the order to.
 	 * @param destination The destination of the order.
 	 * @param order_flags The flags given to the order.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
 	 * @pre AreOrderFlagsValid(destination, order_flags).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @exception ScriptOrder::ERR_ORDER_TOO_MANY
 	 * @exception ScriptOrder::ERR_ORDER_TOO_FAR_AWAY_FROM_PREVIOUS_DESTINATION
 	 * @return True if and only if the order was appended.
-	 * @api -game
 	 */
 	static bool AppendOrder(VehicleID vehicle_id, TileIndex destination, ScriptOrderFlags order_flags);
 
@@ -446,12 +449,12 @@ public:
 	 * Appends a conditional order to the end of the vehicle's order list.
 	 * @param vehicle_id The vehicle to append the order to.
 	 * @param jump_to The OrderPosition to jump to if the condition is true.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
 	 * @pre IsValidVehicleOrder(vehicle_id, jump_to).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @exception ScriptOrder::ERR_ORDER_TOO_MANY
 	 * @return True if and only if the order was appended.
-	 * @api -game
 	 */
 	static bool AppendConditionalOrder(VehicleID vehicle_id, OrderPosition jump_to);
 
@@ -461,13 +464,14 @@ public:
 	 * @param order_position The order to place the new order before.
 	 * @param destination The destination of the order.
 	 * @param order_flags The flags given to the order.
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id)
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre AreOrderFlagsValid(destination, order_flags).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @exception ScriptOrder::ERR_ORDER_TOO_MANY
 	 * @exception ScriptOrder::ERR_ORDER_TOO_FAR_AWAY_FROM_PREVIOUS_DESTINATION
 	 * @return True if and only if the order was inserted.
-	 * @api -game
 	 */
 	static bool InsertOrder(VehicleID vehicle_id, OrderPosition order_position, TileIndex destination, ScriptOrderFlags order_flags);
 
@@ -476,12 +480,13 @@ public:
 	 * @param vehicle_id The vehicle to add the order to.
 	 * @param order_position The order to place the new order before.
 	 * @param jump_to The OrderPosition to jump to if the condition is true.
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre IsValidVehicleOrder(vehicle_id, jump_to).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @exception ScriptOrder::ERR_ORDER_TOO_MANY
 	 * @return True if and only if the order was inserted.
-	 * @api -game
 	 */
 	static bool InsertConditionalOrder(VehicleID vehicle_id, OrderPosition order_position, OrderPosition jump_to);
 
@@ -490,9 +495,9 @@ public:
 	 * @param vehicle_id The vehicle to remove the order from.
 	 * @param order_position The order to remove from the order list.
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @return True if and only if the order was removed.
-	 * @api -game
 	 */
 	static bool RemoveOrder(VehicleID vehicle_id, OrderPosition order_position);
 
@@ -510,9 +515,9 @@ public:
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position).
 	 * @pre AreOrderFlagsValid(GetOrderDestination(vehicle_id, order_position), order_flags).
 	 * @pre (order_flags & OF_GOTO_NEAREST_DEPOT) == (GetOrderFlags(vehicle_id, order_position) & OF_GOTO_NEAREST_DEPOT).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @return True if and only if the order was changed.
-	 * @api -game
 	 */
 	static bool SetOrderFlags(VehicleID vehicle_id, OrderPosition order_position, ScriptOrderFlags order_flags);
 
@@ -524,13 +529,13 @@ public:
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position_move).
 	 * @pre IsValidVehicleOrder(vehicle_id, order_position_target).
 	 * @pre order_position_move != order_position_target.
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @return True if and only if the order was moved.
 	 * @note If the order is moved to a lower place (e.g. from 7 to 2)
 	 *  the target order is moved upwards (e.g. 3). If the order is moved
 	 *  to a higher place (e.g. from 7 to 9) the target will be moved
 	 *  downwards (e.g. 8).
-	 * @api -game
 	 */
 	static bool MoveOrder(VehicleID vehicle_id, OrderPosition order_position_move, OrderPosition order_position_target);
 
@@ -539,9 +544,9 @@ public:
 	 * @param vehicle_id The vehicle that should skip some orders.
 	 * @param next_order The order the vehicle should skip to.
 	 * @pre IsValidVehicleOrder(vehicle_id, next_order).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @return True if and only the current order was changed.
-	 * @api -game
 	 */
 	static bool SkipToOrder(VehicleID vehicle_id, OrderPosition next_order);
 
@@ -550,13 +555,13 @@ public:
 	 *  are going to be the orders of the changed vehicle.
 	 * @param vehicle_id The vehicle to copy the orders to.
 	 * @param main_vehicle_id The vehicle to copy the orders from.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
-	 * @pre ScriptVehicle::IsValidVehicle(main_vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(main_vehicle_id).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @exception ScriptOrder::ERR_ORDER_TOO_MANY
 	 * @exception ScriptOrder::ERR_ORDER_AIRCRAFT_NOT_ENOUGH_RANGE
 	 * @return True if and only if the copying succeeded.
-	 * @api -game
 	 */
 	static bool CopyOrders(VehicleID vehicle_id, VehicleID main_vehicle_id);
 
@@ -565,12 +570,12 @@ public:
 	 * vehicle are going to be the orders of the changed vehicle.
 	 * @param vehicle_id The vehicle to add to the shared order list.
 	 * @param main_vehicle_id The vehicle to share the orders with.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
-	 * @pre ScriptVehicle::IsValidVehicle(main_vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(main_vehicle_id).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @exception ScriptError::ERR_OWNED_BY_ANOTHER_COMPANY
 	 * @exception ScriptOrder::ERR_ORDER_AIRCRAFT_NOT_ENOUGH_RANGE
 	 * @return True if and only if the sharing succeeded.
-	 * @api -game
 	 */
 	static bool ShareOrders(VehicleID vehicle_id, VehicleID main_vehicle_id);
 
@@ -578,9 +583,9 @@ public:
 	 * Removes the given vehicle from a shared orders list.
 	 * After unsharing orders, the orders list of the vehicle is empty.
 	 * @param vehicle_id The vehicle to remove from the shared order list.
-	 * @pre ScriptVehicle::IsValidVehicle(vehicle_id).
+	 * @pre ScriptVehicle::IsPrimaryVehicle(vehicle_id).
+	 * @game @pre ScriptCompanyMode::IsValid().
 	 * @return True if and only if the unsharing succeeded.
-	 * @api -game
 	 */
 	static bool UnshareOrders(VehicleID vehicle_id);
 
@@ -599,7 +604,7 @@ public:
 	 *         not be compared with map distances
 	 * @see ScriptEngine::GetMaximumOrderDistance and ScriptVehicle::GetMaximumOrderDistance
 	 */
-	static uint GetOrderDistance(ScriptVehicle::VehicleType vehicle_type, TileIndex origin_tile, TileIndex dest_tile);
+	static SQInteger GetOrderDistance(ScriptVehicle::VehicleType vehicle_type, TileIndex origin_tile, TileIndex dest_tile);
 };
 DECLARE_ENUM_AS_BIT_SET(ScriptOrder::ScriptOrderFlags)
 

@@ -2,15 +2,16 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file script_date.cpp Implementation of ScriptDate. */
 
-#include <time.h>
 #include "../../stdafx.h"
 #include "script_date.hpp"
-#include "../../date_func.h"
+#include "../../timer/timer_game_economy.h"
+
+#include <time.h>
 
 #include "../../safeguards.h"
 
@@ -21,46 +22,45 @@
 
 /* static */ ScriptDate::Date ScriptDate::GetCurrentDate()
 {
-	return (ScriptDate::Date)_date;
+	return (ScriptDate::Date)TimerGameEconomy::date.base();
 }
 
-/* static */ int32 ScriptDate::GetYear(ScriptDate::Date date)
+/* static */ SQInteger ScriptDate::GetYear(ScriptDate::Date date)
 {
 	if (date < 0) return DATE_INVALID;
 
-	::YearMonthDay ymd;
-	::ConvertDateToYMD(date, &ymd);
-	return ymd.year;
+	::TimerGameEconomy::YearMonthDay ymd = ::TimerGameEconomy::ConvertDateToYMD(::TimerGameEconomy::Date{date});
+	return ymd.year.base();
 }
 
-/* static */ int32 ScriptDate::GetMonth(ScriptDate::Date date)
+/* static */ SQInteger ScriptDate::GetMonth(ScriptDate::Date date)
 {
 	if (date < 0) return DATE_INVALID;
 
-	::YearMonthDay ymd;
-	::ConvertDateToYMD(date, &ymd);
+	::TimerGameEconomy::YearMonthDay ymd = ::TimerGameEconomy::ConvertDateToYMD(::TimerGameEconomy::Date{date});
 	return ymd.month + 1;
 }
 
-/* static */ int32 ScriptDate::GetDayOfMonth(ScriptDate::Date date)
+/* static */ SQInteger ScriptDate::GetDayOfMonth(ScriptDate::Date date)
 {
 	if (date < 0) return DATE_INVALID;
 
-	::YearMonthDay ymd;
-	::ConvertDateToYMD(date, &ymd);
+	::TimerGameEconomy::YearMonthDay ymd = ::TimerGameEconomy::ConvertDateToYMD(::TimerGameEconomy::Date{date});
 	return ymd.day;
 }
 
-/* static */ ScriptDate::Date ScriptDate::GetDate(int32 year, int32 month, int32 day_of_month)
+/* static */ ScriptDate::Date ScriptDate::GetDate(SQInteger year, SQInteger month, SQInteger day_of_month)
 {
 	if (month < 1 || month > 12) return DATE_INVALID;
 	if (day_of_month < 1 || day_of_month > 31) return DATE_INVALID;
-	if (year < 0 || year > MAX_YEAR) return DATE_INVALID;
 
-	return (ScriptDate::Date)::ConvertYMDToDate(year, month - 1, day_of_month);
+	::TimerGameEconomy::Year timer_year{ClampTo<int32_t>(year)};
+	if (timer_year < EconomyTime::MIN_YEAR || timer_year > EconomyTime::MAX_YEAR) return DATE_INVALID;
+
+	return static_cast<ScriptDate::Date>(::TimerGameEconomy::ConvertYMDToDate(timer_year, month - 1, day_of_month).base());
 }
 
-/* static */ int32 ScriptDate::GetSystemTime()
+/* static */ SQInteger ScriptDate::GetSystemTime()
 {
 	time_t t;
 	time(&t);

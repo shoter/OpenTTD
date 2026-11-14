@@ -2,15 +2,14 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file network_chat_gui.cpp GUI for handling chat messages. */
 
-#include <stdarg.h> /* va_list */
-
 #include "../stdafx.h"
 #include "../strings_func.h"
+#include "../autocompletion.h"
 #include "../blitter/factory.hpp"
 #include "../console_func.h"
 #include "../video/video_driver.hpp"
@@ -18,10 +17,13 @@
 #include "../town.h"
 #include "../window_func.h"
 #include "../toolbar_gui.h"
-#include "../core/geometry_func.hpp"
+#include "../zoom_func.h"
+#include "../timer/timer.h"
+#include "../timer/timer_window.h"
 #include "network.h"
 #include "network_client.h"
 #include "network_base.h"
+#include "network_func.h"
 
 #include "../widgets/network_chat_widget.h"
 
@@ -29,85 +31,74 @@
 
 #include "../safeguards.h"
 
-/** The draw buffer must be able to contain the chat message, client name and the "[All]" message,
- * some spaces and possible translations of [All] to other languages. */
-assert_compile((int)DRAW_STRING_BUFFER >= (int)NETWORK_CHAT_LENGTH + NETWORK_NAME_LENGTH + 40);
-
 /** Spacing between chat lines. */
 static const uint NETWORK_CHAT_LINE_SPACING = 3;
 
 /** Container for a message. */
 struct ChatMessage {
-	char message[DRAW_STRING_BUFFER]; ///< The action message.
-	TextColour colour;  ///< The colour of the message.
-	uint32 remove_time; ///< The time to remove the message.
+	std::string message; ///< The action message.
+	ExtendedTextColour colour;  ///< The colour of the message.
+	std::chrono::steady_clock::time_point remove_time; ///< The time to remove the message.
 };
 
 /* used for chat window */
-static ChatMessage *_chatmsg_list = nullptr; ///< The actual chat message list.
+static std::deque<ChatMessage> _chatmsg_list; ///< The actual chat message list.
 static bool _chatmessage_dirty = false;   ///< Does the chat message need repainting?
 static bool _chatmessage_visible = false; ///< Is a chat message visible.
-static bool _chat_tab_completion_active;  ///< Whether tab completion is active.
 static uint MAX_CHAT_MESSAGES = 0;        ///< The limit of chat messages to show.
+
+/**
+ * Time the chat history was marked dirty. This is used to determine if expired
+ * messages have recently expired and should cause a redraw to hide them.
+ */
+static std::chrono::steady_clock::time_point _chatmessage_dirty_time;
 
 /**
  * The chatbox grows from the bottom so the coordinates are pixels from
  * the left and pixels from the bottom. The height is the maximum height.
  */
 static PointDimension _chatmsg_box;
-static uint8 *_chatmessage_backup = nullptr; ///< Backup in case text is moved.
+static ReusableBuffer<uint8_t> _chatmessage_backup; ///< Backup in case text is moved.
 
 /**
- * Count the chat messages.
- * @return The number of chat messages.
+ * Test if there are any chat messages to display.
+ * @param show_all Set if all messages should be included, instead of unexpired only.
+ * @return True iff there are chat messages to display.
  */
-static inline uint GetChatMessageCount()
+static inline bool HaveChatMessages(bool show_all)
 {
-	uint i = 0;
-	for (; i < MAX_CHAT_MESSAGES; i++) {
-		if (_chatmsg_list[i].message[0] == '\0') break;
+	if (show_all) return !_chatmsg_list.empty();
+
+	auto now = std::chrono::steady_clock::now();
+	for (auto &cmsg : _chatmsg_list) {
+		if (cmsg.remove_time >= now) return true;
 	}
 
-	return i;
+	return false;
 }
 
 /**
  * Add a text message to the 'chat window' to be shown
  * @param colour The colour this message is to be shown in
  * @param duration The duration of the chat message in seconds
- * @param message message itself in printf() style
+ * @param message message itself
  */
-void CDECL NetworkAddChatMessage(TextColour colour, uint duration, const char *message, ...)
+void CDECL NetworkAddChatMessage(ExtendedTextColour colour, uint duration, const std::string &message)
 {
-	char buf[DRAW_STRING_BUFFER];
-	va_list va;
-
-	va_start(va, message);
-	vseprintf(buf, lastof(buf), message, va);
-	va_end(va);
-
-	Utf8TrimString(buf, DRAW_STRING_BUFFER);
-
-	uint msg_count = GetChatMessageCount();
-	if (MAX_CHAT_MESSAGES == msg_count) {
-		memmove(&_chatmsg_list[0], &_chatmsg_list[1], sizeof(_chatmsg_list[0]) * (msg_count - 1));
-		msg_count = MAX_CHAT_MESSAGES - 1;
+	if (_chatmsg_list.size() == MAX_CHAT_MESSAGES) {
+		_chatmsg_list.pop_back();
 	}
 
-	ChatMessage *cmsg = &_chatmsg_list[msg_count++];
-	strecpy(cmsg->message, buf, lastof(cmsg->message));
-	cmsg->colour = (colour & TC_IS_PALETTE_COLOUR) ? colour : TC_WHITE;
-	cmsg->remove_time = _realtime_tick + duration * 1000;
-
+	_chatmsg_list.emplace_front(message, colour, std::chrono::steady_clock::now() + std::chrono::seconds(duration));
+	_chatmessage_dirty_time = std::chrono::steady_clock::now();
 	_chatmessage_dirty = true;
 }
 
 /** Initialize all font-dependent chat box sizes. */
 void NetworkReInitChatBoxSize()
 {
-	_chatmsg_box.y       = 3 * FONT_HEIGHT_NORMAL;
-	_chatmsg_box.height  = MAX_CHAT_MESSAGES * (FONT_HEIGHT_NORMAL + NETWORK_CHAT_LINE_SPACING) + 4;
-	_chatmessage_backup  = ReallocT(_chatmessage_backup, _chatmsg_box.width * _chatmsg_box.height * BlitterFactory::GetCurrentBlitter()->GetBytesPerPixel());
+	_chatmsg_box.y       = 3 * GetCharacterHeight(FontSize::Normal);
+	_chatmsg_box.height  = MAX_CHAT_MESSAGES * (GetCharacterHeight(FontSize::Normal) + ScaleGUITrad(NETWORK_CHAT_LINE_SPACING)) + ScaleGUITrad(4);
 }
 
 /** Initialize all buffers of the chat visualisation. */
@@ -115,15 +106,11 @@ void NetworkInitChatMessage()
 {
 	MAX_CHAT_MESSAGES    = _settings_client.gui.network_chat_box_height;
 
-	_chatmsg_list        = ReallocT(_chatmsg_list, _settings_client.gui.network_chat_box_height);
-	_chatmsg_box.x       = 10;
+	_chatmsg_list.clear();
+	_chatmsg_box.x       = ScaleGUITrad(10);
 	_chatmsg_box.width   = _settings_client.gui.network_chat_box_width_pct * _screen.width / 100;
 	NetworkReInitChatBoxSize();
 	_chatmessage_visible = false;
-
-	for (uint i = 0; i < MAX_CHAT_MESSAGES; i++) {
-		_chatmsg_list[i].message[0] = '\0';
-	}
 }
 
 /** Hide the chatbox */
@@ -132,7 +119,7 @@ void NetworkUndrawChatMessage()
 	/* Sometimes we also need to hide the cursor
 	 *   This is because both textmessage and the cursor take a shot of the
 	 *   screen before drawing.
-	 *   Now the textmessage takes his shot and paints his data before the cursor
+	 *   Now the textmessage takes its shot and paints its data before the cursor
 	 *   does, so in the shot of the cursor is the screen-data of the textmessage
 	 *   included when the cursor hangs somewhere over the textmessage. To
 	 *   avoid wrong repaints, we undraw the cursor in that case, and everything
@@ -154,7 +141,7 @@ void NetworkUndrawChatMessage()
 		int width  = _chatmsg_box.width;
 		int height = _chatmsg_box.height;
 		if (y < 0) {
-			height = max(height + y, min(_chatmsg_box.height, _screen.height));
+			height = std::max(height + y, std::min(_chatmsg_box.height, _screen.height));
 			y = 0;
 		}
 		if (x + width >= _screen.width) {
@@ -164,35 +151,27 @@ void NetworkUndrawChatMessage()
 
 		_chatmessage_visible = false;
 		/* Put our 'shot' back to the screen */
-		blitter->CopyFromBuffer(blitter->MoveTo(_screen.dst_ptr, x, y), _chatmessage_backup, width, height);
+		blitter->CopyFromBuffer(blitter->MoveTo(_screen.dst_ptr, x, y), _chatmessage_backup.GetBuffer(), width, height);
 		/* And make sure it is updated next time */
 		VideoDriver::GetInstance()->MakeDirty(x, y, width, height);
 
+		_chatmessage_dirty_time = std::chrono::steady_clock::now();
 		_chatmessage_dirty = true;
 	}
 }
 
-/** Check if a message is expired. */
-void NetworkChatMessageLoop()
-{
-	for (uint i = 0; i < MAX_CHAT_MESSAGES; i++) {
-		ChatMessage *cmsg = &_chatmsg_list[i];
-		if (cmsg->message[0] == '\0') continue;
-
+/** Check if a message is expired on a regular interval. */
+static const IntervalTimer<TimerWindow> network_message_expired_interval(std::chrono::seconds(1), [](auto) {
+	auto now = std::chrono::steady_clock::now();
+	for (auto &cmsg : _chatmsg_list) {
 		/* Message has expired, remove from the list */
-		if (cmsg->remove_time < _realtime_tick) {
-			/* Move the remaining messages over the current message */
-			if (i != MAX_CHAT_MESSAGES - 1) memmove(cmsg, cmsg + 1, sizeof(*cmsg) * (MAX_CHAT_MESSAGES - i - 1));
-
-			/* Mark the last item as empty */
-			_chatmsg_list[MAX_CHAT_MESSAGES - 1].message[0] = '\0';
+		if (now > cmsg.remove_time && _chatmessage_dirty_time < cmsg.remove_time) {
+			_chatmessage_dirty_time = now;
 			_chatmessage_dirty = true;
-
-			/* Go one item back, because we moved the array 1 to the left */
-			i--;
+			break;
 		}
 	}
-}
+});
 
 /** Draw the chat message-box */
 void NetworkDrawChatMessage()
@@ -200,21 +179,23 @@ void NetworkDrawChatMessage()
 	Blitter *blitter = BlitterFactory::GetCurrentBlitter();
 	if (!_chatmessage_dirty) return;
 
+	const Window *w = FindWindowByClass(WindowClass::NetworkChat);
+	bool show_all = (w != nullptr);
+
 	/* First undraw if needed */
 	NetworkUndrawChatMessage();
 
-	if (_iconsole_mode == ICONSOLE_FULL) return;
+	if (_iconsole_mode == IConsoleMode::Full) return;
 
 	/* Check if we have anything to draw at all */
-	uint count = GetChatMessageCount();
-	if (count == 0) return;
+	if (!HaveChatMessages(show_all)) return;
 
 	int x      = _chatmsg_box.x;
 	int y      = _screen.height - _chatmsg_box.y - _chatmsg_box.height;
 	int width  = _chatmsg_box.width;
 	int height = _chatmsg_box.height;
 	if (y < 0) {
-		height = max(height + y, min(_chatmsg_box.height, _screen.height));
+		height = std::max(height + y, std::min(_chatmsg_box.height, _screen.height));
 		y = 0;
 	}
 	if (x + width >= _screen.width) {
@@ -222,33 +203,34 @@ void NetworkDrawChatMessage()
 	}
 	if (width <= 0 || height <= 0) return;
 
-	assert(blitter->BufferSize(width, height) <= (int)(_chatmsg_box.width * _chatmsg_box.height * blitter->GetBytesPerPixel()));
-
 	/* Make a copy of the screen as it is before painting (for undraw) */
-	blitter->CopyToBuffer(blitter->MoveTo(_screen.dst_ptr, x, y), _chatmessage_backup, width, height);
+	uint8_t *buffer = _chatmessage_backup.Allocate(BlitterFactory::GetCurrentBlitter()->BufferSize(width, height));
+	blitter->CopyToBuffer(blitter->MoveTo(_screen.dst_ptr, x, y), buffer, width, height);
 
 	_cur_dpi = &_screen; // switch to _screen painting
 
+	auto now = std::chrono::steady_clock::now();
 	int string_height = 0;
-	for (uint i = 0; i < count; i++) {
-		SetDParamStr(0, _chatmsg_list[i].message);
-		string_height += GetStringLineCount(STR_JUST_RAW_STRING, width - 1) * FONT_HEIGHT_NORMAL + NETWORK_CHAT_LINE_SPACING;
+	for (auto &cmsg : _chatmsg_list) {
+		if (!show_all && cmsg.remove_time < now) continue;
+		string_height += GetStringLineCount(GetString(STR_JUST_RAW_STRING, cmsg.message), width - 1) * GetCharacterHeight(FontSize::Normal) + NETWORK_CHAT_LINE_SPACING;
 	}
 
-	string_height = min(string_height, MAX_CHAT_MESSAGES * (FONT_HEIGHT_NORMAL + NETWORK_CHAT_LINE_SPACING));
+	string_height = std::min<uint>(string_height, MAX_CHAT_MESSAGES * (GetCharacterHeight(FontSize::Normal) + NETWORK_CHAT_LINE_SPACING));
 
 	int top = _screen.height - _chatmsg_box.y - string_height - 2;
 	int bottom = _screen.height - _chatmsg_box.y - 2;
 	/* Paint a half-transparent box behind the chat messages */
 	GfxFillRect(_chatmsg_box.x, top - 2, _chatmsg_box.x + _chatmsg_box.width - 1, bottom,
-			PALETTE_TO_TRANSPARENT, FILLRECT_RECOLOUR // black, but with some alpha for background
+			PALETTE_TO_TRANSPARENT, FillRectMode::Recolour // black, but with some alpha for background
 		);
 
 	/* Paint the chat messages starting with the lowest at the bottom */
 	int ypos = bottom - 2;
 
-	for (int i = count - 1; i >= 0; i--) {
-		ypos = DrawStringMultiLine(_chatmsg_box.x + 3, _chatmsg_box.x + _chatmsg_box.width - 1, top, ypos, _chatmsg_list[i].message, _chatmsg_list[i].colour, SA_LEFT | SA_BOTTOM | SA_FORCE) - NETWORK_CHAT_LINE_SPACING;
+	for (auto &cmsg : _chatmsg_list) {
+		if (!show_all && cmsg.remove_time < now) continue;
+		ypos = DrawStringMultiLine(_chatmsg_box.x + ScaleGUITrad(3), _chatmsg_box.x + _chatmsg_box.width - 1, top, ypos, cmsg.message, cmsg.colour, {AlignmentH::ForceLeft, AlignmentV::Bottom}) - NETWORK_CHAT_LINE_SPACING;
 		if (ypos < top) break;
 	}
 
@@ -265,22 +247,66 @@ void NetworkDrawChatMessage()
  * @param type The type of destination.
  * @param dest The actual destination index.
  */
-static void SendChat(const char *buf, DestType type, int dest)
+static void SendChat(std::string_view buf, NetworkChatDestinationType type, int dest)
 {
-	if (StrEmpty(buf)) return;
+	if (buf.empty()) return;
+
+	NetworkAction action;
+	switch (type) {
+		case NetworkChatDestinationType::Broadcast: action = NetworkAction::ChatBroadcast; break;
+		case NetworkChatDestinationType::Team: action = NetworkAction::ChatTeam; break;
+		case NetworkChatDestinationType::Client: action = NetworkAction::ChatClient; break;
+		default: NOT_REACHED();
+	}
+
 	if (!_network_server) {
-		MyClient::SendChat((NetworkAction)(NETWORK_ACTION_CHAT + type), type, dest, buf, 0);
+		MyClient::SendChat(action, type, dest, buf, 0);
 	} else {
-		NetworkServerSendChat((NetworkAction)(NETWORK_ACTION_CHAT + type), type, dest, buf, CLIENT_ID_SERVER);
+		NetworkServerSendChat(action, type, dest, buf, ClientID::Server);
 	}
 }
 
+/** Implementation of AutoCompletion for nicknames and town names in the chat. */
+class NetworkChatAutoCompletion final : public AutoCompletion {
+public:
+	using AutoCompletion::AutoCompletion;
+
+private:
+	std::vector<std::string> GetSuggestions([[maybe_unused]] std::string_view prefix, std::string_view query) override
+	{
+		std::vector<std::string> suggestions;
+		for (NetworkClientInfo *ci : NetworkClientInfo::Iterate()) {
+			if (ci->client_name.starts_with(query)) {
+				suggestions.push_back(ci->client_name);
+			}
+		}
+		for (const Town *t : Town::Iterate()) {
+			/* Get the town-name via the string-system */
+			std::string town_name = GetString(STR_TOWN_NAME, t->index);
+			if (town_name.starts_with(query)) {
+				suggestions.push_back(std::move(town_name));
+			}
+		}
+		return suggestions;
+	}
+
+	void ApplySuggestion(std::string_view prefix, std::string_view suggestion) override
+	{
+		/* Add ': ' if we are at the start of the line (pretty) */
+		if (prefix.empty()) {
+			this->textbuf->Assign(fmt::format("{}: ", suggestion));
+		} else {
+			this->textbuf->Assign(fmt::format("{}{} ", prefix, suggestion));
+		}
+	}
+};
+
 /** Window to enter the chat message in. */
 struct NetworkChatWindow : public Window {
-	DestType dtype;       ///< The type of destination.
-	StringID dest_string; ///< String representation of the destination.
-	int dest;             ///< The identifier of the destination.
+	NetworkChatDestinationType dtype{}; ///< The type of destination.
+	int dest = 0; ///< The identifier of the destination.
 	QueryString message_editbox; ///< Message editbox.
+	NetworkChatAutoCompletion chat_tab_completion; ///< Holds the state and logic of auto-completion of player names and towns on Tab press.
 
 	/**
 	 * Create a chat input window.
@@ -288,88 +314,31 @@ struct NetworkChatWindow : public Window {
 	 * @param type The type of destination.
 	 * @param dest The actual destination index.
 	 */
-	NetworkChatWindow(WindowDesc *desc, DestType type, int dest) : Window(desc), message_editbox(NETWORK_CHAT_LENGTH)
+	NetworkChatWindow(WindowDesc &desc, NetworkChatDestinationType type, int dest)
+			: Window(desc), dtype(type), dest(dest), message_editbox(NETWORK_CHAT_LENGTH), chat_tab_completion(&message_editbox.text)
 	{
-		this->dtype   = type;
-		this->dest    = dest;
 		this->querystrings[WID_NC_TEXTBOX] = &this->message_editbox;
 		this->message_editbox.cancel_button = WID_NC_CLOSE;
 		this->message_editbox.ok_button = WID_NC_SENDBUTTON;
 
-		static const StringID chat_captions[] = {
-			STR_NETWORK_CHAT_ALL_CAPTION,
-			STR_NETWORK_CHAT_COMPANY_CAPTION,
-			STR_NETWORK_CHAT_CLIENT_CAPTION
-		};
-		assert((uint)this->dtype < lengthof(chat_captions));
-		this->dest_string = chat_captions[this->dtype];
-
-		this->InitNested(type);
+		this->CreateNestedTree();
+		this->FinishInitNested(type);
 
 		this->SetFocusedWidget(WID_NC_TEXTBOX);
-		InvalidateWindowData(WC_NEWS_WINDOW, 0, this->height);
-		_chat_tab_completion_active = false;
+		InvalidateWindowData(WindowClass::News, 0, this->height);
 
 		PositionNetworkChatWindow(this);
 	}
 
-	~NetworkChatWindow()
+	void Close([[maybe_unused]] int data = 0) override
 	{
-		InvalidateWindowData(WC_NEWS_WINDOW, 0, 0);
+		InvalidateWindowData(WindowClass::News, 0, 0);
+		this->Window::Close();
 	}
 
-	void FindWindowPlacementAndResize(int def_width, int def_height) override
+	void FindWindowPlacementAndResize(int, int def_height, bool allow_resize) override
 	{
-		Window::FindWindowPlacementAndResize(_toolbar_width, def_height);
-	}
-
-	/**
-	 * Find the next item of the list of things that can be auto-completed.
-	 * @param item The current indexed item to return. This function can, and most
-	 *     likely will, alter item, to skip empty items in the arrays.
-	 * @return Returns the char that matched to the index.
-	 */
-	const char *ChatTabCompletionNextItem(uint *item)
-	{
-		static char chat_tab_temp_buffer[64];
-
-		/* First, try clients */
-		if (*item < MAX_CLIENT_SLOTS) {
-			/* Skip inactive clients */
-			for (NetworkClientInfo *ci : NetworkClientInfo::Iterate(*item)) {
-				*item = ci->index;
-				return ci->client_name;
-			}
-			*item = MAX_CLIENT_SLOTS;
-		}
-
-		/* Then, try townnames
-		 * Not that the following assumes all town indices are adjacent, ie no
-		 * towns have been deleted. */
-		if (*item < (uint)MAX_CLIENT_SLOTS + Town::GetPoolSize()) {
-			for (const Town *t : Town::Iterate(*item - MAX_CLIENT_SLOTS)) {
-				/* Get the town-name via the string-system */
-				SetDParam(0, t->index);
-				GetString(chat_tab_temp_buffer, STR_TOWN_NAME, lastof(chat_tab_temp_buffer));
-				return &chat_tab_temp_buffer[0];
-			}
-		}
-
-		return nullptr;
-	}
-
-	/**
-	 * Find what text to complete. It scans for a space from the left and marks
-	 *  the word right from that as to complete. It also writes a \0 at the
-	 *  position of the space (if any). If nothing found, buf is returned.
-	 */
-	static char *ChatTabCompletionFindText(char *buf)
-	{
-		char *p = strrchr(buf, ' ');
-		if (p == nullptr) return buf;
-
-		*p = '\0';
-		return p + 1;
+		Window::FindWindowPlacementAndResize(_toolbar_width, def_height, allow_resize);
 	}
 
 	/**
@@ -377,137 +346,56 @@ struct NetworkChatWindow : public Window {
 	 */
 	void ChatTabCompletion()
 	{
-		static char _chat_tab_completion_buf[NETWORK_CHAT_LENGTH];
-		assert(this->message_editbox.text.max_bytes == lengthof(_chat_tab_completion_buf));
-
-		Textbuf *tb = &this->message_editbox.text;
-		size_t len, tb_len;
-		uint item;
-		char *tb_buf, *pre_buf;
-		const char *cur_name;
-		bool second_scan = false;
-
-		item = 0;
-
-		/* Copy the buffer so we can modify it without damaging the real data */
-		pre_buf = (_chat_tab_completion_active) ? stredup(_chat_tab_completion_buf) : stredup(tb->buf);
-
-		tb_buf  = ChatTabCompletionFindText(pre_buf);
-		tb_len  = strlen(tb_buf);
-
-		while ((cur_name = ChatTabCompletionNextItem(&item)) != nullptr) {
-			item++;
-
-			if (_chat_tab_completion_active) {
-				/* We are pressing TAB again on the same name, is there another name
-				 *  that starts with this? */
-				if (!second_scan) {
-					size_t offset;
-					size_t length;
-
-					/* If we are completing at the begin of the line, skip the ': ' we added */
-					if (tb_buf == pre_buf) {
-						offset = 0;
-						length = (tb->bytes - 1) - 2;
-					} else {
-						/* Else, find the place we are completing at */
-						offset = strlen(pre_buf) + 1;
-						length = (tb->bytes - 1) - offset;
-					}
-
-					/* Compare if we have a match */
-					if (strlen(cur_name) == length && strncmp(cur_name, tb->buf + offset, length) == 0) second_scan = true;
-
-					continue;
-				}
-
-				/* Now any match we make on _chat_tab_completion_buf after this, is perfect */
-			}
-
-			len = strlen(cur_name);
-			if (tb_len < len && strncasecmp(cur_name, tb_buf, tb_len) == 0) {
-				/* Save the data it was before completion */
-				if (!second_scan) seprintf(_chat_tab_completion_buf, lastof(_chat_tab_completion_buf), "%s", tb->buf);
-				_chat_tab_completion_active = true;
-
-				/* Change to the found name. Add ': ' if we are at the start of the line (pretty) */
-				if (pre_buf == tb_buf) {
-					this->message_editbox.text.Print("%s: ", cur_name);
-				} else {
-					this->message_editbox.text.Print("%s %s", pre_buf, cur_name);
-				}
-
-				this->SetDirty();
-				free(pre_buf);
-				return;
-			}
-		}
-
-		if (second_scan) {
-			/* We walked all possibilities, and the user presses tab again.. revert to original text */
-			this->message_editbox.text.Assign(_chat_tab_completion_buf);
-			_chat_tab_completion_active = false;
-
+		if (this->chat_tab_completion.AutoComplete()) {
 			this->SetDirty();
 		}
-		free(pre_buf);
 	}
 
-	Point OnInitialPosition(int16 sm_width, int16 sm_height, int window_number) override
+	Point OnInitialPosition([[maybe_unused]] int16_t sm_width, [[maybe_unused]] int16_t sm_height, [[maybe_unused]] int window_number) override
 	{
-		Point pt = { 0, _screen.height - sm_height - FindWindowById(WC_STATUS_BAR, 0)->height };
+		Point pt = { 0, _screen.height - sm_height - FindWindowById(WindowClass::Statusbar, 0)->height };
 		return pt;
 	}
 
-	void UpdateWidgetSize(int widget, Dimension *size, const Dimension &padding, Dimension *fill, Dimension *resize) override
+	std::string GetWidgetString(WidgetID widget, StringID stringid) const override
 	{
-		if (widget != WID_NC_DESTINATION) return;
+		if (widget != WID_NC_DESTINATION) return this->Window::GetWidgetString(widget, stringid);
 
-		if (this->dtype == DESTTYPE_CLIENT) {
-			SetDParamStr(0, NetworkClientInfo::GetByClientID((ClientID)this->dest)->client_name);
+		if (this->dtype == NetworkChatDestinationType::Client) {
+			return GetString(STR_NETWORK_CHAT_CLIENT_CAPTION, NetworkClientInfo::GetByClientID(static_cast<ClientID>(this->dest))->client_name);
 		}
-		Dimension d = GetStringBoundingBox(this->dest_string);
-		d.width  += WD_FRAMERECT_LEFT + WD_FRAMERECT_RIGHT;
-		d.height += WD_FRAMERECT_TOP + WD_FRAMERECT_BOTTOM;
-		*size = maxdim(*size, d);
+
+		return GetString(this->dtype == NetworkChatDestinationType::Broadcast ? STR_NETWORK_CHAT_ALL_CAPTION : STR_NETWORK_CHAT_COMPANY_CAPTION);
 	}
 
-	void DrawWidget(const Rect &r, int widget) const override
-	{
-		if (widget != WID_NC_DESTINATION) return;
-
-		if (this->dtype == DESTTYPE_CLIENT) {
-			SetDParamStr(0, NetworkClientInfo::GetByClientID((ClientID)this->dest)->client_name);
-		}
-		DrawString(r.left + WD_FRAMERECT_LEFT, r.right - WD_FRAMERECT_RIGHT, r.top + WD_FRAMERECT_TOP, this->dest_string, TC_BLACK, SA_RIGHT);
-	}
-
-	void OnClick(Point pt, int widget, int click_count) override
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
 	{
 		switch (widget) {
 			case WID_NC_SENDBUTTON: /* Send */
-				SendChat(this->message_editbox.text.buf, this->dtype, this->dest);
-				FALLTHROUGH;
+				SendChat(this->message_editbox.text.GetText(), this->dtype, this->dest);
+				[[fallthrough]];
 
 			case WID_NC_CLOSE: /* Cancel */
-				delete this;
+				this->Close();
 				break;
 		}
 	}
 
-	EventState OnKeyPress(WChar key, uint16 keycode) override
+	EventState OnKeyPress([[maybe_unused]] char32_t key, uint16_t keycode) override
 	{
-		EventState state = ES_NOT_HANDLED;
+		EventState state = EventState::NotHandled;
 		if (keycode == WKC_TAB) {
 			ChatTabCompletion();
-			state = ES_HANDLED;
+			state = EventState::Handled;
 		}
 		return state;
 	}
 
-	void OnEditboxChanged(int wid) override
+	void OnEditboxChanged(WidgetID widget) override
 	{
-		_chat_tab_completion_active = false;
+		if (widget == WID_NC_TEXTBOX) {
+			this->chat_tab_completion.Reset();
+		}
 	}
 
 	/**
@@ -515,22 +403,22 @@ struct NetworkChatWindow : public Window {
 	 * @param data Information about the changed data.
 	 * @param gui_scope Whether the call is done from GUI scope. You may not do everything when not in GUI scope. See #InvalidateWindowData() for details.
 	 */
-	void OnInvalidateData(int data = 0, bool gui_scope = true) override
+	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override
 	{
-		if (data == this->dest) delete this;
+		if (data == this->dest) this->Close();
 	}
 };
 
 /** The widgets of the chat window. */
-static const NWidgetPart _nested_chat_window_widgets[] = {
+static constexpr std::initializer_list<NWidgetPart> _nested_chat_window_widgets = {
 	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_CLOSEBOX, COLOUR_GREY, WID_NC_CLOSE),
-		NWidget(WWT_PANEL, COLOUR_GREY, WID_NC_BACKGROUND),
+		NWidget(WWT_CLOSEBOX, Colours::Grey, WID_NC_CLOSE),
+		NWidget(WWT_PANEL, Colours::Grey, WID_NC_BACKGROUND),
 			NWidget(NWID_HORIZONTAL),
-				NWidget(WWT_TEXT, COLOUR_GREY, WID_NC_DESTINATION), SetMinimalSize(62, 12), SetPadding(1, 0, 1, 0), SetDataTip(STR_NULL, STR_NULL),
-				NWidget(WWT_EDITBOX, COLOUR_GREY, WID_NC_TEXTBOX), SetMinimalSize(100, 12), SetPadding(1, 0, 1, 0), SetResize(1, 0),
-																	SetDataTip(STR_NETWORK_CHAT_OSKTITLE, STR_NULL),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WID_NC_SENDBUTTON), SetMinimalSize(62, 12), SetPadding(1, 0, 1, 0), SetDataTip(STR_NETWORK_CHAT_SEND, STR_NULL),
+				NWidget(WWT_TEXT, Colours::Invalid, WID_NC_DESTINATION), SetMinimalSize(62, 12), SetPadding(1, 0, 1, 0), SetAlignment({AlignmentH::End, AlignmentV::Middle}),
+				NWidget(WWT_EDITBOX, Colours::Grey, WID_NC_TEXTBOX), SetMinimalSize(100, 0), SetPadding(1, 0, 1, 0), SetResize(1, 0),
+																	SetStringTip(STR_NETWORK_CHAT_OSKTITLE),
+				NWidget(WWT_PUSHTXTBTN, Colours::Grey, WID_NC_SENDBUTTON), SetMinimalSize(62, 12), SetPadding(1, 0, 1, 0), SetStringTip(STR_NETWORK_CHAT_SEND),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -538,10 +426,10 @@ static const NWidgetPart _nested_chat_window_widgets[] = {
 
 /** The description of the chat window. */
 static WindowDesc _chat_window_desc(
-	WDP_MANUAL, nullptr, 0, 0,
-	WC_SEND_NETWORK_MSG, WC_NONE,
-	0,
-	_nested_chat_window_widgets, lengthof(_nested_chat_window_widgets)
+	WindowPosition::Manual, {}, 0, 0,
+	WindowClass::NetworkChat, WindowClass::None,
+	{},
+	_nested_chat_window_widgets
 );
 
 
@@ -550,8 +438,8 @@ static WindowDesc _chat_window_desc(
  * @param type The type of destination.
  * @param dest The actual destination index.
  */
-void ShowNetworkChatQueryWindow(DestType type, int dest)
+void ShowNetworkChatQueryWindow(NetworkChatDestinationType type, int dest)
 {
-	DeleteWindowByClass(WC_SEND_NETWORK_MSG);
-	new NetworkChatWindow(&_chat_window_desc, type, dest);
+	CloseWindowByClass(WindowClass::NetworkChat);
+	new NetworkChatWindow(_chat_window_desc, type, dest);
 }

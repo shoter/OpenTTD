@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file newgrf_sound.cpp Handling NewGRF provided sounds. */
@@ -14,7 +14,9 @@
 #include "newgrf_sound.h"
 #include "vehicle_base.h"
 #include "sound_func.h"
-#include "fileio_func.h"
+#include "soundloader_func.h"
+#include "string_func.h"
+#include "random_access_file_type.h"
 #include "debug.h"
 #include "settings_type.h"
 
@@ -57,105 +59,61 @@ uint GetNumSounds()
 	return (uint)_sounds.size();
 }
 
+/**
+ * Get size of memory allocated to sound effects.
+ * @return Approximate memory allocated by loaded sound effects.
+ */
+size_t GetSoundPoolAllocatedMemory()
+{
+	size_t bytes = 0;
+	for (SoundEntry &sound : _sounds) {
+		if (sound.data == nullptr) continue;
+
+		const auto &data = *sound.data;
+		bytes += data.capacity() * sizeof(data[0]);
+	}
+	return bytes;
+}
 
 /**
  * Extract meta data from a NewGRF sound.
  * @param sound Sound to load.
+ * @param sound_id Identifier of the sound to load.
  * @return True if a valid sound was loaded.
  */
-bool LoadNewGRFSound(SoundEntry *sound)
+bool LoadNewGRFSound(SoundEntry &sound, SoundID sound_id)
 {
-	if (sound->file_offset == SIZE_MAX || sound->file_slot == 0) return false;
+	if (sound.file_offset == SIZE_MAX || sound.file == nullptr) return false;
 
-	FioSeekToFile(sound->file_slot, sound->file_offset);
+	RandomAccessFile &file = *sound.file;
+	file.SeekTo(sound.file_offset, SEEK_SET);
 
 	/* Skip ID for container version >= 2 as we only look at the first
 	 * entry and ignore any further entries with the same ID. */
-	if (sound->grf_container_ver >= 2) FioReadDword();
+	if (sound.grf_container_ver >= 2) file.ReadDword();
 
 	/* Format: <num> <FF> <FF> <name_len> <name> '\0' <data> */
 
-	uint32 num = sound->grf_container_ver >= 2 ? FioReadDword() : FioReadWord();
-	if (FioReadByte() != 0xFF) return false;
-	if (FioReadByte() != 0xFF) return false;
+	sound.file_size = sound.grf_container_ver >= 2 ? file.ReadDword() : file.ReadWord();
+	if (file.ReadByte() != 0xFF) return false;
+	if (file.ReadByte() != 0xFF) return false;
 
-	uint8 name_len = FioReadByte();
-	char *name = AllocaM(char, name_len + 1);
-	FioReadBlock(name, name_len + 1);
+	uint8_t name_len = file.ReadByte();
+	std::string name(name_len + 1, '\0');
+	file.ReadBlock(name.data(), name_len + 1);
 
 	/* Test string termination */
-	if (name[name_len] != 0) {
-		DEBUG(grf, 2, "LoadNewGRFSound [%s]: Name not properly terminated", FioGetFilename(sound->file_slot));
+	if (name[name_len] != '\0') {
+		Debug(Facility::Grf, Severity::Warning, "LoadNewGRFSound [{}]: Name not properly terminated", file.GetSimplifiedFilename());
 		return false;
 	}
 
-	DEBUG(grf, 2, "LoadNewGRFSound [%s]: Sound name '%s'...", FioGetFilename(sound->file_slot), name);
+	if (LoadSoundData(sound, true, sound_id, StrMakeValid(name))) return true;
 
-	if (FioReadDword() != BSWAP32('RIFF')) {
-		DEBUG(grf, 1, "LoadNewGRFSound [%s]: Missing RIFF header", FioGetFilename(sound->file_slot));
-		return false;
-	}
-
-	uint32 total_size = FioReadDword();
-	uint header_size = 11;
-	if (sound->grf_container_ver >= 2) header_size++; // The first FF in the sprite is only counted for container version >= 2.
-	if (total_size + name_len + header_size > num) {
-		DEBUG(grf, 1, "LoadNewGRFSound [%s]: RIFF was truncated", FioGetFilename(sound->file_slot));
-		return false;
-	}
-
-	if (FioReadDword() != BSWAP32('WAVE')) {
-		DEBUG(grf, 1, "LoadNewGRFSound [%s]: Invalid RIFF type", FioGetFilename(sound->file_slot));
-		return false;
-	}
-
-	while (total_size >= 8) {
-		uint32 tag  = FioReadDword();
-		uint32 size = FioReadDword();
-		total_size -= 8;
-		if (total_size < size) {
-			DEBUG(grf, 1, "LoadNewGRFSound [%s]: Invalid RIFF", FioGetFilename(sound->file_slot));
-			return false;
-		}
-		total_size -= size;
-
-		switch (tag) {
-			case ' tmf': // 'fmt '
-				/* Audio format, must be 1 (PCM) */
-				if (size < 16 || FioReadWord() != 1) {
-					DEBUG(grf, 1, "LoadGRFSound [%s]: Invalid audio format", FioGetFilename(sound->file_slot));
-					return false;
-				}
-				sound->channels = FioReadWord();
-				sound->rate = FioReadDword();
-				FioReadDword();
-				FioReadWord();
-				sound->bits_per_sample = FioReadWord();
-
-				/* The rest will be skipped */
-				size -= 16;
-				break;
-
-			case 'atad': // 'data'
-				sound->file_size   = size;
-				sound->file_offset = FioGetPos();
-
-				DEBUG(grf, 2, "LoadNewGRFSound [%s]: channels %u, sample rate %u, bits per sample %u, length %u", FioGetFilename(sound->file_slot), sound->channels, sound->rate, sound->bits_per_sample, size);
-				return true; // the fmt chunk has to appear before data, so we are finished
-
-			default:
-				/* Skip unknown chunks */
-				break;
-		}
-
-		/* Skip rest of chunk */
-		if (size > 0) FioSkipBytes(size);
-	}
-
-	DEBUG(grf, 1, "LoadNewGRFSound [%s]: RIFF does not contain any sound data", FioGetFilename(sound->file_slot));
+	Debug(Facility::Grf, Severity::Error, "LoadNewGRFSound [{}]: does not contain any sound data", file.GetSimplifiedFilename());
 
 	/* Clear everything that was read */
-	MemSetT(sound, 0);
+	sound = {};
 	return false;
 }
 
@@ -180,22 +138,23 @@ SoundID GetNewGRFSoundID(const GRFFile *file, SoundID sound_id)
  * Checks whether a NewGRF wants to play a different vehicle sound effect.
  * @param v Vehicle to play sound effect for.
  * @param event Trigger for the sound effect.
+ * @param force Should we play the sound effect even if vehicle sound effects are muted?
  * @return false if the default sound effect shall be played instead.
  */
-bool PlayVehicleSound(const Vehicle *v, VehicleSoundEvent event)
+bool PlayVehicleSound(const Vehicle *v, VehicleSoundEvent event, bool force)
 {
-	if (!_settings_client.sound.vehicle) return true;
+	if (!_settings_client.sound.vehicle && !force) return true;
 
 	const GRFFile *file = v->GetGRF();
-	uint16 callback;
+	uint16_t callback;
 
 	/* If the engine has no GRF ID associated it can't ever play any new sounds */
 	if (file == nullptr) return false;
 
 	/* Check that the vehicle type uses the sound effect callback */
-	if (!HasBit(EngInfo(v->engine_type)->callback_mask, CBM_VEHICLE_SOUND_EFFECT)) return false;
+	if (!EngInfo(v->engine_type)->callback_mask.Test(VehicleCallbackMask::SoundEffect)) return false;
 
-	callback = GetVehicleCallback(CBID_VEHICLE_SOUND_EFFECT, event, 0, v->engine_type, v);
+	callback = GetVehicleCallback(CBID_VEHICLE_SOUND_EFFECT, to_underlying(event), 0, v->engine_type, v);
 	/* Play default sound if callback fails */
 	if (callback == CALLBACK_FAILED) return false;
 

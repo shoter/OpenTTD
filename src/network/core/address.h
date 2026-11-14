@@ -2,24 +2,21 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file core/address.h Wrapper for network addresses. */
+/** @file address.h Wrapper for network addresses. */
 
 #ifndef NETWORK_CORE_ADDRESS_H
 #define NETWORK_CORE_ADDRESS_H
 
 #include "os_abstraction.h"
-#include "config.h"
-#include "../../string_func.h"
-#include "../../core/smallmap_type.hpp"
+#include "../../company_type.h"
 
-#include <string>
 
 class NetworkAddress;
 typedef std::vector<NetworkAddress> NetworkAddressList; ///< Type for a list of addresses.
-typedef SmallMap<NetworkAddress, SOCKET> SocketList;    ///< Type for a mapping between address and socket.
+using SocketList = std::map<SOCKET, NetworkAddress>;    ///< Type for a mapping between address and socket.
 
 /**
  * Wrapper for (un)resolved network addresses; there's no reason to transform
@@ -28,10 +25,10 @@ typedef SmallMap<NetworkAddress, SOCKET> SocketList;    ///< Type for a mapping 
  */
 class NetworkAddress {
 private:
-	char hostname[NETWORK_HOSTNAME_LENGTH]; ///< The hostname
-	int address_length;                     ///< The length of the resolved address
-	sockaddr_storage address;               ///< The resolved address
-	bool resolved;                          ///< Whether the address has been (tried to be) resolved
+	std::string hostname{}; ///< The hostname
+	int address_length{}; ///< The length of the resolved address
+	sockaddr_storage address{}; ///< The resolved address
+	bool resolved = false; ///< Whether the address has been (tried to be) resolved
 
 	/**
 	 * Helper function to resolve something to a socket.
@@ -52,7 +49,6 @@ public:
 		address(address),
 		resolved(address_length != 0)
 	{
-		*this->hostname = '\0';
 	}
 
 	/**
@@ -60,13 +56,11 @@ public:
 	 * @param address The IP address with port.
 	 * @param address_length The length of the address.
 	 */
-	NetworkAddress(sockaddr *address, int address_length) :
+	NetworkAddress(const sockaddr *address, int address_length) :
 		address_length(address_length),
 		resolved(address_length != 0)
 	{
-		*this->hostname = '\0';
-		memset(&this->address, 0, sizeof(this->address));
-		memcpy(&this->address, address, address_length);
+		std::copy_n(reinterpret_cast<const std::byte *>(address), address_length, reinterpret_cast<std::byte *>(&this->address));
 	}
 
 	/**
@@ -75,24 +69,20 @@ public:
 	 * @param port the port
 	 * @param family the address family
 	 */
-	NetworkAddress(const char *hostname = "", uint16 port = 0, int family = AF_UNSPEC) :
+	NetworkAddress(std::string_view hostname = "", uint16_t port = 0, int family = AF_UNSPEC) :
 		address_length(0),
 		resolved(false)
 	{
-		/* Also handle IPv6 bracket enclosed hostnames */
-		if (StrEmpty(hostname)) hostname = "";
-		if (*hostname == '[') hostname++;
-		strecpy(this->hostname, StrEmpty(hostname) ? "" : hostname, lastof(this->hostname));
-		char *tmp = strrchr(this->hostname, ']');
-		if (tmp != nullptr) *tmp = '\0';
-
-		memset(&this->address, 0, sizeof(this->address));
+		if (!hostname.empty() && hostname.front() == '[' && hostname.back() == ']') {
+			hostname.remove_prefix(1);
+			hostname.remove_suffix(1);
+		}
+		this->hostname = hostname;
 		this->address.ss_family = family;
 		this->SetPort(port);
 	}
 
-	const char *GetHostname();
-	void GetAddressAsString(char *buffer, const char *last, bool with_family = true);
+	const std::string &GetHostname();
 	std::string GetAddressAsString(bool with_family = true);
 	const sockaddr_storage *GetAddress();
 
@@ -107,8 +97,8 @@ public:
 		return this->address_length;
 	}
 
-	uint16 GetPort() const;
-	void SetPort(uint16 port);
+	uint16_t GetPort() const;
+	void SetPort(uint16_t port);
 
 	/**
 	 * Check whether the IP address has been resolved already
@@ -120,7 +110,7 @@ public:
 	}
 
 	bool IsFamily(int family);
-	bool IsInNetmask(const char *netmask);
+	bool IsInNetmask(std::string_view netmask);
 
 	/**
 	 * Compare the address of this class with the address of another.
@@ -155,30 +145,58 @@ public:
 	{
 		return const_cast<NetworkAddress*>(this)->CompareTo(address) == 0;
 	}
-	/**
-	 * Compare the address of this class with the address of another.
-	 * @param address the other address.
-	 * @return true if both do not match.
-	 */
-	bool operator != (NetworkAddress address) const
-	{
-		return const_cast<NetworkAddress*>(this)->CompareTo(address) != 0;
-	}
 
 	/**
 	 * Compare the address of this class with the address of another.
 	 * @param address the other address.
+	 * @return The std::strong_ordering of the comparison.
 	 */
-	bool operator < (NetworkAddress &address)
+	auto operator <=>(NetworkAddress &address)
 	{
-		return this->CompareTo(address) < 0;
+		return this->CompareTo(address) <=> 0;
 	}
 
-	SOCKET Connect();
 	void Listen(int socktype, SocketList *sockets);
 
-	static const char *SocketTypeAsString(int socktype);
-	static const char *AddressFamilyAsString(int family);
+	static std::string_view SocketTypeAsString(int socktype);
+	static std::string_view AddressFamilyAsString(int family);
+	static NetworkAddress GetPeerAddress(SOCKET sock);
+	static NetworkAddress GetSockAddress(SOCKET sock);
+	static const std::string GetPeerName(SOCKET sock);
+};
+
+/**
+ * Types of server addresses we know.
+ *
+ * Sorting will prefer entries at the top of this list above ones at the bottom.
+ */
+enum class ServerAddressType : uint8_t {
+	Direct, ///< Server-address is based on an hostname:port.
+	InviteCode, ///< Server-address is based on an invite code.
+};
+
+/**
+ * Address to a game server.
+ *
+ * This generalises addresses which are based on different identifiers.
+ */
+class ServerAddress {
+private:
+	/**
+	 * Create a new ServerAddress object.
+	 *
+	 * Please use ServerAddress::Parse() instead of calling this directly.
+	 *
+	 * @param type The type of the ServerAdress.
+	 * @param connection_string The connection_string that belongs to this ServerAddress type.
+	 */
+	ServerAddress(ServerAddressType type, std::string &&connection_string) : type(type), connection_string(std::move(connection_string)) {}
+
+public:
+	ServerAddressType type;        ///< The type of this ServerAddress.
+	std::string connection_string; ///< The connection string for this ServerAddress.
+
+	static ServerAddress Parse(std::string_view connection_string, uint16_t default_port, CompanyID *company_id = nullptr);
 };
 
 #endif /* NETWORK_CORE_ADDRESS_H */

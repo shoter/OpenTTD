@@ -2,14 +2,13 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file highscore_gui.cpp Definition of the HighScore and EndGame windows */
+/** @file highscore_gui.cpp Definition of the HighScore and EndGame windows. */
 
 #include "stdafx.h"
 #include "highscore.h"
-#include "table/strings.h"
 #include "gfx_func.h"
 #include "table/sprites.h"
 #include "window_gui.h"
@@ -21,23 +20,28 @@
 #include "strings_func.h"
 #include "hotkeys.h"
 #include "zoom_func.h"
+#include "misc_cmd.h"
+#include "timer/timer.h"
+#include "timer/timer_game_calendar.h"
 
 #include "widgets/highscore_widget.h"
+
+#include "table/strings.h"
 
 #include "safeguards.h"
 
 struct EndGameHighScoreBaseWindow : Window {
-	uint32 background_img;
-	int8 rank;
+	SpriteID background_img{};
+	int8_t rank = 0;
 
-	EndGameHighScoreBaseWindow(WindowDesc *desc) : Window(desc)
+	EndGameHighScoreBaseWindow(WindowDesc &desc) : Window(desc)
 	{
 		this->InitNested();
-		CLRBITS(this->flags, WF_WHITE_BORDER);
+		this->flags.Reset(WindowFlag::WhiteBorder);
 		ResizeWindow(this, _screen.width - this->width, _screen.height - this->height);
 	}
 
-	/* Always draw a maximized window and within it the centered background */
+	/** Always draw a maximized window and within it the centered background. */
 	void SetupHighScoreEndWindow()
 	{
 		/* Resize window to "full-screen". */
@@ -45,58 +49,70 @@ struct EndGameHighScoreBaseWindow : Window {
 
 		this->DrawWidgets();
 
+		/* Fill with the appropriate background colour instead of leaving default window colour */
+		GfxFillRect(Rect{0, 0, this->width, this->height}, PixelColour{105}, FillRectMode::Opaque);
+
 		/* Standard background slices are 50 pixels high, but it's designed
 		 * for 480 pixels total. 96% of 500 is 480. */
 		Dimension dim = GetSpriteSize(this->background_img);
-		Point pt = this->GetTopLeft(dim.width, dim.height * 96 / 10);
+		auto total_height = dim.height * 96 / 10;
+		Point pt = this->GetTopLeft(dim.width, total_height);
+
+		/* Original graphics contain some transparency, which assumes a black background. */
+		GfxFillRect(pt.x, pt.y, pt.x + dim.width - 1, pt.y + total_height - 1, PC_BLACK);
+
 		/* Center Highscore/Endscreen background */
 		for (uint i = 0; i < 10; i++) { // the image is split into 10 50px high parts
 			DrawSprite(this->background_img + i, PAL_NONE, pt.x, pt.y + (i * dim.height));
 		}
 	}
 
-	/** Return the coordinate of the screen such that a window of 640x480 is centered at the screen. */
-	Point GetTopLeft(int x, int y)
+	/**
+	 * Return the coordinate of the screen such that a window of a given size is centered at the screen.
+	 * @param width The width of the image.
+	 * @param height The height of the image.
+	 * @return The top left coordinate.
+	 */
+	Point GetTopLeft(int width, int height)
 	{
-		Point pt = {max(0, (_screen.width / 2) - (x / 2)), max(0, (_screen.height / 2) - (y / 2))};
-		return pt;
+		return {std::max(0, (_screen.width / 2) - (width / 2)), std::max(0, (_screen.height / 2) - (height / 2))};
 	}
 
-	void OnClick(Point pt, int widget, int click_count) override
+	void OnClick([[maybe_unused]] Point pt, [[maybe_unused]] WidgetID widget, [[maybe_unused]] int click_count) override
 	{
-		delete this;
+		this->Close();
 	}
 
-	EventState OnKeyPress(WChar key, uint16 keycode) override
+	EventState OnKeyPress([[maybe_unused]] char32_t key, uint16_t keycode) override
 	{
 		/* All keys are 'handled' by this window but we want to make
 		 * sure that 'quit' still works correctly. Not handling the
 		 * quit key is enough so the main toolbar can handle it. */
-		if (IsQuitKey(keycode)) return ES_NOT_HANDLED;
+		if (IsQuitKey(keycode)) return EventState::NotHandled;
 
 		switch (keycode) {
 			/* Keys for telling we want to go on */
 			case WKC_RETURN:
 			case WKC_ESC:
 			case WKC_SPACE:
-				delete this;
-				return ES_HANDLED;
+				this->Close();
+				return EventState::Handled;
 
 			default:
 				/* We want to handle all keys; we don't want windows in
 				 * the background to open. Especially the ones that do
 				 * locate themselves based on the status-/toolbars. */
-				return ES_HANDLED;
+				return EventState::Handled;
 		}
 	}
 };
 
 /** End game window shown at the end of the game */
 struct EndGameWindow : EndGameHighScoreBaseWindow {
-	EndGameWindow(WindowDesc *desc) : EndGameHighScoreBaseWindow(desc)
+	EndGameWindow(WindowDesc &desc) : EndGameHighScoreBaseWindow(desc)
 	{
 		/* Pause in single-player to have a look at the highscore at your own leisure */
-		if (!_networking) DoCommandP(0, PM_PAUSED_NORMAL, 1, CMD_PAUSE);
+		if (!_networking) Command<Commands::Pause>::Post(PauseMode::Normal, true);
 
 		this->background_img = SPR_TYCOON_IMG1_BEGIN;
 
@@ -113,7 +129,7 @@ struct EndGameWindow : EndGameHighScoreBaseWindow {
 			this->window_number = SP_MULTIPLAYER;
 			this->rank = SaveHighScoreValueNetwork();
 		} else {
-			/* in single player _local company is always valid */
+			/* in singleplayer mode _local company is always valid */
 			const Company *c = Company::Get(_local_company);
 			this->window_number = SP_CUSTOM;
 			this->rank = SaveHighScoreValue(c);
@@ -122,16 +138,17 @@ struct EndGameWindow : EndGameHighScoreBaseWindow {
 		MarkWholeScreenDirty();
 	}
 
-	~EndGameWindow()
+	void Close([[maybe_unused]] int data = 0) override
 	{
-		if (!_networking) DoCommandP(0, PM_PAUSED_NORMAL, 0, CMD_PAUSE); // unpause
-		ShowHighscoreTable(this->window_number, this->rank);
+		if (!_networking) Command<Commands::Pause>::Post(PauseMode::Normal, false); // unpause
+		if (_game_mode != GameMode::Menu && !_exit_game) ShowHighscoreTable(this->window_number, this->rank);
+		this->EndGameHighScoreBaseWindow::Close();
 	}
 
 	void OnPaint() override
 	{
 		this->SetupHighScoreEndWindow();
-		Point pt = this->GetTopLeft(ScaleGUITrad(640), ScaleGUITrad(480));
+		Point pt = this->GetTopLeft(ScaleSpriteTrad(640), ScaleSpriteTrad(480));
 
 		const Company *c = Company::GetIfValid(_local_company);
 		if (c == nullptr) return;
@@ -139,29 +156,28 @@ struct EndGameWindow : EndGameHighScoreBaseWindow {
 		/* We need to get performance from last year because the image is shown
 		 * at the start of the new year when these things have already been copied */
 		if (this->background_img == SPR_TYCOON_IMG2_BEGIN) { // Tycoon of the century \o/
-			SetDParam(0, c->index);
-			SetDParam(1, c->index);
-			SetDParam(2, EndGameGetPerformanceTitleFromValue(c->old_economy[0].performance_history));
-			DrawStringMultiLine(pt.x + ScaleGUITrad(15), pt.x + ScaleGUITrad(640) - ScaleGUITrad(25), pt.y + ScaleGUITrad(90), pt.y + ScaleGUITrad(160), STR_HIGHSCORE_PRESIDENT_OF_COMPANY_ACHIEVES_STATUS, TC_FROMSTRING, SA_CENTER);
+			DrawStringMultiLine(pt.x + ScaleSpriteTrad(15), pt.x + ScaleSpriteTrad(640) - ScaleSpriteTrad(25), pt.y + ScaleSpriteTrad(90), pt.y + ScaleSpriteTrad(160),
+					GetString(STR_HIGHSCORE_PRESIDENT_OF_COMPANY_ACHIEVES_STATUS, c->index, c->index, EndGameGetPerformanceTitleFromValue(c->old_economy[0].performance_history)),
+					TextColour::FromString, {AlignmentH::Centre, AlignmentV::Middle});
 		} else {
-			SetDParam(0, c->index);
-			SetDParam(1, EndGameGetPerformanceTitleFromValue(c->old_economy[0].performance_history));
-			DrawStringMultiLine(pt.x + ScaleGUITrad(36), pt.x + ScaleGUITrad(640), pt.y + ScaleGUITrad(140), pt.y + ScaleGUITrad(206), STR_HIGHSCORE_COMPANY_ACHIEVES_STATUS, TC_FROMSTRING, SA_CENTER);
+			DrawStringMultiLine(pt.x + ScaleSpriteTrad(36), pt.x + ScaleSpriteTrad(640), pt.y + ScaleSpriteTrad(140), pt.y + ScaleSpriteTrad(206),
+					GetString(STR_HIGHSCORE_COMPANY_ACHIEVES_STATUS, c->index, EndGameGetPerformanceTitleFromValue(c->old_economy[0].performance_history)),
+					TextColour::FromString, {AlignmentH::Centre, AlignmentV::Middle});
 		}
 	}
 };
 
 struct HighScoreWindow : EndGameHighScoreBaseWindow {
-	bool game_paused_by_player; ///< True if the game was paused by the player when the highscore window was opened.
+	bool game_paused_by_player = false; ///< True if the game was paused by the player when the highscore window was opened.
 
-	HighScoreWindow(WindowDesc *desc, int difficulty, int8 ranking) : EndGameHighScoreBaseWindow(desc)
+	HighScoreWindow(WindowDesc &desc, int difficulty, int8_t ranking) : EndGameHighScoreBaseWindow(desc)
 	{
 		/* pause game to show the chart */
-		this->game_paused_by_player = _pause_mode == PM_PAUSED_NORMAL;
-		if (!_networking && !this->game_paused_by_player) DoCommandP(0, PM_PAUSED_NORMAL, 1, CMD_PAUSE);
+		this->game_paused_by_player = _pause_mode == PauseMode::Normal;
+		if (!_networking && !this->game_paused_by_player) Command<Commands::Pause>::Post(PauseMode::Normal, true);
 
 		/* Close all always on-top windows to get a clean screen */
-		if (_game_mode != GM_MENU) HideVitalWindows();
+		if (_game_mode != GameMode::Menu) HideVitalWindows();
 
 		MarkWholeScreenDirty();
 		this->window_number = difficulty; // show highscore chart for difficulty...
@@ -169,68 +185,73 @@ struct HighScoreWindow : EndGameHighScoreBaseWindow {
 		this->rank = ranking;
 	}
 
-	~HighScoreWindow()
+	void Close([[maybe_unused]] int data = 0) override
 	{
-		if (_game_mode != GM_MENU) ShowVitalWindows();
+		if (_game_mode != GameMode::Menu && !_exit_game) ShowVitalWindows();
 
-		if (!_networking && !this->game_paused_by_player) DoCommandP(0, PM_PAUSED_NORMAL, 0, CMD_PAUSE); // unpause
+		if (!_networking && !this->game_paused_by_player) Command<Commands::Pause>::Post(PauseMode::Normal, false); // unpause
+
+		this->EndGameHighScoreBaseWindow::Close();
 	}
 
 	void OnPaint() override
 	{
-		const HighScore *hs = _highscore_table[this->window_number];
+		const auto &hs = _highscore_table[this->window_number];
 
 		this->SetupHighScoreEndWindow();
-		Point pt = this->GetTopLeft(ScaleGUITrad(640), ScaleGUITrad(480));
+		Point pt = this->GetTopLeft(ScaleSpriteTrad(640), ScaleSpriteTrad(480));
 
-		SetDParam(0, ORIGINAL_END_YEAR);
-		DrawStringMultiLine(pt.x + ScaleGUITrad(70), pt.x + ScaleGUITrad(570), pt.y, pt.y + ScaleGUITrad(140), !_networking ? STR_HIGHSCORE_TOP_COMPANIES_WHO_REACHED : STR_HIGHSCORE_TOP_COMPANIES_NETWORK_GAME, TC_FROMSTRING, SA_CENTER);
+		/* Draw the title. */
+		DrawStringMultiLine(pt.x + ScaleSpriteTrad(70), pt.x + ScaleSpriteTrad(570), pt.y, pt.y + ScaleSpriteTrad(140), STR_HIGHSCORE_TOP_COMPANIES, TextColour::FromString, {AlignmentH::Centre, AlignmentV::Middle});
 
 		/* Draw Highscore peepz */
-		for (uint8 i = 0; i < lengthof(_highscore_table[0]); i++) {
-			SetDParam(0, i + 1);
-			DrawString(pt.x + ScaleGUITrad(40), pt.x + ScaleGUITrad(600), pt.y + ScaleGUITrad(140 + i * 55), STR_HIGHSCORE_POSITION);
+		for (uint8_t i = 0; i < ClampTo<uint8_t>(hs.size()); i++) {
+			DrawString(pt.x + ScaleSpriteTrad(40), pt.x + ScaleSpriteTrad(600), pt.y + ScaleSpriteTrad(140 + i * 55),
+					GetString(STR_HIGHSCORE_POSITION, i + 1));
 
-			if (hs[i].company[0] != '\0') {
-				TextColour colour = (this->rank == i) ? TC_RED : TC_BLACK; // draw new highscore in red
+			if (!hs[i].name.empty()) {
+				TextColour colour = (this->rank == i) ? TextColour::Red : TextColour::Black; // draw new highscore in red
 
-				SetDParamStr(0, hs[i].company);
-				DrawString(pt.x + ScaleGUITrad(71), pt.x + ScaleGUITrad(569), pt.y + ScaleGUITrad(140 + i * 55), STR_JUST_BIG_RAW_STRING, colour);
-				SetDParam(0, hs[i].title);
-				SetDParam(1, hs[i].score);
-				DrawString(pt.x + ScaleGUITrad(71), pt.x + ScaleGUITrad(569), pt.y + ScaleGUITrad(140) + FONT_HEIGHT_LARGE + ScaleGUITrad(i * 55), STR_HIGHSCORE_STATS, colour);
+				DrawString(pt.x + ScaleSpriteTrad(71), pt.x + ScaleSpriteTrad(569), pt.y + ScaleSpriteTrad(140 + i * 55),
+						GetString(STR_JUST_BIG_RAW_STRING, hs[i].name), colour);
+				DrawString(pt.x + ScaleSpriteTrad(71), pt.x + ScaleSpriteTrad(569), pt.y + ScaleSpriteTrad(140) + GetCharacterHeight(FontSize::Large) + ScaleSpriteTrad(i * 55),
+						GetString(STR_HIGHSCORE_STATS, hs[i].title, hs[i].score), colour);
 			}
 		}
 	}
 };
 
-static const NWidgetPart _nested_highscore_widgets[] = {
-	NWidget(WWT_PANEL, COLOUR_BROWN, WID_H_BACKGROUND), SetMinimalSize(641, 481), SetResize(1, 1), EndContainer(),
+static constexpr std::initializer_list<NWidgetPart> _nested_highscore_widgets = {
+	NWidget(WWT_PANEL, Colours::Brown, WID_H_BACKGROUND), SetResize(1, 1), EndContainer(),
 };
 
+/** Window definition for the highscore window. */
 static WindowDesc _highscore_desc(
-	WDP_MANUAL, nullptr, 0, 0,
-	WC_HIGHSCORE, WC_NONE,
-	0,
-	_nested_highscore_widgets, lengthof(_nested_highscore_widgets)
+	WindowPosition::Manual, {}, 0, 0,
+	WindowClass::Highscore, WindowClass::None,
+	{},
+	_nested_highscore_widgets
 );
 
+/** Window definition for the endgame window. */
 static WindowDesc _endgame_desc(
-	WDP_MANUAL, nullptr, 0, 0,
-	WC_ENDSCREEN, WC_NONE,
-	0,
-	_nested_highscore_widgets, lengthof(_nested_highscore_widgets)
+	WindowPosition::Manual, {}, 0, 0,
+	WindowClass::Endscreen, WindowClass::None,
+	{},
+	_nested_highscore_widgets
 );
 
 /**
  * Show the highscore table for a given difficulty. When called from
  * endgame ranking is set to the top5 element that was newly added
  * and is thus highlighted
+ * @param difficulty The difficulty level to show the high score for.
+ * @param ranking The ranking to show the local company at.
  */
-void ShowHighscoreTable(int difficulty, int8 ranking)
+void ShowHighscoreTable(int difficulty, int8_t ranking)
 {
-	DeleteWindowByClass(WC_HIGHSCORE);
-	new HighScoreWindow(&_highscore_desc, difficulty, ranking);
+	CloseWindowByClass(WindowClass::Highscore);
+	new HighScoreWindow(_highscore_desc, difficulty, ranking);
 }
 
 /**
@@ -243,6 +264,18 @@ void ShowEndGameChart()
 	if (_network_dedicated || (!_networking && !Company::IsValidID(_local_company))) return;
 
 	HideVitalWindows();
-	DeleteWindowByClass(WC_ENDSCREEN);
-	new EndGameWindow(&_endgame_desc);
+	CloseWindowByClass(WindowClass::Endscreen);
+	new EndGameWindow(_endgame_desc);
 }
+
+/** Yearly timer to check whether we want to show the end game chart. */
+static const IntervalTimer<TimerGameCalendar> _check_end_game({TimerGameCalendar::Trigger::Year, TimerGameCalendar::Priority::None}, [](auto)
+{
+	/* 0 = never */
+	if (_settings_game.game_creation.ending_year == 0) return;
+
+	/* Show the end-game chart at the end of the ending year (hence the + 1). */
+	if (TimerGameCalendar::year == _settings_game.game_creation.ending_year + 1) {
+		ShowEndGameChart();
+	}
+});

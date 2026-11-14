@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file strgen.h Structures related to strgen. */
@@ -10,76 +10,75 @@
 #ifndef STRGEN_H
 #define STRGEN_H
 
+#include "../core/string_consumer.hpp"
 #include "../language.h"
+#include "../string_type.h"
+#include "../3rdparty/fmt/format.h"
+
+#include <unordered_map>
+#include <array>
 
 /** Container for the different cases of a string. */
 struct Case {
-	int caseidx;  ///< The index of the case.
-	char *string; ///< The translation of the case.
-	Case *next;   ///< The next, chained, case.
+	uint8_t caseidx;       ///< The index of the case.
+	std::string string; ///< The translation of the case.
 
-	Case(int caseidx, const char *string, Case *next);
-	~Case();
+	Case(uint8_t caseidx, std::string_view string);
 };
 
 /** Information about a single string. */
 struct LangString {
-	char *name;            ///< Name of the string.
-	char *english;         ///< English text.
-	char *translated;      ///< Translated text.
-	size_t hash_next;      ///< Next hash entry.
-	size_t index;          ///< The index in the language file.
-	int line;              ///< Line of string in source-file.
-	Case *translated_case; ///< Cases of the translation.
+	std::string name;       ///< Name of the string.
+	std::string english;    ///< English text.
+	std::string translated; ///< Translated text.
+	size_t index;           ///< The index in the language file.
+	size_t line;            ///< Line of string in source-file.
+	std::vector<Case> translated_cases; ///< Cases of the translation.
 
-	LangString(const char *name, const char *english, size_t index, int line);
-	~LangString();
+	LangString(std::string_view name, std::string_view english, size_t index, size_t line);
 	void FreeTranslation();
 };
 
 /** Information about the currently known strings. */
 struct StringData {
-	LangString **strings; ///< Array of all known strings.
-	size_t *hash_heads;   ///< Hash table for the strings.
+	std::vector<std::shared_ptr<LangString>> strings; ///< List of all known strings.
+	std::unordered_map<std::string, std::shared_ptr<LangString>, StringHash, std::equal_to<>> name_to_string; ///< Lookup table for the strings.
 	size_t tabs;          ///< The number of 'tabs' of strings.
 	size_t max_strings;   ///< The maximum number of strings.
 	size_t next_string_id;///< The next string ID to allocate.
 
 	StringData(size_t tabs);
-	~StringData();
 	void FreeTranslation();
-	uint HashStr(const char *s) const;
-	void Add(const char *s, LangString *ls);
-	LangString *Find(const char *s);
-	uint VersionHashStr(uint hash, const char *s) const;
-	uint Version() const;
-	uint CountInUse(uint tab) const;
+	void Add(std::shared_ptr<LangString> ls);
+	LangString *Find(std::string_view s);
+	uint32_t Version() const;
+	size_t CountInUse(size_t tab) const;
 };
 
 /** Helper for reading strings. */
 struct StringReader {
 	StringData &data; ///< The data to fill during reading.
-	const char *file; ///< The file we are reading.
+	const std::string file; ///< The file we are reading.
 	bool master;      ///< Are we reading the master file?
 	bool translation; ///< Are we reading a translation, implies !master. However, the base translation will have this false.
 
-	StringReader(StringData &data, const char *file, bool master, bool translation);
-	virtual ~StringReader();
-	void HandleString(char *str);
+	StringReader(StringData &data, const std::string &file, bool master, bool translation);
+	/** Ensure the destructor of the sub classes are called as well. */
+	virtual ~StringReader() = default;
+	void HandleString(std::string_view str);
 
 	/**
 	 * Read a single line from the source of strings.
-	 * @param buffer The buffer to read the data in to.
-	 * @param last   The last element in the buffer.
-	 * @return The buffer, or nullptr if at the end of the file.
+	 * @return The line, or std::nullopt if at the end of the file.
 	 */
-	virtual char *ReadLine(char *buffer, const char *last) = 0;
+	virtual std::optional<std::string> ReadLine() = 0;
 
 	/**
 	 * Handle the pragma of the file.
-	 * @param str    The pragma string to parse.
+	 * @param str The pragma string to parse.
+	 * @param lang The header metadata to write the parsed pragma data to.
 	 */
-	virtual void HandlePragma(char *str);
+	virtual void HandlePragma(std::string_view str, LanguagePackHeader &lang);
 
 	/**
 	 * Start parsing the file.
@@ -94,7 +93,7 @@ struct HeaderWriter {
 	 * @param name     The name of the string.
 	 * @param stringid The ID of the string.
 	 */
-	virtual void WriteStringID(const char *name, int stringid) = 0;
+	virtual void WriteStringID(const std::string &name, size_t stringid) = 0;
 
 	/**
 	 * Finalise writing the file.
@@ -102,8 +101,8 @@ struct HeaderWriter {
 	 */
 	virtual void Finalise(const StringData &data) = 0;
 
-	/** Especially destroy the subclasses. */
-	virtual ~HeaderWriter() {};
+	/** Ensure the destructor of the sub classes are called as well. */
+	virtual ~HeaderWriter() = default;
 
 	void WriteHeader(const StringData &data);
 };
@@ -120,30 +119,57 @@ struct LanguageWriter {
 	/**
 	 * Write a number of bytes.
 	 * @param buffer The buffer to write.
-	 * @param length The amount of byte to write.
 	 */
-	virtual void Write(const byte *buffer, size_t length) = 0;
+	virtual void Write(std::string_view buffer) = 0;
 
 	/**
 	 * Finalise writing the file.
 	 */
 	virtual void Finalise() = 0;
 
-	/** Especially destroy the subclasses. */
-	virtual ~LanguageWriter() {}
+	/** Ensure the destructor of the sub classes are called as well. */
+	virtual ~LanguageWriter() = default;
 
-	virtual void WriteLength(uint length);
+	virtual void WriteLength(size_t length);
 	virtual void WriteLang(const StringData &data);
 };
 
-void CDECL strgen_warning(const char *s, ...) WARN_FORMAT(1, 2);
-void CDECL strgen_error(const char *s, ...) WARN_FORMAT(1, 2);
-void NORETURN CDECL strgen_fatal(const char *s, ...) WARN_FORMAT(1, 2);
-char *ParseWord(char **buf);
+struct CmdStruct;
 
-extern const char *_file;
-extern int _cur_line;
-extern int _errors, _warnings, _show_todo;
-extern LanguagePackHeader _lang;
+struct CmdPair {
+	const CmdStruct *cmd;
+	std::string param;
+
+	auto operator<=>(const CmdPair &other) const = default;
+};
+
+struct ParsedCommandStruct {
+	std::vector<CmdPair> non_consuming_commands;
+	std::array<const CmdStruct*, 32> consuming_commands{ nullptr }; ///< Ordered by param #.
+};
+
+const CmdStruct *TranslateCmdForCompare(const CmdStruct *a);
+ParsedCommandStruct ExtractCommandString(std::string_view s, bool warnings);
+
+void StrgenWarningI(const std::string &msg);
+void StrgenErrorI(const std::string &msg);
+[[noreturn]] void StrgenFatalI(const std::string &msg);
+#define StrgenWarning(format_string, ...) StrgenWarningI(fmt::format(FMT_STRING(format_string) __VA_OPT__(,) __VA_ARGS__))
+#define StrgenError(format_string, ...) StrgenErrorI(fmt::format(FMT_STRING(format_string) __VA_OPT__(,) __VA_ARGS__))
+#define StrgenFatal(format_string, ...) StrgenFatalI(fmt::format(FMT_STRING(format_string) __VA_OPT__(,) __VA_ARGS__))
+std::optional<std::string_view> ParseWord(StringConsumer &consumer);
+
+/** Global state shared between strgen.cpp, game_text.cpp and strgen_base.cpp */
+struct StrgenState {
+	std::string file = "(unknown file)"; ///< The filename of the input, so we can refer to it in errors/warnings
+	size_t cur_line = 0; ///< The current line we're parsing in the input file
+	size_t errors = 0;
+	size_t warnings = 0;
+	bool show_warnings = false;
+	bool annotate_todos = false;
+	bool translation = false; ///< Is the current file actually a translation or not
+	LanguagePackHeader lang; ///< Header information about a language.
+};
+extern StrgenState _strgen;
 
 #endif /* STRGEN_H */

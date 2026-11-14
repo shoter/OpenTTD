@@ -1,8 +1,18 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.17)
 
 #
 # Create a single baseset meta file with the correct translations.
 #
+
+if(NOT BASESET_SOURCE_FILE)
+    message(FATAL_ERROR "Script needs BASESET_SOURCE_FILE defined")
+endif()
+if(NOT BASESET_BINARY_FILE)
+    message(FATAL_ERROR "Script needs BASESET_BINARY_FILE defined")
+endif()
+if(NOT BASESET_EXTRAGRF_FILE)
+    message(FATAL_ERROR "Script needs BASESET_EXTRAGRF_FILE defined")
+endif()
 
 set(ARGC 1)
 set(ARG_READ NO)
@@ -48,6 +58,7 @@ list(SORT ${PLACE_HOLDER})
 string(REPLACE ";" "\n" ${PLACE_HOLDER} "${${PLACE_HOLDER}}")
 
 # Get the grf md5
-file(MD5 ${BASESET_EXTRAGRF_FILE} ORIG_EXTRA_GRF_MD5)
+file(READ ${BASESET_EXTRAGRF_FILE}.hash ORIG_EXTRA_GRF_MD5)
+string(STRIP ${ORIG_EXTRA_GRF_MD5} ORIG_EXTRA_GRF_MD5)
 
 configure_file(${BASESET_SOURCE_FILE} ${BASESET_BINARY_FILE})

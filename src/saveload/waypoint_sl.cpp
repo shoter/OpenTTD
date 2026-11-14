@@ -2,10 +2,10 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file waypoint_sl.cpp Code handling saving and loading of waypoints */
+/** @file waypoint_sl.cpp Code handling saving and loading of waypoints. */
 
 #include "../stdafx.h"
 #include "../waypoint_base.h"
@@ -13,31 +13,33 @@
 #include "../newgrf_station.h"
 #include "../vehicle_base.h"
 #include "../town.h"
-#include "../newgrf.h"
+#include "../timer/timer_game_calendar.h"
+#include "saveload_error.hpp"
+#include "saveload_internal.h"
 
 #include "table/strings.h"
 
-#include "saveload_internal.h"
-
 #include "../safeguards.h"
+
+using OldWaypointID = uint16_t;
 
 /** Helper structure to convert from the old waypoint system. */
 struct OldWaypoint {
-	size_t index;
+	OldWaypointID index;
 	TileIndex xy;
 	TownID town_index;
 	Town *town;
-	uint16 town_cn;
+	uint16_t town_cn;
 	StringID string_id;
 	std::string name;
-	uint8 delete_ctr;
-	Date build_date;
-	uint8 localidx;
-	uint32 grfid;
+	uint8_t delete_ctr;
+	TimerGameCalendar::Date build_date;
+	uint8_t localidx;
+	GrfID grfid;
 	const StationSpec *spec;
 	Owner owner;
 
-	size_t new_index;
+	StationID new_index;
 };
 
 /** Temporary array with old waypoints. */
@@ -47,14 +49,14 @@ static std::vector<OldWaypoint> _old_waypoints;
  * Update the waypoint orders to get the new waypoint ID.
  * @param o the order 'list' to check.
  */
-static void UpdateWaypointOrder(Order *o)
+static void UpdateWaypointOrder(Order &o)
 {
-	if (!o->IsType(OT_GOTO_WAYPOINT)) return;
+	if (!o.IsType(OT_GOTO_WAYPOINT)) return;
 
 	for (OldWaypoint &wp : _old_waypoints) {
-		if (wp.index != o->GetDestination()) continue;
+		if (wp.index != o.GetDestination()) continue;
 
-		o->SetDestination((DestinationID)wp.new_index);
+		o.SetDestination(wp.new_index);
 		return;
 	}
 }
@@ -69,29 +71,25 @@ void MoveWaypointsToBaseStations()
 	 * waypoints to make way for storing the index in m2. The custom graphics
 	 * id which was stored in m4 is now saved as a grf/id reference in the
 	 * waypoint struct. */
-	if (IsSavegameVersionBefore(SLV_17)) {
+	if (IsSavegameVersionBefore(SaveLoadVersion::StoreWaypointIdInMap)) {
 		for (OldWaypoint &wp : _old_waypoints) {
 			if (wp.delete_ctr != 0) continue; // The waypoint was deleted
 
 			/* Waypoint indices were not added to the map prior to this. */
-			_m[wp.xy].m2 = (StationID)wp.index;
+			Tile tile = wp.xy;
+			tile.m2() = wp.index;
 
-			if (HasBit(_m[wp.xy].m3, 4)) {
-				wp.spec = StationClass::Get(STAT_CLASS_WAYP)->GetSpec(_m[wp.xy].m4 + 1);
+			if (HasBit(tile.m3(), 4)) {
+				wp.spec = StationClass::Get(STAT_CLASS_WAYP)->GetSpec(tile.m4() + 1);
 			}
 		}
 	} else {
 		/* As of version 17, we recalculate the custom graphic ID of waypoints
 		 * from the GRF ID / station index. */
 		for (OldWaypoint &wp : _old_waypoints) {
-			StationClass* stclass = StationClass::Get(STAT_CLASS_WAYP);
-			for (uint i = 0; i < stclass->GetSpecCount(); i++) {
-				const StationSpec *statspec = stclass->GetSpec(i);
-				if (statspec != nullptr && statspec->grf_prop.grffile->grfid == wp.grfid && statspec->grf_prop.local_id == wp.localidx) {
-					wp.spec = statspec;
-					break;
-				}
-			}
+			const auto specs = StationClass::Get(STAT_CLASS_WAYP)->Specs();
+			auto found = std::ranges::find_if(specs, [&wp](const StationSpec *spec) { return spec != nullptr && spec->grf_prop.grfid == wp.grfid && spec->grf_prop.local_id == wp.localidx; });
+			if (found != std::end(specs)) wp.spec = *found;
 		}
 	}
 
@@ -102,20 +100,22 @@ void MoveWaypointsToBaseStations()
 		TileIndex t = wp.xy;
 		/* Sometimes waypoint (sign) locations became disconnected from their actual location in
 		 * the map array. If this is the case, try to locate the actual location in the map array */
-		if (!IsTileType(t, MP_RAILWAY) || GetRailTileType(t) != 2 /* RAIL_TILE_WAYPOINT */ || _m[t].m2 != wp.index) {
-			DEBUG(sl, 0, "Found waypoint tile %u with invalid position", t);
-			for (t = 0; t < MapSize(); t++) {
-				if (IsTileType(t, MP_RAILWAY) && GetRailTileType(t) == 2 /* RAIL_TILE_WAYPOINT */ && _m[t].m2 == wp.index) {
-					DEBUG(sl, 0, "Found actual waypoint position at %u", t);
+		if (!IsTileType(t, TileType::Railway) || GetRailTileType(t) != RailTileType{2} /* RAIL_TILE_WAYPOINT */ || Tile(t).m2() != wp.index) {
+			Debug(Facility::Sl, Severity::Critical, "Found waypoint tile {} with invalid position", t);
+			t = INVALID_TILE;
+			for (auto tile : Map::Iterate()) {
+				if (IsTileType(tile, TileType::Railway) && GetRailTileType(tile) == RailTileType{2} /* RAIL_TILE_WAYPOINT */ && tile.m2() == wp.index) {
+					t = TileIndex(tile);
+					Debug(Facility::Sl, Severity::Critical, "Found actual waypoint position at {}", TileIndex(tile));
 					break;
 				}
 			}
 		}
-		if (t == MapSize()) {
+		if (t == INVALID_TILE) {
 			SlErrorCorrupt("Waypoint with invalid tile");
 		}
 
-		Waypoint *new_wp = new Waypoint(t);
+		Waypoint *new_wp = Waypoint::Create(t);
 		new_wp->town       = wp.town;
 		new_wp->town_cn    = wp.town_cn;
 		new_wp->name       = wp.name;
@@ -125,34 +125,37 @@ void MoveWaypointsToBaseStations()
 		new_wp->string_id  = STR_SV_STNAME_WAYPOINT;
 
 		/* The tile might've been reserved! */
-		bool reserved = !IsSavegameVersionBefore(SLV_100) && HasBit(_m[t].m5, 4);
+		Tile tile(t);
+		bool reserved = !IsSavegameVersionBefore(SaveLoadVersion::Yapp) && HasBit(tile.m5(), 4);
 
 		/* The tile really has our waypoint, so reassign the map array */
-		MakeRailWaypoint(t, GetTileOwner(t), new_wp->index, (Axis)GB(_m[t].m5, 0, 1), 0, GetRailType(t));
-		new_wp->facilities |= FACIL_TRAIN;
-		new_wp->owner = GetTileOwner(t);
+		MakeRailWaypoint(tile, GetTileOwner(tile), new_wp->index, static_cast<Axis>(GB(tile.m5(), 0, 1)), 0, GetRailType(tile));
+		new_wp->facilities.Set(StationFacility::Train);
+		new_wp->owner = GetTileOwner(tile);
 
-		SetRailStationReservation(t, reserved);
+		SetRailStationReservation(tile, reserved);
 
 		if (wp.spec != nullptr) {
-			SetCustomStationSpecIndex(t, AllocateSpecToStation(wp.spec, new_wp, true));
+			auto specindex = AllocateSpecToStation(wp.spec, new_wp);
+			if (specindex.has_value()) AssignSpecToStation(wp.spec, new_wp, *specindex);
+			SetCustomStationSpecIndex(tile, specindex.value_or(0));
 		}
-		new_wp->rect.BeforeAddTile(t, StationRect::ADD_FORCE);
+		new_wp->spread.Add(tile);
 
 		wp.new_index = new_wp->index;
 	}
 
 	/* Update the orders of vehicles */
 	for (OrderList *ol : OrderList::Iterate()) {
-		if (ol->GetFirstSharedVehicle()->type != VEH_TRAIN) continue;
+		if (ol->GetFirstSharedVehicle()->type != VehicleType::Train) continue;
 
-		for (Order *o = ol->GetFirstOrder(); o != nullptr; o = o->next) UpdateWaypointOrder(o);
+		for (Order &o : ol->GetOrders()) UpdateWaypointOrder(o);
 	}
 
 	for (Vehicle *v : Vehicle::Iterate()) {
-		if (v->type != VEH_TRAIN) continue;
+		if (v->type != VehicleType::Train) continue;
 
-		UpdateWaypointOrder(&v->current_order);
+		UpdateWaypointOrder(v->current_order);
 	}
 
 	ResetOldWaypoints();
@@ -165,67 +168,72 @@ void ResetOldWaypoints()
 }
 
 static const SaveLoad _old_waypoint_desc[] = {
-	SLE_CONDVAR(OldWaypoint, xy,         SLE_FILE_U16 | SLE_VAR_U32,  SL_MIN_VERSION, SLV_6),
-	SLE_CONDVAR(OldWaypoint, xy,         SLE_UINT32,                  SLV_6, SL_MAX_VERSION),
-	SLE_CONDVAR(OldWaypoint, town_index, SLE_UINT16,                 SLV_12, SLV_122),
-	SLE_CONDREF(OldWaypoint, town,       REF_TOWN,                  SLV_122, SL_MAX_VERSION),
-	SLE_CONDVAR(OldWaypoint, town_cn,    SLE_FILE_U8 | SLE_VAR_U16,  SLV_12, SLV_89),
-	SLE_CONDVAR(OldWaypoint, town_cn,    SLE_UINT16,                 SLV_89, SL_MAX_VERSION),
-	SLE_CONDVAR(OldWaypoint, string_id,  SLE_STRINGID,                SL_MIN_VERSION, SLV_84),
-	SLE_CONDSSTR(OldWaypoint, name,      SLE_STR,                    SLV_84, SL_MAX_VERSION),
-	    SLE_VAR(OldWaypoint, delete_ctr, SLE_UINT8),
+	SaveLoad::Variable<VarFileType::U16>("xy", SLE_OBJECT_ADDRESS(OldWaypoint, xy), SaveLoadVersion::MinVersion, SaveLoadVersion::MultipleRoadStops),
+	SaveLoad::Variable<VarFileType::U32>("xy", SLE_OBJECT_ADDRESS(OldWaypoint, xy), SaveLoadVersion::MultipleRoadStops),
+	SaveLoad::Variable<VarFileType::U16>("town_index", SLE_OBJECT_ADDRESS(OldWaypoint, town_index), SaveLoadVersion::LinkWaypointToTown, SaveLoadVersion::WaypointMoreLikeStation),
+	SaveLoad::Reference<SLRefType::Town>("town", SLE_OBJECT_ADDRESS(OldWaypoint, town), SaveLoadVersion::WaypointMoreLikeStation),
+	SaveLoad::Variable<VarFileType::U8>("town_cn", SLE_OBJECT_ADDRESS(OldWaypoint, town_cn), SaveLoadVersion::LinkWaypointToTown, SaveLoadVersion::MoreWaypointsPerTown),
+	SaveLoad::Variable<VarFileType::U16>("town_cn", SLE_OBJECT_ADDRESS(OldWaypoint, town_cn), SaveLoadVersion::MoreWaypointsPerTown),
+	SaveLoad::Variable<VarFileType::StringID>("string_id", SLE_OBJECT_ADDRESS(OldWaypoint, string_id), SaveLoadVersion::MinVersion, SaveLoadVersion::ReplaceCustomNameArray),
+	SaveLoad::String("name", SLE_OBJECT_ADDRESS(OldWaypoint, name), {}, SaveLoadVersion::ReplaceCustomNameArray),
+	SaveLoad::Variable<VarFileType::U8>("delete_ctr", SLE_OBJECT_ADDRESS(OldWaypoint, delete_ctr)),
 
-	SLE_CONDVAR(OldWaypoint, build_date, SLE_FILE_U16 | SLE_VAR_I32,  SLV_3, SLV_31),
-	SLE_CONDVAR(OldWaypoint, build_date, SLE_INT32,                  SLV_31, SL_MAX_VERSION),
-	SLE_CONDVAR(OldWaypoint, localidx,   SLE_UINT8,                   SLV_3, SL_MAX_VERSION),
-	SLE_CONDVAR(OldWaypoint, grfid,      SLE_UINT32,                 SLV_17, SL_MAX_VERSION),
-	SLE_CONDVAR(OldWaypoint, owner,      SLE_UINT8,                 SLV_101, SL_MAX_VERSION),
-
-	SLE_END()
+	SaveLoad::Variable<VarFileType::U16>("build_date", SLE_OBJECT_ADDRESS(OldWaypoint, build_date), SaveLoadVersion::BiggerStationVariables, SaveLoadVersion::BigDates),
+	SaveLoad::Variable<VarFileType::I32>("build_date", SLE_OBJECT_ADDRESS(OldWaypoint, build_date), SaveLoadVersion::BigDates),
+	SaveLoad::Variable<VarFileType::U8>("localidx", SLE_OBJECT_ADDRESS(OldWaypoint, localidx), SaveLoadVersion::BiggerStationVariables),
+	SaveLoad::Variable<VarFileType::Label>("grfid", SLE_OBJECT_ADDRESS(OldWaypoint, grfid), SaveLoadVersion::StoreWaypointIdInMap),
+	SaveLoad::Variable<VarFileType::U8>("owner", SLE_OBJECT_ADDRESS(OldWaypoint, owner), SaveLoadVersion::NewGRFPalette),
 };
 
-static void Load_WAYP()
-{
-	/* Precaution for when loading failed and it didn't get cleared */
-	ResetOldWaypoints();
+struct CHKPChunkHandler : ChunkHandler {
+	CHKPChunkHandler() : ChunkHandler("CHKP", ChunkType::ReadOnly) {}
 
-	int index;
+	void Load() const override
+	{
+		/* Precaution for when loading failed and it didn't get cleared */
+		ResetOldWaypoints();
 
-	while ((index = SlIterateArray()) != -1) {
-		OldWaypoint *wp = &_old_waypoints.emplace_back();
+		int index;
 
-		wp->index = index;
-		SlObject(wp, _old_waypoint_desc);
+		while ((index = SlIterateArray()) != -1) {
+			OldWaypoint *wp = &_old_waypoints.emplace_back();
+
+			wp->index = static_cast<OldWaypointID>(index);
+			SlObject(wp, _old_waypoint_desc);
+		}
 	}
-}
 
-static void Ptrs_WAYP()
-{
-	for (OldWaypoint &wp : _old_waypoints) {
-		SlObject(&wp, _old_waypoint_desc);
+	void FixPointers() const override
+	{
+		for (OldWaypoint &wp : _old_waypoints) {
+			SlObject(&wp, _old_waypoint_desc);
 
-		if (IsSavegameVersionBefore(SLV_12)) {
-			wp.town_cn = (wp.string_id & 0xC000) == 0xC000 ? (wp.string_id >> 8) & 0x3F : 0;
-			wp.town = ClosestTownFromTile(wp.xy, UINT_MAX);
-		} else if (IsSavegameVersionBefore(SLV_122)) {
-			/* Only for versions 12 .. 122 */
-			if (!Town::IsValidID(wp.town_index)) {
-				/* Upon a corrupted waypoint we'll likely get here. The next step will be to
-				 * loop over all Ptrs procs to nullptr the pointers. However, we don't know
-				 * whether we're in the nullptr or "normal" Ptrs proc. So just clear the list
-				 * of old waypoints we constructed and then this waypoint (and the other
-				 * possibly corrupt ones) will not be queried in the nullptr Ptrs proc run. */
-				_old_waypoints.clear();
-				SlErrorCorrupt("Referencing invalid Town");
+			if (IsSavegameVersionBefore(SaveLoadVersion::LinkWaypointToTown)) {
+				wp.town_cn = (wp.string_id.base() & 0xC000) == 0xC000 ? (wp.string_id.base() >> 8) & 0x3F : 0;
+				wp.town = ClosestTownFromTile(wp.xy, UINT_MAX);
+			} else if (IsSavegameVersionBefore(SaveLoadVersion::WaypointMoreLikeStation)) {
+				/* Only for versions 12 .. 122 */
+				if (!Town::IsValidID(wp.town_index)) {
+					/* Upon a corrupted waypoint we'll likely get here. The next step will be to
+					 * loop over all Ptrs procs to nullptr the pointers. However, we don't know
+					 * whether we're in the nullptr or "normal" Ptrs proc. So just clear the list
+					 * of old waypoints we constructed and then this waypoint (and the other
+					 * possibly corrupt ones) will not be queried in the nullptr Ptrs proc run. */
+					_old_waypoints.clear();
+					SlErrorCorrupt("Referencing invalid Town");
+				}
+				wp.town = Town::Get(wp.town_index);
 			}
-			wp.town = Town::Get(wp.town_index);
-		}
-		if (IsSavegameVersionBefore(SLV_84)) {
-			wp.name = CopyFromOldName(wp.string_id);
+			if (IsSavegameVersionBefore(SaveLoadVersion::ReplaceCustomNameArray)) {
+				wp.name = CopyFromOldName(wp.string_id);
+			}
 		}
 	}
-}
-
-extern const ChunkHandler _waypoint_chunk_handlers[] = {
-	{ 'CHKP', nullptr, Load_WAYP, Ptrs_WAYP, nullptr, CH_ARRAY | CH_LAST},
 };
+
+static const CHKPChunkHandler CHKP;
+static const ChunkHandlerRef waypoint_chunk_handlers[] = {
+	CHKP,
+};
+
+extern const ChunkHandlerTable _waypoint_chunk_handlers(waypoint_chunk_handlers);

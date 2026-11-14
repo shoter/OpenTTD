@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file music_widget.h Types related to the music widgets. */
@@ -11,7 +11,7 @@
 #define WIDGETS_MUSIC_WIDGET_H
 
 /** Widgets of the #MusicTrackSelectionWindow class. */
-enum MusicTrackSelectionWidgets {
+enum MusicTrackSelectionWidgets : WidgetID {
 	WID_MTS_CAPTION,    ///< Window caption.
 	WID_MTS_LIST_LEFT,  ///< Left button.
 	WID_MTS_PLAYLIST,   ///< Playlist.
@@ -27,7 +27,7 @@ enum MusicTrackSelectionWidgets {
 };
 
 /** Widgets of the #MusicWindow class. */
-enum MusicWidgets {
+enum MusicWidgets : WidgetID {
 	WID_M_PREV,        ///< Previous button.
 	WID_M_NEXT,        ///< Next button.
 	WID_M_STOP,        ///< Stop button.

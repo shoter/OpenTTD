@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file dbg_helpers.h Functions to be used for debug printings. */
@@ -10,163 +10,210 @@
 #ifndef DBG_HELPERS_H
 #define DBG_HELPERS_H
 
-#include <map>
 #include <stack>
-
-#include "str.hpp"
 
 #include "../direction_type.h"
 #include "../signal_type.h"
 #include "../tile_type.h"
 #include "../track_type.h"
-
-/** Helper template class that provides C array length and item type */
-template <typename T> struct ArrayT;
-
-/** Helper template class that provides C array length and item type */
-template <typename T, size_t N> struct ArrayT<T[N]> {
-	static const size_t length = N;
-	typedef T item_t;
-};
-
+#include "../core/format.hpp"
 
 /**
  * Helper template function that returns item of array at given index
- * or t_unk when index is out of bounds.
+ * or unknown_name when index is out of bounds.
+ * @param idx The index into the span.
+ * @param names Span of names to index.
+ * @param unknown_name The default value when the index does not exist.
+ * @return The idx'th string of \c names, or \c unknown_name.
  */
-template <typename E, typename T>
-inline typename ArrayT<T>::item_t ItemAtT(E idx, const T &t, typename ArrayT<T>::item_t t_unk)
+template <typename E>
+inline std::string_view ItemAt(E idx, std::span<const std::string_view> names, std::string_view unknown_name)
 {
-	if ((size_t)idx >= ArrayT<T>::length) {
-		return t_unk;
+	if (static_cast<size_t>(idx) >= std::size(names)) {
+		return unknown_name;
 	}
-	return t[idx];
+	return names[to_underlying(idx)];
 }
 
 /**
  * Helper template function that returns item of array at given index
- * or t_inv when index == idx_inv
- * or t_unk when index is out of bounds.
+ * or invalid_name when index == invalid_index
+ * or unknown_name when index is out of bounds.
+ * @param idx The index into the span.
+ * @param names Span of names to index.
+ * @param unknown_name The default value when the index does not exist.
+ * @param invalid_index The invalid value to consider.
+ * @param invalid_name The value to output when the invalid value is given.
+ * @return The idx'th string of \c names, \c invalid_name, or \c unknown_name.
  */
-template <typename E, typename T>
-inline typename ArrayT<T>::item_t ItemAtT(E idx, const T &t, typename ArrayT<T>::item_t t_unk, E idx_inv, typename ArrayT<T>::item_t t_inv)
+template <typename E>
+inline std::string_view ItemAt(E idx, std::span<const std::string_view> names, std::string_view unknown_name, E invalid_index, std::string_view invalid_name)
 {
-	if ((size_t)idx < ArrayT<T>::length) {
-		return t[idx];
+	if (idx == invalid_index) {
+		return invalid_name;
 	}
-	if (idx == idx_inv) {
-		return t_inv;
-	}
-	return t_unk;
+	return ItemAt(idx, names, unknown_name);
 }
 
 /**
  * Helper template function that returns compound bitfield name that is
  * concatenation of names of each set bit in the given value
- * or t_inv when index == idx_inv
- * or t_unk when index is out of bounds.
+ * or unknown_name when index is out of bounds.
+ * @param value The bitmask of values.
+ * @param names Span of names to index.
+ * @param unknown_name The default value when the index does not exist.
+ * @return The composed name.
  */
-template <typename E, typename T>
-inline CStrA ComposeNameT(E value, T &t, const char *t_unk, E val_inv, const char *name_inv)
+template <typename Tbitset>
+inline std::string ComposeName(Tbitset value, std::span<const std::string_view> names, std::string_view unknown_name)
 {
-	CStrA out;
-	if (value == val_inv) {
-		out = name_inv;
-	} else if (value == 0) {
-		out = "<none>";
-	} else {
-		for (size_t i = 0; i < ArrayT<T>::length; i++) {
-			if ((value & (1 << i)) == 0) continue;
-			out.AddFormat("%s%s", (out.Size() > 0 ? "+" : ""), (const char*)t[i]);
-			value &= ~(E)(1 << i);
-		}
-		if (value != 0) out.AddFormat("%s%s", (out.Size() > 0 ? "+" : ""), t_unk);
+	if (value.None()) return "<none>";
+
+	std::string out;
+	for (auto index : value) {
+		if (!out.empty()) out += "+";
+		out += to_underlying(index) < std::size(names) ? names[to_underlying(index)] : unknown_name;
 	}
-	return out.Transfer();
+	return out;
 }
 
-CStrA ValueStr(Trackdir td);
-CStrA ValueStr(TrackdirBits td_bits);
-CStrA ValueStr(DiagDirection dd);
-CStrA ValueStr(SignalType t);
+/**
+ * Helper template function that returns compound bitfield name that is
+ * concatenation of names of each set bit in the given value
+ * or invalid_name when value == invalid_index
+ * or unknown_name when index is out of bounds.
+ * @param value The bitmask of values.
+ * @param names Span of names to index.
+ * @param unknown_name The default value when the index does not exist.
+ * @param invalid_value The invalid value to consider.
+ * @param invalid_name The value to output when the invalid value is given.
+ * @return The composed name.
+ */
+template <typename Tbitset>
+inline std::string ComposeName(Tbitset value, std::span<const std::string_view> names, std::string_view unknown_name, Tbitset invalid_value, std::string_view invalid_name)
+{
+	if (value == invalid_value) return std::string{invalid_name};
+	return ComposeName(value, names, unknown_name);
+}
+
+std::string ValueStr(Trackdir td);
+std::string ValueStr(TrackdirBits td_bits);
+std::string ValueStr(DiagDirection dd);
+std::string ValueStr(SignalType t);
 
 /** Class that represents the dump-into-string target. */
 struct DumpTarget {
-
 	/** Used as a key into map of known object instances. */
 	struct KnownStructKey {
-		size_t      m_type_id;
-		const void *m_ptr;
+		size_t type_id; ///< Unique identifier of the type.
+		const void *ptr; ///< Pointer to the structure.
 
-		KnownStructKey(size_t type_id, const void *ptr)
-			: m_type_id(type_id)
-			, m_ptr(ptr)
-		{}
+		/**
+		 * Create the key.
+		 * @param type_id Unique type identifier.
+		 * @param ptr The structure.
+		 */
+		KnownStructKey(size_t type_id, const void *ptr) : type_id(type_id), ptr(ptr) {}
 
-		KnownStructKey(const KnownStructKey &src)
-		{
-			m_type_id = src.m_type_id;
-			m_ptr = src.m_ptr;
-		}
-
-		bool operator<(const KnownStructKey &other) const
-		{
-			if ((size_t)m_ptr < (size_t)other.m_ptr) return true;
-			if ((size_t)m_ptr > (size_t)other.m_ptr) return false;
-			if (m_type_id < other.m_type_id) return true;
-			return false;
-		}
+		/**
+		 * Compare with another instance of this class.
+		 * @return The std::strong_ordering of the comparison.
+		 */
+		constexpr auto operator<=>(const KnownStructKey &) const noexcept = default;
 	};
 
-	typedef std::map<KnownStructKey, CStrA> KNOWN_NAMES;
+	/** Mapping of the KnownStructKey to the name for that structure. */
+	using KnownNamesMap = std::map<KnownStructKey, std::string>;
 
-	CStrA              m_out;         ///< the output string
-	int                m_indent;      ///< current indent/nesting level
-	std::stack<CStrA>  m_cur_struct;  ///< here we will track the current structure name
-	KNOWN_NAMES        m_known_names; ///< map of known object instances and their structured names
+	std::string output_buffer; ///< The output string.
+	int indent = 0; ///< Current indent/nesting level.
+	std::stack<std::string> cur_struct; ///< Tracker of the current structure name.
+	KnownNamesMap known_names; ///< Map of known object instances and their structured names.
 
-	DumpTarget()
-		: m_indent(0)
-	{}
-
-	static size_t& LastTypeId();
-	CStrA GetCurrentStructName();
-	bool FindKnownName(size_t type_id, const void *ptr, CStrA &name);
+	static size_t NewTypeId();
+	std::string GetCurrentStructName();
+	std::optional<std::string> FindKnownAsName(size_t type_id, const void *ptr);
 
 	void WriteIndent();
 
-	void CDECL WriteLine(const char *format, ...) WARN_FORMAT(2, 3);
-	void WriteValue(const char *name, const char *value_str);
-	void WriteTile(const char *name, TileIndex t);
-
-	/** Dump given enum value (as a number and as named value) */
-	template <typename E> void WriteEnumT(const char *name, E e)
+	/**
+	 * Write 'name = value' with indent and new-line.
+	 * @param name The name.
+	 * @param value The actual value to write.
+	 */
+	void WriteValue(std::string_view name, const auto &value)
 	{
-		WriteValue(name, ValueStr(e).Data());
+		this->WriteIndent();
+		format_append(this->output_buffer, "{} = {}\n", name, value);
 	}
 
-	void BeginStruct(size_t type_id, const char *name, const void *ptr);
+	void WriteTile(std::string_view name, TileIndex t);
+
+	/**
+	 * Dump given enum value (as a number and as named value).
+	 * @param name The name of the enumeration.
+	 * @param e The value of the enumeration.
+	 */
+	template <typename E> void WriteEnumT(std::string_view name, E e)
+	{
+		this->WriteValue(name, ValueStr(e));
+	}
+
+	void BeginStruct(size_t type_id, std::string_view name, const void *ptr);
 	void EndStruct();
 
-	/** Dump nested object (or only its name if this instance is already known). */
-	template <typename S> void WriteStructT(const char *name, const S *s)
+	/**
+	 * Dump nested object (or only its name if this instance is already known).
+	 * @param name The name of the struct.
+	 * @param s Pointer to the struct.
+	 */
+	template <typename S> void WriteStructT(std::string_view name, const S *s)
 	{
-		static size_t type_id = ++LastTypeId();
+		static const size_t type_id = this->NewTypeId();
 
 		if (s == nullptr) {
 			/* No need to dump nullptr struct. */
-			WriteLine("%s = <null>", name);
+			this->WriteValue(name, "<null>");
 			return;
 		}
-		CStrA known_as;
-		if (FindKnownName(type_id, s, known_as)) {
+		if (auto known_as = this->FindKnownAsName(type_id, s); known_as.has_value()) {
 			/* We already know this one, no need to dump it. */
-			WriteLine("%s = known_as.%s", name, known_as.Data());
+			this->WriteValue(name, *known_as);
 		} else {
 			/* Still unknown, dump it */
-			BeginStruct(type_id, name, s);
+			this->BeginStruct(type_id, name, s);
 			s->Dump(*this);
-			EndStruct();
+			this->EndStruct();
+		}
+	}
+
+	/**
+	 * Dump nested object (or only its name if this instance is already known).
+	 * @param name The name of the struct.
+	 * @param s Pointer to the std::deque of structs.
+	 */
+	template <typename S> void WriteStructT(std::string_view name, const std::deque<S> *s)
+	{
+		static const size_t type_id = this->NewTypeId();
+
+		if (s == nullptr) {
+			/* No need to dump nullptr struct. */
+			this->WriteValue(name, "<null>");
+			return;
+		}
+		if (auto known_as = this->FindKnownAsName(type_id, s); known_as.has_value()) {
+			/* We already know this one, no need to dump it. */
+			this->WriteValue(name, *known_as);
+		} else {
+			/* Still unknown, dump it */
+			this->BeginStruct(type_id, name, s);
+			size_t num_items = s->size();
+			this->WriteValue("num_items", num_items);
+			for (size_t i = 0; i < num_items; i++) {
+				const auto &item = (*s)[i];
+				this->WriteStructT(fmt::format("item[{}]", i), &item);
+			}
+			this->EndStruct();
 		}
 	}
 };

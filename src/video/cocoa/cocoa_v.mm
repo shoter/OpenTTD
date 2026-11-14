@@ -2,441 +2,135 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file cocoa_v.mm Code related to the cocoa video driver(s). */
-
-/******************************************************************************
- *                             Cocoa video driver                             *
- * Known things left to do:                                                   *
- *  Nothing at the moment.                                                    *
- ******************************************************************************/
-
-#ifdef WITH_COCOA
-
-#include "../../stdafx.h"
-#include "../../os/macosx/macos.h"
-
-#define Rect  OTTDRect
-#define Point OTTDPoint
-#import <Cocoa/Cocoa.h>
-#undef Rect
-#undef Point
-
-#include "../../openttd.h"
-#include "../../debug.h"
-#include "../../core/geometry_type.hpp"
-#include "cocoa_v.h"
-#include "../../blitter/factory.hpp"
-#include "../../fileio_func.h"
-#include "../../gfx_func.h"
-#include "../../window_func.h"
-#include "../../window_gui.h"
-
-#import <sys/param.h> /* for MAXPATHLEN */
-
 /**
- * Important notice regarding all modifications!!!!!!!
+ * @file cocoa_v.mm Code related to the cocoa video driver(s).
+ *
+ * @important Notice regarding all modifications!!!!!!!
  * There are certain limitations because the file is objective C++.
  * gdb has limitations.
  * C++ and objective C code can't be joined in all cases (classes stuff).
  * Read http://developer.apple.com/releasenotes/Cocoa/Objective-C++.html for more information.
  */
 
+#if defined(WITH_COCOA) || defined(DOXYGEN_API)
 
-@interface OTTDMain : NSObject <NSApplicationDelegate>
-@end
+#include "../../stdafx.h"
+#include "../../os/macosx/macos.h"
+
+#include "../../os/macosx/macos_objective_c.h"
+#include "../../openttd.h"
+#include "../../debug.h"
+#include "../../error_func.h"
+#include "../../core/geometry_func.hpp"
+#include "../../core/math_func.hpp"
+#include "cocoa_v.h"
+#include "cocoa_wnd.h"
+#include "../../blitter/factory.hpp"
+#include "../../framerate_type.h"
+#include "../../gfx_func.h"
+#include "../../thread.h"
+#include "../../core/random_func.hpp"
+#include "../../progress.h"
+#include "../../settings_type.h"
+#include "../../window_func.h"
+#include "../../window_gui.h"
+
+#import <sys/param.h> /* for MAXPATHLEN */
+#import <sys/time.h> /* gettimeofday */
+
+bool _cocoa_video_started = false; ///< Is the Cocoa video driver running.
+static Palette _local_palette; ///< Current palette to use for drawing.
+extern bool _tab_is_down; ///< Is tab button pressed.
 
 
-static NSAutoreleasePool *_ottd_autorelease_pool;
-static OTTDMain *_ottd_main;
-static bool _cocoa_video_started = false;
-static bool _cocoa_video_dialog = false;
-
-CocoaSubdriver *_cocoa_subdriver = NULL;
-
-static NSString *OTTDMainLaunchGameEngine = @"ottdmain_launch_game_engine";
+/** List of common display/window sizes. */
+static const Dimension _default_resolutions[] = {
+	{  640,  480 },
+	{  800,  600 },
+	{ 1024,  768 },
+	{ 1152,  864 },
+	{ 1280,  800 },
+	{ 1280,  960 },
+	{ 1280, 1024 },
+	{ 1400, 1050 },
+	{ 1600, 1200 },
+	{ 1680, 1050 },
+	{ 1920, 1200 },
+	{ 2560, 1440 }
+};
 
 
 /**
- * The main class of the application, the application's delegate.
+ * Create the video driver.
+ * @param uses_hardware_acceleration Whether hardware acceleration is used by this driver.
+ * @param supports_animation_buffer Whether this driver supports a hardware accelerated animation buffer.
  */
-@implementation OTTDMain
-/**
- * Stop the game engine. Must be called on main thread.
- */
-- (void)stopEngine
+VideoDriver_Cocoa::VideoDriver_Cocoa(bool uses_hardware_acceleration, bool supports_animation_buffer)
+	: VideoDriver(uses_hardware_acceleration, supports_animation_buffer)
 {
-	[ NSApp stop:self ];
+	this->setup         = false;
+	this->buffer_locked = false;
 
-	/* Send an empty event to return from the run loop. Without that, application is stuck waiting for an event. */
-	NSEvent *event = [ NSEvent otherEventWithType:NSApplicationDefined location:NSMakePoint(0, 0) modifierFlags:0 timestamp:0.0 windowNumber:0 context:nil subtype:0 data1:0 data2:0 ];
-	[ NSApp postEvent:event atStart:YES ];
+	this->refresh_sys_sprites = true;
+
+	this->window    = nil;
+	this->cocoaview = nil;
+	this->delegate  = nil;
+
+	this->colour_space = nullptr;
+
+	this->dirty_rect = {};
 }
 
-/**
- * Start the game loop.
- */
-- (void)launchGameEngine: (NSNotification*) note
-{
-	/* Setup cursor for the current _game_mode. */
-	[ _cocoa_subdriver->cocoaview resetCursorRects ];
-
-	/* Hand off to main application code. */
-	QZ_GameLoop();
-
-	/* We are done, thank you for playing. */
-	[ self performSelectorOnMainThread:@selector(stopEngine) withObject:nil waitUntilDone:FALSE ];
-}
-
-/**
- * Called when the internal event loop has just started running.
- */
-- (void) applicationDidFinishLaunching: (NSNotification*) note
-{
-	/* Add a notification observer so we can restart the game loop later on if necessary. */
-	[ [ NSNotificationCenter defaultCenter ] addObserver:self selector:@selector(launchGameEngine:) name:OTTDMainLaunchGameEngine object:nil ];
-
-	/* Start game loop. */
-	[ [ NSNotificationCenter defaultCenter ] postNotificationName:OTTDMainLaunchGameEngine object:nil ];
-}
-
-/**
- * Display the in game quit confirmation dialog.
- */
-- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*) sender
-{
-	HandleExitGameRequest();
-
-	return NSTerminateCancel; // NSTerminateLater ?
-}
-
-/**
- * Remove ourself as a notification observer.
- */
-- (void)unregisterObserver
-{
-	[ [ NSNotificationCenter defaultCenter ] removeObserver:self ];
-}
-@end
-
-/**
- * Initialize the application menu shown in top bar.
- */
-static void setApplicationMenu()
-{
-	NSString *appName = @"OpenTTD";
-	NSMenu *appleMenu = [ [ NSMenu alloc ] initWithTitle:appName ];
-
-	/* Add menu items */
-	NSString *title = [ @"About " stringByAppendingString:appName ];
-	[ appleMenu addItemWithTitle:title action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@"" ];
-
-	[ appleMenu addItem:[ NSMenuItem separatorItem ] ];
-
-	title = [ @"Hide " stringByAppendingString:appName ];
-	[ appleMenu addItemWithTitle:title action:@selector(hide:) keyEquivalent:@"h" ];
-
-	NSMenuItem *menuItem = [ appleMenu addItemWithTitle:@"Hide Others" action:@selector(hideOtherApplications:) keyEquivalent:@"h" ];
-	[ menuItem setKeyEquivalentModifierMask:(NSAlternateKeyMask | NSCommandKeyMask) ];
-
-	[ appleMenu addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@"" ];
-
-	[ appleMenu addItem:[ NSMenuItem separatorItem ] ];
-
-	title = [ @"Quit " stringByAppendingString:appName ];
-	[ appleMenu addItemWithTitle:title action:@selector(terminate:) keyEquivalent:@"q" ];
-
-	/* Put menu into the menubar */
-	menuItem = [ [ NSMenuItem alloc ] initWithTitle:@"" action:nil keyEquivalent:@"" ];
-	[ menuItem setSubmenu:appleMenu ];
-	[ [ NSApp mainMenu ] addItem:menuItem ];
-
-	/* Tell the application object that this is now the application menu.
-	 * This interesting Objective-C construct is used because not all SDK
-	 * versions define this method publicly. */
-	if ([ NSApp respondsToSelector:@selector(setAppleMenu:) ]) {
-		[ NSApp performSelector:@selector(setAppleMenu:) withObject:appleMenu ];
-	}
-
-	/* Finally give up our references to the objects */
-	[ appleMenu release ];
-	[ menuItem release ];
-}
-
-/**
- * Create a window menu.
- */
-static void setupWindowMenu()
-{
-	NSMenu *windowMenu = [ [ NSMenu alloc ] initWithTitle:@"Window" ];
-
-	/* "Minimize" item */
-	[ windowMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m" ];
-
-	/* Put menu into the menubar */
-	NSMenuItem *menuItem = [ [ NSMenuItem alloc ] initWithTitle:@"Window" action:nil keyEquivalent:@"" ];
-	[ menuItem setSubmenu:windowMenu ];
-	[ [ NSApp mainMenu ] addItem:menuItem ];
-
-	if (MacOSVersionIsAtLeast(10, 7, 0)) {
-		/* The OS will change the name of this menu item automatically */
-		[ windowMenu addItemWithTitle:@"Fullscreen" action:@selector(toggleFullScreen:) keyEquivalent:@"^f" ];
-	}
-
-	/* Tell the application object that this is now the window menu */
-	[ NSApp setWindowsMenu:windowMenu ];
-
-	/* Finally give up our references to the objects */
-	[ windowMenu release ];
-	[ menuItem release ];
-}
-
-/**
- * Startup the application.
- */
-static void setupApplication()
-{
-	ProcessSerialNumber psn = { 0, kCurrentProcess };
-
-	/* Ensure the application object is initialised */
-	[ NSApplication sharedApplication ];
-
-	/* Tell the dock about us */
-	OSStatus returnCode = TransformProcessType(&psn, kProcessTransformToForegroundApplication);
-	if (returnCode != 0) DEBUG(driver, 0, "Could not change to foreground application. Error %d", (int)returnCode);
-
-	/* Disable the system-wide tab feature as we only have one window. */
-	if ([ NSWindow respondsToSelector:@selector(setAllowsAutomaticWindowTabbing:) ]) {
-		/* We use nil instead of NO as withObject requires an id. */
-		[ NSWindow performSelector:@selector(setAllowsAutomaticWindowTabbing:) withObject:nil];
-	}
-
-	/* Become the front process, important when start from the command line. */
-	[ [ NSApplication sharedApplication ] activateIgnoringOtherApps:YES ];
-
-	/* Set up the menubar */
-	[ NSApp setMainMenu:[ [ NSMenu alloc ] init ] ];
-	setApplicationMenu();
-	setupWindowMenu();
-
-	/* Create OTTDMain and make it the app delegate */
-	_ottd_main = [ [ OTTDMain alloc ] init ];
-	[ NSApp setDelegate:_ottd_main ];
-}
-
-
-static bool ModeSorter(const OTTD_Point &p1, const OTTD_Point &p2)
-{
-	if (p1.x < p2.x) return true;
-	if (p1.x > p2.x) return false;
-	if (p1.y < p2.y) return true;
-	if (p1.y > p2.y) return false;
-	return false;
-}
-
-static void QZ_GetDisplayModeInfo(CFArrayRef modes, CFIndex i, int &bpp, uint16 &width, uint16 &height)
-{
-	CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
-
-	width = (uint16)CGDisplayModeGetWidth(mode);
-	height = (uint16)CGDisplayModeGetHeight(mode);
-
-#if (MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_11)
-	/* Extract bit depth from mode string. */
-	CFAutoRelease<CFStringRef> pixEnc(CGDisplayModeCopyPixelEncoding(mode));
-	if (CFStringCompare(pixEnc.get(), CFSTR(IO32BitDirectPixels), kCFCompareCaseInsensitive) == kCFCompareEqualTo) bpp = 32;
-	if (CFStringCompare(pixEnc.get(), CFSTR(IO16BitDirectPixels), kCFCompareCaseInsensitive) == kCFCompareEqualTo) bpp = 16;
-	if (CFStringCompare(pixEnc.get(), CFSTR(IO8BitIndexedPixels), kCFCompareCaseInsensitive) == kCFCompareEqualTo) bpp = 8;
-#else
-	/* CGDisplayModeCopyPixelEncoding is deprecated on OSX 10.11+, but there are no 8 bpp modes anyway... */
-	bpp = 32;
-#endif
-}
-
-uint QZ_ListModes(OTTD_Point *modes, uint max_modes, CGDirectDisplayID display_id, int device_depth)
-{
-	CFAutoRelease<CFArrayRef> mode_list(CGDisplayCopyAllDisplayModes(display_id, nullptr));
-	CFIndex num_modes = CFArrayGetCount(mode_list.get());
-
-	/* Build list of modes with the requested bpp */
-	uint count = 0;
-	for (CFIndex i = 0; i < num_modes && count < max_modes; i++) {
-		int bpp;
-		uint16 width, height;
-
-		QZ_GetDisplayModeInfo(mode_list.get(), i, bpp, width, height);
-
-		if (bpp != device_depth) continue;
-
-		/* Check if mode is already in the list */
-		bool hasMode = false;
-		for (uint i = 0; i < count; i++) {
-			if (modes[i].x == width &&  modes[i].y == height) {
-				hasMode = true;
-				break;
-			}
-		}
-
-		if (hasMode) continue;
-
-		/* Add mode to the list */
-		modes[count].x = width;
-		modes[count].y = height;
-		count++;
-	}
-
-	/* Sort list smallest to largest */
-	std::sort(modes, modes + count, ModeSorter);
-
-	return count;
-}
-
-/**
- * Update the video modus.
- *
- * @pre _cocoa_subdriver != NULL
- */
-static void QZ_UpdateVideoModes()
-{
-	assert(_cocoa_subdriver != NULL);
-
-	OTTD_Point modes[32];
-	uint count = _cocoa_subdriver->ListModes(modes, lengthof(modes));
-
-	_resolutions.clear();
-	for (uint i = 0; i < count; i++) {
-		_resolutions.emplace_back(modes[i].x, modes[i].y);
-	}
-}
-
-/**
- * Handle a change of the display area.
- */
-void QZ_GameSizeChanged()
-{
-	if (_cocoa_subdriver == NULL) return;
-
-	/* Tell the game that the resolution has changed */
-	_screen.width = _cocoa_subdriver->GetWidth();
-	_screen.height = _cocoa_subdriver->GetHeight();
-	_screen.pitch = _cocoa_subdriver->GetWidth();
-	_screen.dst_ptr = _cocoa_subdriver->GetPixelBuffer();
-	_fullscreen = _cocoa_subdriver->IsFullscreen();
-
-	BlitterFactory::GetCurrentBlitter()->PostResize();
-
-	GameSizeChanged();
-}
-
-/**
- * Find a suitable cocoa window subdriver.
- *
- * @param width Width of display area.
- * @param height Height of display area.
- * @param bpp Colour depth of display area.
- * @return Pointer to window subdriver.
- */
-static CocoaSubdriver *QZ_CreateWindowSubdriver(int width, int height, int bpp)
-{
-#if defined(ENABLE_COCOA_QUARTZ)
-	return QZ_CreateWindowQuartzSubdriver(width, height, bpp);
-#else
-	return nullptr;
-#endif
-}
-
-/**
- * Find a suitable cocoa subdriver.
- *
- * @param width Width of display area.
- * @param height Height of display area.
- * @param bpp Colour depth of display area.
- * @param fullscreen Whether a fullscreen mode is requested.
- * @param fallback Whether we look for a fallback driver.
- * @return Pointer to window subdriver.
- */
-static CocoaSubdriver *QZ_CreateSubdriver(int width, int height, int bpp, bool fullscreen, bool fallback)
-{
-	CocoaSubdriver *ret = QZ_CreateWindowSubdriver(width, height, bpp);
-	if (ret != nullptr && fullscreen) ret->ToggleFullscreen();
-
-	if (ret != nullptr) return ret;
-	if (!fallback) return nullptr;
-
-	/* Try again in 640x480 windowed */
-	DEBUG(driver, 0, "Setting video mode failed, falling back to 640x480 windowed mode.");
-	ret = QZ_CreateWindowSubdriver(640, 480, bpp);
-	if (ret != nullptr) return ret;
-
-	return nullptr;
-}
-
-
-static FVideoDriver_Cocoa iFVideoDriver_Cocoa;
-
-/**
- * Stop the cocoa video subdriver.
- */
+/** Stop Cocoa video driver. */
 void VideoDriver_Cocoa::Stop()
 {
 	if (!_cocoa_video_started) return;
 
-	[ _ottd_main unregisterObserver ];
+	CocoaExitApplication();
 
-	delete _cocoa_subdriver;
-	_cocoa_subdriver = NULL;
+	/* Release window mode resources */
+	if (this->window != nil) [ this->window close ];
+	[ this->cocoaview release ];
+	[ this->delegate release ];
 
-	[ _ottd_main release ];
+	CGColorSpaceRelease(this->colour_space);
 
 	_cocoa_video_started = false;
 }
 
 /**
- * Initialize a cocoa video subdriver.
+ * Common driver initialization.
+ * @return Error message if one has occurred, std::nullopt otherwise.
  */
-const char *VideoDriver_Cocoa::Start(const StringList &parm)
+std::optional<std::string_view> VideoDriver_Cocoa::Initialize()
 {
-	if (!MacOSVersionIsAtLeast(10, 6, 0)) return "The Cocoa video driver requires Mac OS X 10.6 or later.";
-
 	if (_cocoa_video_started) return "Already started";
 	_cocoa_video_started = true;
 
-	setupApplication();
-
 	/* Don't create a window or enter fullscreen if we're just going to show a dialog. */
-	if (_cocoa_video_dialog) return NULL;
+	if (!CocoaSetupApplication()) return std::nullopt;
 
-	int width  = _cur_resolution.width;
-	int height = _cur_resolution.height;
-	int bpp = BlitterFactory::GetCurrentBlitter()->GetScreenDepth();
+	this->UpdateAutoResolution();
+	this->orig_res = _cur_resolution;
 
-	_cocoa_subdriver = QZ_CreateSubdriver(width, height, bpp, _fullscreen, true);
-	if (_cocoa_subdriver == NULL) {
-		Stop();
-		return "Could not create subdriver";
-	}
-
-	QZ_GameSizeChanged();
-	QZ_UpdateVideoModes();
-
-	return NULL;
+	return std::nullopt;
 }
 
 /**
  * Set dirty a rectangle managed by a cocoa video subdriver.
- *
- * @param left Left x cooordinate of the dirty rectangle.
- * @param top Uppder y coordinate of the dirty rectangle.
+ * @param left Left x coordinate of the dirty rectangle.
+ * @param top Upper y coordinate of the dirty rectangle.
  * @param width Width of the dirty rectangle.
  * @param height Height of the dirty rectangle.
  */
 void VideoDriver_Cocoa::MakeDirty(int left, int top, int width, int height)
 {
-	assert(_cocoa_subdriver != NULL);
-
-	_cocoa_subdriver->MakeDirty(left, top, width, height);
+	Rect r = {left, top, left + width, top + height};
+	this->dirty_rect = BoundingRect(this->dirty_rect, r);
 }
 
 /**
@@ -454,44 +148,78 @@ void VideoDriver_Cocoa::MainLoop()
 
 /**
  * Change the resolution when using a cocoa video driver.
- *
  * @param w New window width.
  * @param h New window height.
  * @return Whether the video driver was successfully updated.
  */
 bool VideoDriver_Cocoa::ChangeResolution(int w, int h)
 {
-	assert(_cocoa_subdriver != NULL);
+	NSSize screen_size = [ [ NSScreen mainScreen ] frame ].size;
+	w = std::min(w, (int)screen_size.width);
+	h = std::min(h, (int)screen_size.height);
 
-	bool ret = _cocoa_subdriver->ChangeResolution(w, h, BlitterFactory::GetCurrentBlitter()->GetScreenDepth());
+	NSRect contentRect = NSMakeRect(0, 0, w, h);
+	[ this->window setContentSize:contentRect.size ];
 
-	QZ_GameSizeChanged();
-	QZ_UpdateVideoModes();
+	/* Ensure frame height - title bar height >= view height */
+	float content_height = [ this->window contentRectForFrameRect:[ this->window frame ] ].size.height;
+	contentRect.size.height = Clamp(h, 0, (int)content_height);
 
-	return ret;
+	if (this->cocoaview != nil) {
+		h = (int)contentRect.size.height;
+		[ this->cocoaview setFrameSize:contentRect.size ];
+	}
+
+	[ (OTTD_CocoaWindow *)this->window center ];
+	this->AllocateBackingStore();
+
+	return true;
 }
 
 /**
  * Toggle between windowed and full screen mode for cocoa display driver.
- *
  * @param full_screen Whether to switch to full screen or not.
  * @return Whether the mode switch was successful.
  */
 bool VideoDriver_Cocoa::ToggleFullscreen(bool full_screen)
 {
-	assert(_cocoa_subdriver != NULL);
+	if (this->IsFullscreen() == full_screen) return true;
 
-	return _cocoa_subdriver->ToggleFullscreen();
+	if ([ this->window respondsToSelector:@selector(toggleFullScreen:) ]) {
+		[ this->window performSelector:@selector(toggleFullScreen:) withObject:this->window ];
+
+		/* Hide the menu bar and the dock */
+		[ NSMenu setMenuBarVisible:!full_screen ];
+
+		this->UpdateVideoModes();
+		InvalidateWindowClassesData(WindowClass::GameOptions, 3);
+		return true;
+	}
+
+	return false;
+}
+
+void VideoDriver_Cocoa::ClearSystemSprites()
+{
+	this->refresh_sys_sprites = true;
+}
+
+void VideoDriver_Cocoa::PopulateSystemSprites()
+{
+	if (this->refresh_sys_sprites && this->window != nil) {
+		[ this->window refreshSystemSprites ];
+		this->refresh_sys_sprites = false;
+	}
 }
 
 /**
  * Callback invoked after the blitter was changed.
- *
  * @return True if no error.
  */
 bool VideoDriver_Cocoa::AfterBlitterChange()
 {
-	return this->ChangeResolution(_screen.width, _screen.height);
+	this->AllocateBackingStore(true);
+	return true;
 }
 
 /**
@@ -499,698 +227,558 @@ bool VideoDriver_Cocoa::AfterBlitterChange()
  */
 void VideoDriver_Cocoa::EditBoxLostFocus()
 {
-	if (_cocoa_subdriver != NULL) [ [ _cocoa_subdriver->cocoaview inputContext ] discardMarkedText ];
+	[ [ this->cocoaview inputContext ] performSelectorOnMainThread:@selector(discardMarkedText) withObject:nil waitUntilDone:[ NSThread isMainThread ] ];
 	/* Clear any marked string from the current edit box. */
-	HandleTextInput(NULL, true);
+	HandleTextInput({}, true);
 }
 
 /**
- * Catch asserts prior to initialization of the videodriver.
- *
- * @param title Window title.
- * @param message Message text.
- * @param buttonLabel Button text.
- *
- * @note This is needed since sometimes assert is called before the videodriver is initialized .
+ * Get refresh rates of all connected monitors.
+ * @return Refresh rates of all connected monitors.
  */
-void CocoaDialog(const char *title, const char *message, const char *buttonLabel)
+std::vector<int> VideoDriver_Cocoa::GetListOfMonitorRefreshRates()
 {
-	_cocoa_video_dialog = true;
+	std::vector<int> rates{};
 
-	bool wasstarted = _cocoa_video_started;
-	if (VideoDriver::GetInstance() == NULL) {
-		setupApplication(); // Setup application before showing dialog
-	} else if (!_cocoa_video_started && VideoDriver::GetInstance()->Start(StringList()) != NULL) {
-		fprintf(stderr, "%s: %s\n", title, message);
-		return;
+	std::array<CGDirectDisplayID, 16> displays;
+
+	uint32_t count = 0;
+	CGGetActiveDisplayList(displays.size(), displays.data(), &count);
+
+	for (uint32_t i = 0; i < count; i++) {
+		CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displays[i]);
+		int rate = static_cast<int>(CGDisplayModeGetRefreshRate(mode));
+		if (rate > 0) rates.push_back(rate);
+		CGDisplayModeRelease(mode);
 	}
 
-	NSAlert *alert = [ [ NSAlert alloc ] init ];
-	[ alert setAlertStyle: NSCriticalAlertStyle ];
-	[ alert setMessageText:[ NSString stringWithUTF8String:title ] ];
-	[ alert setInformativeText:[ NSString stringWithUTF8String:message ] ];
-	[ alert addButtonWithTitle: [ NSString stringWithUTF8String:buttonLabel ] ];
-	[ alert runModal ];
-	[ alert release ];
-
-	if (!wasstarted && VideoDriver::GetInstance() != NULL) VideoDriver::GetInstance()->Stop();
-
-	_cocoa_video_dialog = false;
+	return rates;
 }
 
-/** Set the application's bundle directory.
- *
- * This is needed since OS X application bundles do not have a
- * current directory and the data files are 'somewhere' in the bundle.
+/**
+ * Get the resolution of the main screen.
+ * @return The resolution of the main screen.
  */
-void cocoaSetApplicationBundleDir()
+Dimension VideoDriver_Cocoa::GetScreenSize() const
 {
-	char tmp[MAXPATHLEN];
-	CFAutoRelease<CFURLRef> url(CFBundleCopyResourcesDirectoryURL(CFBundleGetMainBundle()));
-	if (CFURLGetFileSystemRepresentation(url.get(), true, (unsigned char*)tmp, MAXPATHLEN)) {
-		AppendPathSeparator(tmp, lastof(tmp));
-		_searchpaths[SP_APPLICATION_BUNDLE_DIR] = stredup(tmp);
+	NSRect frame = [ [ NSScreen mainScreen ] frame ];
+	return { static_cast<uint>(NSWidth(frame)), static_cast<uint>(NSHeight(frame)) };
+}
+
+/**
+ * Lock video buffer for drawing if it isn't already mapped.
+ * @return True on success and false otherwise.
+ */
+bool VideoDriver_Cocoa::LockVideoBuffer()
+{
+	if (this->buffer_locked) return false;
+	this->buffer_locked = true;
+
+	_screen.dst_ptr = this->GetVideoPointer();
+	assert(_screen.dst_ptr != nullptr);
+
+	return true;
+}
+
+/** Unlock video buffer. */
+void VideoDriver_Cocoa::UnlockVideoBuffer()
+{
+	if (_screen.dst_ptr != nullptr) {
+		/* Hand video buffer back to the drawing backend. */
+		this->ReleaseVideoPointer();
+		_screen.dst_ptr = nullptr;
+	}
+
+	this->buffer_locked = false;
+}
+
+/**
+ * Are we in fullscreen mode?
+ * @return whether fullscreen mode is currently used
+ */
+bool VideoDriver_Cocoa::IsFullscreen()
+{
+	return this->window != nil && ([ this->window styleMask ] & NSWindowStyleMaskFullScreen) != 0;
+}
+
+/**
+ * Handle a change of the display area.
+ */
+void VideoDriver_Cocoa::GameSizeChanged()
+{
+	/* Store old window size if we entered fullscreen mode. */
+	bool fullscreen = this->IsFullscreen();
+	if (fullscreen && !_fullscreen) this->orig_res = _cur_resolution;
+	_fullscreen = fullscreen;
+
+	BlitterFactory::GetCurrentBlitter()->PostResize();
+
+	::GameSizeChanged();
+
+	/* We need to store the window size as non-Retina size in
+	 * the config file to get same windows size on next start. */
+	_cur_resolution.width = [ this->cocoaview frame ].size.width;
+	_cur_resolution.height = [ this->cocoaview frame ].size.height;
+}
+
+/**
+ * Update the video mode.
+ */
+void VideoDriver_Cocoa::UpdateVideoModes()
+{
+	_resolutions.clear();
+
+	if (this->IsFullscreen()) {
+		/* Full screen, there is only one possible resolution. */
+		NSSize screen = [ [ this->window screen ] frame ].size;
+		_resolutions.emplace_back((uint)screen.width, (uint)screen.height);
 	} else {
-		_searchpaths[SP_APPLICATION_BUNDLE_DIR] = NULL;
+		/* Windowed; offer a selection of common window sizes up until the
+		 * maximum usable screen space. This excludes the menu and dock areas. */
+		NSSize maxSize = [ [ NSScreen mainScreen] visibleFrame ].size;
+		for (const auto &d : _default_resolutions) {
+			if (d.width < maxSize.width && d.height < maxSize.height) _resolutions.push_back(d);
+		}
+		_resolutions.emplace_back((uint)maxSize.width, (uint)maxSize.height);
 	}
 }
 
 /**
- * Setup autorelease for the application pool.
- *
- * These are called from main() to prevent a _NSAutoreleaseNoPool error when
- * exiting before the cocoa video driver has been loaded
+ * Build window and view with a given size.
+ * @param width Window width.
+ * @param height Window height.
+ * @return True on success and false otherwise.
  */
-void cocoaSetupAutoreleasePool()
+bool VideoDriver_Cocoa::MakeWindow(int width, int height)
 {
-	_ottd_autorelease_pool = [ [ NSAutoreleasePool alloc ] init ];
+	this->setup = true;
+
+	/* Limit window size to screen frame. */
+	NSSize screen_size = [ [ NSScreen mainScreen ] frame ].size;
+	if (width > screen_size.width) width = screen_size.width;
+	if (height > screen_size.height) height = screen_size.height;
+
+	NSRect contentRect = NSMakeRect(0, 0, width, height);
+
+	/* Create main window. */
+	unsigned int style = NSWindowStyleMaskTitled | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskClosable;
+	this->window = [ [ OTTD_CocoaWindow alloc ] initWithContentRect:contentRect styleMask:style backing:NSBackingStoreBuffered defer:NO driver:this ];
+	if (this->window == nil) {
+		Debug(Facility::Driver, Severity::Critical, "Could not create the Cocoa window.");
+		this->setup = false;
+		return false;
+	}
+
+	/* Add built in full-screen support when available (OS X 10.7 and higher)
+	 * This code actually compiles for 10.5 and later, but only makes sense in conjunction
+	 * with the quartz fullscreen support as found only in 10.7 and later. */
+	if ([ this->window respondsToSelector:@selector(toggleFullScreen:) ]) {
+		NSWindowCollectionBehavior behavior = [ this->window collectionBehavior ];
+		behavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+		[ this->window setCollectionBehavior:behavior ];
+
+		NSButton *fullscreenButton = [ this->window standardWindowButton:NSWindowZoomButton ];
+		[ fullscreenButton setAction:@selector(toggleFullScreen:) ];
+		[ fullscreenButton setTarget:this->window ];
+	}
+
+	this->delegate = [ [ OTTD_CocoaWindowDelegate alloc ] initWithDriver:this ];
+	[ this->window setDelegate:this->delegate ];
+
+	[ this->window center ];
+	[ this->window makeKeyAndOrderFront:nil ];
+
+	/* Create wrapper view for input and event handling. */
+	NSRect view_frame = [ this->window contentRectForFrameRect:[ this->window frame ] ];
+	this->cocoaview = [ [ OTTD_CocoaView alloc ] initWithFrame:view_frame ];
+	if (this->cocoaview == nil) {
+		Debug(Facility::Driver, Severity::Critical, "Could not create the event wrapper view.");
+		this->setup = false;
+		return false;
+	}
+	[ this->cocoaview setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable ];
+
+	/* Create content view. */
+	NSView *draw_view = this->AllocateDrawView();
+	if (draw_view == nil) {
+		Debug(Facility::Driver, Severity::Critical, "Could not create the drawing view.");
+		this->setup = false;
+		return false;
+	}
+	[ draw_view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable ];
+
+	/* Create view chain: window -> input wrapper view -> content view. */
+	[ this->window setContentView:this->cocoaview ];
+	[ this->cocoaview addSubview:draw_view ];
+	[ this->window makeFirstResponder:this->cocoaview ];
+	[ draw_view release ];
+
+	[ this->window setColorSpace:[ NSColorSpace sRGBColorSpace ] ];
+	CGColorSpaceRelease(this->colour_space);
+	this->colour_space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+	if (this->colour_space == nullptr) this->colour_space = CGColorSpaceCreateDeviceRGB();
+	if (this->colour_space == nullptr) FatalError("Could not get a valid colour space for drawing.");
+
+	this->setup = false;
+
+	return true;
 }
+
 
 /**
- * Autorelease the application pool.
+ * Poll and handle a single event from the OS.
+ * @return True if there was an event to handle.
  */
-void cocoaReleaseAutoreleasePool()
+bool VideoDriver_Cocoa::PollEvent()
 {
-	[ _ottd_autorelease_pool release ];
+	NSEventMask mask = NSEventMaskAny;
+	NSEvent *event = [ NSApp nextEventMatchingMask:mask untilDate:[ NSDate distantPast ] inMode:NSDefaultRunLoopMode dequeue:YES ];
+
+	if (event == nil) return false;
+
+	[ NSApp sendEvent:event ];
+
+	return true;
+}
+
+void VideoDriver_Cocoa::InputLoop()
+{
+	NSUInteger cur_mods = [ NSEvent modifierFlags ];
+
+	bool old_ctrl_pressed = IsCtrlPressed();
+
+	_input_pressed.Set(ControlInput::Ctrl, (cur_mods & ( _settings_client.gui.right_mouse_btn_emulation != RMBE_CONTROL ? NSEventModifierFlagControl : NSEventModifierFlagCommand)) != 0);
+	_input_pressed.Set(ControlInput::Shift, (cur_mods & NSEventModifierFlagShift) != 0);
+
+	this->fast_forward_key_pressed = _tab_is_down;
+
+	if (old_ctrl_pressed != IsCtrlPressed()) HandleCtrlChanged();
+}
+
+/** Main game loop. */
+void VideoDriver_Cocoa::MainLoopReal()
+{
+	this->StartGameThread();
+
+	for (;;) {
+		@autoreleasepool {
+			if (_exit_game) {
+				/* Restore saved resolution if in fullscreen mode. */
+				if (this->IsFullscreen()) _cur_resolution = this->orig_res;
+				break;
+			}
+
+			this->Tick();
+			this->SleepTillNextTick();
+		}
+	}
+
+	this->StopGameThread();
 }
 
 
-/**
- * Re-implement the system cursor in order to allow hiding and showing it nicely
- */
-@implementation NSCursor (OTTD_CocoaCursor)
-+ (NSCursor *) clearCocoaCursor
-{
-	/* RAW 16x16 transparent GIF */
-	unsigned char clearGIFBytes[] = {
-		0x47, 0x49, 0x46, 0x38, 0x37, 0x61, 0x10, 0x00, 0x10, 0x00, 0x80, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xF9, 0x04, 0x01, 0x00,
-		0x00, 0x01, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00,
-		0x00, 0x02, 0x0E, 0x8C, 0x8F, 0xA9, 0xCB, 0xED, 0x0F, 0xA3, 0x9C, 0xB4,
-		0xDA, 0x8B, 0xB3, 0x3E, 0x05, 0x00, 0x3B};
-	NSData *clearGIFData = [ NSData dataWithBytesNoCopy:&clearGIFBytes[0] length:55 freeWhenDone:NO ];
-	NSImage *clearImg = [ [ NSImage alloc ] initWithData:clearGIFData ];
-	return [ [ NSCursor alloc ] initWithImage:clearImg hotSpot:NSMakePoint(0.0,0.0) ];
+/** Subclass of OTTD_CocoaView to fix Quartz rendering */
+@interface OTTD_QuartzView : NSView {
+	VideoDriver_CocoaQuartz *driver; ///< The driver to fix rendering for.
 }
+- (instancetype)initWithFrame:(NSRect)frameRect andDriver:(VideoDriver_CocoaQuartz *)drv;
 @end
 
-
-
-@implementation OTTD_CocoaWindow
-
-- (void)setDriver:(CocoaSubdriver*)drv
-{
-	driver = drv;
-}
-/**
- * Minimize the window
- */
-- (void)miniaturize:(id)sender
-{
-	/* make the alpha channel opaque so anim won't have holes in it */
-	driver->SetPortAlphaOpaque();
-
-	/* window is hidden now */
-	driver->active = false;
-
-	[ super miniaturize:sender ];
-}
+@implementation OTTD_QuartzView
 
 /**
- * This method fires just before the window deminaturizes from the Dock.
- * We'll save the current visible surface, let the window manager redraw any
- * UI elements, and restore the surface. This way, no expose event
- * is required, and the deminiaturize works perfectly.
+ * Construct new instance.
+ * @param frameRect Size of frame.
+ * @param drv Driver to fix rendering for.
+ * @return The newly created instance.
  */
-- (void)display
+- (instancetype)initWithFrame:(NSRect)frameRect andDriver:(VideoDriver_CocoaQuartz *)drv
 {
-	driver->SetPortAlphaOpaque();
+	if (self = [ super initWithFrame:frameRect ]) {
+		self->driver = drv;
 
-	/* save current visible surface */
-	[ self cacheImageInRect:[ driver->cocoaview frame ] ];
+		/* We manage our content updates ourselves. */
+		self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawOnSetNeedsDisplay;
+		self.wantsLayer = YES;
 
-	/* let the window manager redraw controls, border, etc */
-	[ super display ];
-
-	/* restore visible surface */
-	[ self restoreCachedImage ];
-
-	/* window is visible again */
-	driver->active = true;
-}
-/**
- * Define the rectangle we draw our window in
- */
-- (void)setFrame:(NSRect)frameRect display:(BOOL)flag
-{
-	[ super setFrame:frameRect display:flag ];
-
-	/* Don't do anything if the window is currently being created */
-	if (driver->setup) return;
-
-	if (!driver->WindowResized()) error("Cocoa: Failed to resize window.");
-}
-/**
- * Handle hiding of the application
- */
-- (void)appDidHide:(NSNotification*)note
-{
-	driver->active = false;
-}
-/**
- * Fade-in the application and restore display plane
- */
-- (void)appWillUnhide:(NSNotification*)note
-{
-	driver->SetPortAlphaOpaque ();
-}
-/**
- * Unhide and restore display plane and re-activate driver
- */
-- (void)appDidUnhide:(NSNotification*)note
-{
-	driver->active = true;
-}
-/**
- * Initialize event system for the application rectangle
- */
-- (id)initWithContentRect:(NSRect)contentRect styleMask:(NSUInteger)styleMask backing:(NSBackingStoreType)backingType defer:(BOOL)flag
-{
-	/* Make our window subclass receive these application notifications */
-	[ [ NSNotificationCenter defaultCenter ] addObserver:self
-		selector:@selector(appDidHide:) name:NSApplicationDidHideNotification object:NSApp ];
-
-	[ [ NSNotificationCenter defaultCenter ] addObserver:self
-		selector:@selector(appDidUnhide:) name:NSApplicationDidUnhideNotification object:NSApp ];
-
-	[ [ NSNotificationCenter defaultCenter ] addObserver:self
-		selector:@selector(appWillUnhide:) name:NSApplicationWillUnhideNotification object:NSApp ];
-
-	return [ super initWithContentRect:contentRect styleMask:styleMask backing:backingType defer:flag ];
-}
-
-@end
-
-
-
-/**
- * Count the number of UTF-16 code points in a range of an UTF-8 string.
- * @param from Start of the range.
- * @param to End of the range.
- * @return Number of UTF-16 code points in the range.
- */
-static NSUInteger CountUtf16Units(const char *from, const char *to)
-{
-	NSUInteger i = 0;
-
-	while (from < to) {
-		WChar c;
-		size_t len = Utf8Decode(&c, from);
-		i += len < 4 ? 1 : 2; // Watch for surrogate pairs.
-		from += len;
+		self.layer.magnificationFilter = kCAFilterNearest;
+		self.layer.opaque = YES;
 	}
-
-	return i;
+	return self;
 }
 
 /**
- * Advance an UTF-8 string by a number of equivalent UTF-16 code points.
- * @param str UTF-8 string.
- * @param count Number of UTF-16 code points to advance the string by.
- * @return Advanced string pointer.
+ * Specifies whether the view accepts first responder.
+ * @return Always no.
  */
-static const char *Utf8AdvanceByUtf16Units(const char *str, NSUInteger count)
+- (BOOL)acceptsFirstResponder
 {
-	for (NSUInteger i = 0; i < count && *str != '\0'; ) {
-		WChar c;
-		size_t len = Utf8Decode(&c, str);
-		i += len < 4 ? 1 : 2; // Watch for surrogates.
-		str += len;
-	}
-
-	return str;
+	return NO;
 }
 
-@implementation OTTD_CocoaView
 /**
- * Initialize the driver
- */
-- (void)setDriver:(CocoaSubdriver*)drv
-{
-	driver = drv;
-}
-/**
- * Define the opaqueness of the window / screen
- * @return opaqueness of window / screen
+ * Specifies whether the view is opaque.
+ * @return Always yes.
  */
 - (BOOL)isOpaque
 {
 	return YES;
 }
+
 /**
- * Draws a rectangle on the screen.
- * It's overwritten by the individual drivers but must be defined
+ * Specifies whether the view wants updates for layer.
+ * @return Always yes.
  */
-- (void)drawRect:(NSRect)invalidRect
-{
-	return;
-}
-/**
- * Allow to handle events
- */
-- (BOOL)acceptsFirstResponder
+- (BOOL)wantsUpdateLayer
 {
 	return YES;
 }
+
+/** Updates the layer based on driver data. */
+- (void)updateLayer
+{
+	if (driver->cgcontext == nullptr) return;
+
+	/* Set layer contents to our backing buffer, which avoids needless copying. */
+	CGImageRef fullImage = CGBitmapContextCreateImage(driver->cgcontext);
+	self.layer.contents = (__bridge id)fullImage;
+	CGImageRelease(fullImage);
+}
+
+/** Updates members with new values after changes in driver. */
+- (void)viewDidChangeBackingProperties
+{
+	[ super viewDidChangeBackingProperties ];
+
+	self.layer.contentsScale = [ driver->cocoaview getContentsScale ];
+}
+
+@end
+
+/** Register the cocoa video driver. */
+static FVideoDriver_CocoaQuartz iFVideoDriver_CocoaQuartz;
+
 /**
- * Actually handle events
+ * Clear buffer to opaque black.
+ * @param buffer Pointer to the buffer.
+ * @param pitch Width of the buffer.
+ * @param height Height of the buffer.
  */
-- (BOOL)becomeFirstResponder
+static void ClearWindowBuffer(uint32_t *buffer, uint32_t pitch, uint32_t height)
 {
-	return YES;
-}
-/**
- * Define the rectangle where we draw our application window
- */
-- (void)setTrackingRect
-{
-	NSPoint loc = [ self convertPoint:[ [ self window ] mouseLocationOutsideOfEventStream ] fromView:nil ];
-	BOOL inside = ([ self hitTest:loc ]==self);
-	if (inside) [ [ self window ] makeFirstResponder:self ];
-	trackingtag = [ self addTrackingRect:[ self visibleRect ] owner:self userData:nil assumeInside:inside ];
-}
-/**
- * Return responsibility for the application window to system
- */
-- (void)clearTrackingRect
-{
-	[ self removeTrackingRect:trackingtag ];
-}
-/**
- * Declare responsibility for the cursor within our application rect
- */
-- (void)resetCursorRects
-{
-	[ super resetCursorRects ];
-	[ self clearTrackingRect ];
-	[ self setTrackingRect ];
-	[ self addCursorRect:[ self bounds ] cursor:(_game_mode == GM_BOOTSTRAP ? [ NSCursor arrowCursor ] : [ NSCursor clearCocoaCursor ]) ];
-}
-/**
- * Prepare for moving the application window
- */
-- (void)viewWillMoveToWindow:(NSWindow *)win
-{
-	if (!win && [ self window ]) [ self clearTrackingRect ];
-}
-/**
- * Restore our responsibility for our application window after moving
- */
-- (void)viewDidMoveToWindow
-{
-	if ([ self window ]) [ self setTrackingRect ];
-}
-/**
- * Make OpenTTD aware that it has control over the mouse
- */
-- (void)mouseEntered:(NSEvent *)theEvent
-{
-	_cursor.in_window = true;
-}
-/**
- * Make OpenTTD aware that it has NOT control over the mouse
- */
-- (void)mouseExited:(NSEvent *)theEvent
-{
-	if (_cocoa_subdriver != NULL) UndrawMouseCursor();
-	_cursor.in_window = false;
-}
-
-
-/** Insert the given text at the given range. */
-- (void)insertText:(id)aString replacementRange:(NSRange)replacementRange
-{
-	if (!EditBoxInGlobalFocus()) return;
-
-	NSString *s = [ aString isKindOfClass:[ NSAttributedString class ] ] ? [ aString string ] : (NSString *)aString;
-
-	const char *insert_point = NULL;
-	const char *replace_range = NULL;
-	if (replacementRange.location != NSNotFound) {
-		/* Calculate the part to be replaced. */
-		insert_point = Utf8AdvanceByUtf16Units(_focused_window->GetFocusedText(), replacementRange.location);
-		replace_range = Utf8AdvanceByUtf16Units(insert_point, replacementRange.length);
-	}
-
-	HandleTextInput(NULL, true);
-	HandleTextInput([ s UTF8String ], false, NULL, insert_point, replace_range);
-}
-
-/** Insert the given text at the caret. */
-- (void)insertText:(id)aString
-{
-	[ self insertText:aString replacementRange:NSMakeRange(NSNotFound, 0) ];
-}
-
-/** Set a new marked text and reposition the caret. */
-- (void)setMarkedText:(id)aString selectedRange:(NSRange)selRange replacementRange:(NSRange)replacementRange
-{
-	if (!EditBoxInGlobalFocus()) return;
-
-	NSString *s = [ aString isKindOfClass:[ NSAttributedString class ] ] ? [ aString string ] : (NSString *)aString;
-
-	const char *utf8 = [ s UTF8String ];
-	if (utf8 != NULL) {
-		const char *insert_point = NULL;
-		const char *replace_range = NULL;
-		if (replacementRange.location != NSNotFound) {
-			/* Calculate the part to be replaced. */
-			NSRange marked = [ self markedRange ];
-			insert_point = Utf8AdvanceByUtf16Units(_focused_window->GetFocusedText(), replacementRange.location + (marked.location != NSNotFound ? marked.location : 0u));
-			replace_range = Utf8AdvanceByUtf16Units(insert_point, replacementRange.length);
+	uint32_t fill = Colour(0, 0, 0).data;
+	for (uint32_t y = 0; y < height; y++) {
+		for (uint32_t x = 0; x < pitch; x++) {
+			buffer[y * pitch + x] = fill;
 		}
-
-		/* Convert caret index into a pointer in the UTF-8 string. */
-		const char *selection = Utf8AdvanceByUtf16Units(utf8, selRange.location);
-
-		HandleTextInput(utf8, true, selection, insert_point, replace_range);
 	}
 }
 
-/** Set a new marked text and reposition the caret. */
-- (void)setMarkedText:(id)aString selectedRange:(NSRange)selRange
+VideoDriver_CocoaQuartz::VideoDriver_CocoaQuartz()
 {
-	[ self setMarkedText:aString selectedRange:selRange replacementRange:NSMakeRange(NSNotFound, 0) ];
+	this->window_width  = 0;
+	this->window_height = 0;
+	this->window_pitch  = 0;
+	this->buffer_depth  = 0;
+	this->window_buffer = nullptr;
+	this->pixel_buffer  = nullptr;
+
+	this->cgcontext     = nullptr;
 }
 
-/** Unmark the current marked text. */
-- (void)unmarkText
+std::optional<std::string_view> VideoDriver_CocoaQuartz::Start(const StringList &param)
 {
-	HandleTextInput(NULL, true);
-}
+	auto err = this->Initialize();
+	if (err) return err;
 
-/** Get the caret position. */
-- (NSRange)selectedRange
-{
-	if (!EditBoxInGlobalFocus()) return NSMakeRange(NSNotFound, 0);
-
-	NSUInteger start = CountUtf16Units(_focused_window->GetFocusedText(), _focused_window->GetCaret());
-	return NSMakeRange(start, 0);
-}
-
-/** Get the currently marked range. */
-- (NSRange)markedRange
-{
-	if (!EditBoxInGlobalFocus()) return NSMakeRange(NSNotFound, 0);
-
-	size_t mark_len;
-	const char *mark = _focused_window->GetMarkedText(&mark_len);
-	if (mark != NULL) {
-		NSUInteger start = CountUtf16Units(_focused_window->GetFocusedText(), mark);
-		NSUInteger len = CountUtf16Units(mark, mark + mark_len);
-
-		return NSMakeRange(start, len);
+	int bpp = BlitterFactory::GetCurrentBlitter()->GetScreenDepth();
+	if (bpp != 8 && bpp != 32) {
+		Stop();
+		return "The cocoa quartz subdriver only supports 8 and 32 bpp.";
 	}
 
-	return NSMakeRange(NSNotFound, 0);
+	bool fullscreen = _fullscreen;
+	if (!this->MakeWindow(_cur_resolution.width, _cur_resolution.height)) {
+		Stop();
+		return "Could not create window";
+	}
+
+	this->AllocateBackingStore(true);
+
+	if (fullscreen) this->ToggleFullscreen(fullscreen);
+
+	this->GameSizeChanged();
+	this->UpdateVideoModes();
+
+	this->is_game_threaded = !GetDriverParamBool(param, "no_threads") && !GetDriverParamBool(param, "no_thread");
+
+	return std::nullopt;
+
 }
 
-/** Is any text marked? */
-- (BOOL)hasMarkedText
+void VideoDriver_CocoaQuartz::Stop()
 {
-	if (!EditBoxInGlobalFocus()) return NO;
+	this->VideoDriver_Cocoa::Stop();
 
-	size_t len;
-	return _focused_window->GetMarkedText(&len) != NULL;
+	CGContextRelease(this->cgcontext);
+
+	this->window_buffer.reset();
+	this->pixel_buffer.reset();
 }
 
-/** Get a string corresponding to the given range. */
-- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)theRange actualRange:(NSRangePointer)actualRange
+NSView *VideoDriver_CocoaQuartz::AllocateDrawView()
 {
-	if (!EditBoxInGlobalFocus()) return nil;
-
-	NSString *s = [ NSString stringWithUTF8String:_focused_window->GetFocusedText() ];
-	NSRange valid_range = NSIntersectionRange(NSMakeRange(0, [ s length ]), theRange);
-
-	if (actualRange != NULL) *actualRange = valid_range;
-	if (valid_range.length == 0) return nil;
-
-	return [ [ [ NSAttributedString alloc ] initWithString:[ s substringWithRange:valid_range ] ] autorelease ];
+	return [ [ OTTD_QuartzView alloc ] initWithFrame:[ this->cocoaview bounds ] andDriver:this ];
 }
 
-/** Get a string corresponding to the given range. */
-- (NSAttributedString *)attributedSubstringFromRange:(NSRange)theRange
+void VideoDriver_CocoaQuartz::AllocateBackingStore([[maybe_unused]] bool force)
 {
-	return [ self attributedSubstringForProposedRange:theRange actualRange:NULL ];
+	if (this->window == nil || this->cocoaview == nil || this->setup) return;
+
+	this->UpdatePalette(0, 256);
+
+	NSRect newframe = [ this->cocoaview getRealRect:[ this->cocoaview frame ] ];
+
+	this->window_width = (int)newframe.size.width;
+	this->window_height = (int)newframe.size.height;
+	this->window_pitch = Align(this->window_width, 16 / sizeof(uint32_t)); // Quartz likes lines that are multiple of 16-byte.
+	this->buffer_depth = BlitterFactory::GetCurrentBlitter()->GetScreenDepth();
+
+	/* Create Core Graphics Context */
+	this->window_buffer = std::make_unique<uint32_t[]>(this->window_pitch * this->window_height);
+	/* Initialize with opaque black. */
+	ClearWindowBuffer(this->window_buffer.get(), this->window_pitch, this->window_height);
+
+	CGContextRelease(this->cgcontext);
+	this->cgcontext = CGBitmapContextCreate(
+		this->window_buffer.get(), // data
+		this->window_width,        // width
+		this->window_height,       // height
+		8,                         // bits per component
+		this->window_pitch * 4,    // bytes per row
+		this->colour_space, // colour space
+		kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Host
+	);
+
+	assert(this->cgcontext != nullptr);
+	CGContextSetShouldAntialias(this->cgcontext, FALSE);
+	CGContextSetAllowsAntialiasing(this->cgcontext, FALSE);
+	CGContextSetInterpolationQuality(this->cgcontext, kCGInterpolationNone);
+
+	if (this->buffer_depth == 8) {
+		this->pixel_buffer = std::make_unique<uint8_t[]>(this->window_width * this->window_height);
+	} else {
+		this->pixel_buffer.reset();
+	}
+
+	/* Tell the game that the resolution has changed */
+	_screen.width   = this->window_width;
+	_screen.height  = this->window_height;
+	_screen.pitch   = this->buffer_depth == 8 ? this->window_width : this->window_pitch;
+	_screen.dst_ptr = this->GetVideoPointer();
+
+	/* Redraw screen */
+	this->MakeDirty(0, 0, _screen.width, _screen.height);
+	this->GameSizeChanged();
 }
 
-/** Get the current edit box string. */
-- (NSAttributedString *)attributedString
+/**
+ * This function copies 8bpp pixels from the screen buffer in 32bpp windowed mode.
+ *
+ * @param left The x coord for the left edge of the box to blit.
+ * @param top The y coord for the top edge of the box to blit.
+ * @param right The x coord for the right edge of the box to blit.
+ * @param bottom The y coord for the bottom edge of the box to blit.
+ */
+void VideoDriver_CocoaQuartz::BlitIndexedToView32(int left, int top, int right, int bottom)
 {
-	if (!EditBoxInGlobalFocus()) return [ [ [ NSAttributedString alloc ] initWithString:@"" ] autorelease ];
+	const uint32_t *pal   = this->palette;
+	const uint8_t  *src   = this->pixel_buffer.get();
+	uint32_t       *dst   = this->window_buffer.get();
+	uint          width = this->window_width;
+	uint          pitch = this->window_pitch;
 
-	return [ [ [ NSAttributedString alloc ] initWithString:[ NSString stringWithUTF8String:_focused_window->GetFocusedText() ] ] autorelease ];
-}
-
-/** Get the character that is rendered at the given point. */
-- (NSUInteger)characterIndexForPoint:(NSPoint)thePoint
-{
-	if (!EditBoxInGlobalFocus()) return NSNotFound;
-
-	NSPoint view_pt = [ self convertRect:[ [ self window ] convertRectFromScreen:NSMakeRect(thePoint.x, thePoint.y, 0, 0) ] fromView:nil ].origin;
-
-	Point pt = { (int)view_pt.x, (int)[ self frame ].size.height - (int)view_pt.y };
-
-	const char *ch = _focused_window->GetTextCharacterAtPosition(pt);
-	if (ch == NULL) return NSNotFound;
-
-	return CountUtf16Units(_focused_window->GetFocusedText(), ch);
-}
-
-/** Get the bounding rect for the given range. */
-- (NSRect)firstRectForCharacterRange:(NSRange)aRange
-{
-	if (!EditBoxInGlobalFocus()) return NSMakeRect(0, 0, 0, 0);
-
-	/* Convert range to UTF-8 string pointers. */
-	const char *start = Utf8AdvanceByUtf16Units(_focused_window->GetFocusedText(), aRange.location);
-	const char *end = aRange.length != 0 ? Utf8AdvanceByUtf16Units(_focused_window->GetFocusedText(), aRange.location + aRange.length) : start;
-
-	/* Get the bounding rect for the text range.*/
-	Rect r = _focused_window->GetTextBoundingRect(start, end);
-	NSRect view_rect = NSMakeRect(_focused_window->left + r.left, [ self frame ].size.height - _focused_window->top - r.bottom, r.right - r.left, r.bottom - r.top);
-
-	return [ [ self window ] convertRectToScreen:[ self convertRect:view_rect toView:nil ] ];
-}
-
-/** Get the bounding rect for the given range. */
-- (NSRect)firstRectForCharacterRange:(NSRange)aRange actualRange:(NSRangePointer)actualRange
-{
-	return [ self firstRectForCharacterRange:aRange ];
-}
-
-/** Get all string attributes that we can process for marked text. */
-- (NSArray*)validAttributesForMarkedText
-{
-	return [ NSArray array ];
-}
-
-/** Delete single character left of the cursor. */
-- (void)deleteBackward:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_BACKSPACE, 0);
-}
-
-/** Delete word left of the cursor. */
-- (void)deleteWordBackward:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_BACKSPACE | WKC_CTRL, 0);
-}
-
-/** Delete single character right of the cursor. */
-- (void)deleteForward:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_DELETE, 0);
-}
-
-/** Delete word right of the cursor. */
-- (void)deleteWordForward:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_DELETE | WKC_CTRL, 0);
-}
-
-/** Move cursor one character left. */
-- (void)moveLeft:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_LEFT, 0);
-}
-
-/** Move cursor one word left. */
-- (void)moveWordLeft:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_LEFT | WKC_CTRL, 0);
-}
-
-/** Move cursor one character right. */
-- (void)moveRight:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_RIGHT, 0);
-}
-
-/** Move cursor one word right. */
-- (void)moveWordRight:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_RIGHT | WKC_CTRL, 0);
-}
-
-/** Move cursor one line up. */
-- (void)moveUp:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_UP, 0);
-}
-
-/** Move cursor one line down. */
-- (void)moveDown:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_DOWN, 0);
-}
-
-/** MScroll one line up. */
-- (void)moveUpAndModifySelection:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_UP | WKC_SHIFT, 0);
-}
-
-/** Scroll one line down. */
-- (void)moveDownAndModifySelection:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_DOWN | WKC_SHIFT, 0);
-}
-
-/** Move cursor to the start of the line. */
-- (void)moveToBeginningOfLine:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_HOME, 0);
-}
-
-/** Move cursor to the end of the line. */
-- (void)moveToEndOfLine:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_END, 0);
-}
-
-/** Scroll one page up. */
-- (void)scrollPageUp:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_PAGEUP, 0);
-}
-
-/** Scroll one page down. */
-- (void)scrollPageDown:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_PAGEDOWN, 0);
-}
-
-/** Move cursor (and selection) one page up. */
-- (void)pageUpAndModifySelection:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_PAGEUP | WKC_SHIFT, 0);
-}
-
-/** Move cursor (and selection) one page down. */
-- (void)pageDownAndModifySelection:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_PAGEDOWN | WKC_SHIFT, 0);
-}
-
-/** Scroll to the beginning of the document. */
-- (void)scrollToBeginningOfDocument:(id)sender
-{
-	/* For compatibility with OTTD on Win/Linux. */
-	[ self moveToBeginningOfLine:sender ];
-}
-
-/** Scroll to the end of the document. */
-- (void)scrollToEndOfDocument:(id)sender
-{
-	/* For compatibility with OTTD on Win/Linux. */
-	[ self moveToEndOfLine:sender ];
-}
-
-/** Return was pressed. */
-- (void)insertNewline:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_RETURN, '\r');
-}
-
-/** Escape was pressed. */
-- (void)cancelOperation:(id)sender
-{
-	if (EditBoxInGlobalFocus()) HandleKeypress(WKC_ESC, 0);
-}
-
-/** Invoke the selector if we implement it. */
-- (void)doCommandBySelector:(SEL)aSelector
-{
-	if ([ self respondsToSelector:aSelector ]) [ self performSelector:aSelector ];
-}
-
-@end
-
-
-
-@implementation OTTD_CocoaWindowDelegate
-/** Initialize the video driver */
-- (void)setDriver:(CocoaSubdriver*)drv
-{
-	driver = drv;
-}
-/** Handle closure requests */
-- (BOOL)windowShouldClose:(id)sender
-{
-	HandleExitGameRequest();
-
-	return NO;
-}
-/** Handle key acceptance */
-- (void)windowDidBecomeKey:(NSNotification*)aNotification
-{
-	driver->active = true;
-}
-/** Resign key acceptance */
-- (void)windowDidResignKey:(NSNotification*)aNotification
-{
-	driver->active = false;
-}
-/** Handle becoming main window */
-- (void)windowDidBecomeMain:(NSNotification*)aNotification
-{
-	driver->active = true;
-}
-/** Resign being main window */
-- (void)windowDidResignMain:(NSNotification*)aNotification
-{
-	driver->active = false;
-}
-/** Window entered fullscreen mode (10.7). */
-- (void)windowDidEnterFullScreen:(NSNotification *)aNotification
-{
-	NSPoint loc = [ driver->cocoaview convertPoint:[ [ aNotification object ] mouseLocationOutsideOfEventStream ] fromView:nil ];
-	BOOL inside = ([ driver->cocoaview hitTest:loc ] == driver->cocoaview);
-
-	if (inside) {
-		/* We don't care about the event, but the compiler does. */
-		NSEvent *e = [ [ NSEvent alloc ] init ];
-		[ driver->cocoaview mouseEntered:e ];
-		[ e release ];
+	for (int y = top; y < bottom; y++) {
+		for (int x = left; x < right; x++) {
+			dst[y * pitch + x] = pal[src[y * width + x]];
+		}
 	}
 }
-/** The colour profile of the screen the window is on changed. */
-- (void)windowDidChangeScreenProfile:(NSNotification *)aNotification
+
+/**
+ * Update the palette
+ * @param first_colour Index of first colour to update.
+ * @param num_colours How many colours to update, should be greater than 0.
+ */
+void VideoDriver_CocoaQuartz::UpdatePalette(uint first_colour, uint num_colours)
 {
-	if (!driver->setup) driver->WindowResized();
+	if (this->buffer_depth != 8) return;
+
+	for (uint i = first_colour; i < first_colour + num_colours; i++) {
+		uint32_t clr = 0xff000000;
+		clr |= (uint32_t)_local_palette.palette[i].r << 16;
+		clr |= (uint32_t)_local_palette.palette[i].g << 8;
+		clr |= (uint32_t)_local_palette.palette[i].b;
+		this->palette[i] = clr;
+	}
+
+	this->MakeDirty(0, 0, _screen.width, _screen.height);
 }
 
-@end
+void VideoDriver_CocoaQuartz::CheckPaletteAnim()
+{
+	if (!CopyPalette(_local_palette)) return;
 
-#endif /* WITH_COCOA */
+	Blitter *blitter = BlitterFactory::GetCurrentBlitter();
+
+	switch (blitter->UsePaletteAnimation()) {
+		case Blitter::PaletteAnimation::VideoBackend:
+			this->UpdatePalette(_local_palette.first_dirty, _local_palette.count_dirty);
+			break;
+
+		case Blitter::PaletteAnimation::Blitter:
+			blitter->PaletteAnimate(_local_palette);
+			break;
+
+		case Blitter::PaletteAnimation::None:
+			break;
+
+		default:
+			NOT_REACHED();
+	}
+}
+
+/** Draw window */
+void VideoDriver_CocoaQuartz::Paint()
+{
+	PerformanceMeasurer framerate(PerformanceElement::Video);
+
+	/* Check if we need to do anything */
+	if (IsEmptyRect(this->dirty_rect) || [ this->window isMiniaturized ]) return;
+
+	/* We only need to blit in indexed mode since in 32bpp mode the game draws directly to the image. */
+	if (this->buffer_depth == 8) {
+		BlitIndexedToView32(
+			this->dirty_rect.left,
+			this->dirty_rect.top,
+			this->dirty_rect.right,
+			this->dirty_rect.bottom
+		);
+	}
+
+	NSRect dirtyrect;
+	dirtyrect.origin.x = this->dirty_rect.left;
+	dirtyrect.origin.y = this->window_height - this->dirty_rect.bottom;
+	dirtyrect.size.width = this->dirty_rect.right - this->dirty_rect.left;
+	dirtyrect.size.height = this->dirty_rect.bottom - this->dirty_rect.top;
+
+	/* Notify OS X that we have new content to show. */
+	[ this->cocoaview setNeedsDisplayInRect:[ this->cocoaview getVirtualRect:dirtyrect ] ];
+
+	/* Tell the OS to get our contents to screen as soon as possible. */
+	[ CATransaction flush ];
+
+	this->dirty_rect = {};
+}
+
+#endif /* WITH_COCOA or DOXYGEN_API */

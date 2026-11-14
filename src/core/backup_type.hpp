@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file backup_type.hpp Class for backupping variables and making sure they are restored later. */
@@ -22,20 +22,18 @@ struct Backup {
 	/**
 	 * Backup variable.
 	 * @param original Variable to backup.
-	 * @param file Filename for debug output. Use FILE_LINE macro.
-	 * @param line Linenumber for debug output. Use FILE_LINE macro.
+	 * @param location Source location for debug output.
 	 */
-	Backup(T &original, const char * const file, const int line) : original(original), valid(true), original_value(original), file(file), line(line) {}
+	Backup(T &original, const std::source_location location = std::source_location::current()) : original(original), valid(true), original_value(original), location(location) {}
 
 	/**
 	 * Backup variable and switch to new value.
 	 * @param original Variable to backup.
 	 * @param new_value New value for variable.
-	 * @param file Filename for debug output. Use FILE_LINE macro.
-	 * @param line Linenumber for debug output. Use FILE_LINE macro.
+	 * @param location Source location for debug output.
 	 */
 	template <typename U>
-	Backup(T &original, const U &new_value, const char * const file, const int line) : original(original), valid(true), original_value(original), file(file), line(line)
+	Backup(T &original, const U &new_value, const std::source_location location = std::source_location::current()) : original(original), valid(true), original_value(original), location(location)
 	{
 		/* Note: We use a separate typename U, so type conversions are handled by assignment operator. */
 		original = new_value;
@@ -47,11 +45,10 @@ struct Backup {
 	~Backup()
 	{
 		/* Check whether restoration was done */
-		if (this->valid)
-		{
+		if (this->valid) {
 			/* We cannot assert here, as missing restoration is 'normal' when exceptions are thrown.
 			 * Exceptions are especially used to abort world generation. */
-			DEBUG(misc, 0, "%s:%d: Backed-up value was not restored!", this->file, this->line);
+			Debug(Facility::Misc, Severity::Critical, "{}:{}: Backed-up value was not restored!", this->location.file_name(), this->location.line());
 			this->Restore();
 		}
 	}
@@ -72,7 +69,7 @@ struct Backup {
 	const T &GetOriginalValue() const
 	{
 		assert(this->valid);
-		return original_value;
+		return this->original_value;
 	}
 
 	/**
@@ -85,7 +82,7 @@ struct Backup {
 	{
 		/* Note: We use a separate typename U, so type conversions are handled by assignment operator. */
 		assert(this->valid);
-		original = new_value;
+		this->original = new_value;
 	}
 
 	/**
@@ -136,12 +133,70 @@ struct Backup {
 	}
 
 private:
-	T &original;
-	bool valid;
-	T original_value;
+	T &original; ///< Reference to the value we are backing up.
+	bool valid; ///< Whether the original value has been restored.
+	T original_value; ///< The value at the moment of making a backup.
 
-	const char * const file;
-	const int line;
+	const std::source_location location; ///< Call location where the backup was created.
+};
+
+/**
+ * Class to backup a specific variable and restore it upon destruction of this object to prevent
+ * stack values going out of scope before resetting the global to its original value. Contrary to
+ * #Backup this restores the variable automatically and there is no manual option to restore.
+ */
+template <typename T>
+struct AutoRestoreBackup {
+	/*
+	 * There is explicitly no only original constructor version, as that would make it possible
+	 * for the new value to go out of scope before this object goes out of scope, thus defeating
+	 * the whole goal and reason for existing of this object.
+	 */
+
+	/**
+	 * Backup variable and switch to new value.
+	 * @param original Variable to backup.
+	 * @param new_value New value for variable.
+	 */
+	AutoRestoreBackup(T &original, T new_value) : original(original), original_value(original)
+	{
+		original = new_value;
+	}
+
+	/**
+	 * Backup variable without switching value.
+	 * @param original Variable to backup.
+	 */
+	AutoRestoreBackup(T &original) : original(original), original_value(original)
+	{
+	}
+
+	/**
+	 * Restore the variable upon object destruction.
+	 */
+	~AutoRestoreBackup()
+	{
+		this->original = this->original_value;
+	}
+
+	/**
+	 * Returns the backupped value.
+	 * @return value from the backup.
+	 */
+	const T &GetOriginalValue() const
+	{
+		return this->original_value;
+	}
+
+private:
+	T &original; ///< Reference to the value we are backing up.
+	T original_value; ///< The value at the moment of making a backup.
+
+	/* Prevent copy, assignment and allocation on stack. */
+	AutoRestoreBackup(const AutoRestoreBackup&) = delete;
+	AutoRestoreBackup& operator=(AutoRestoreBackup&) = delete;
+	static void *operator new(std::size_t) = delete;
+	static void *operator new[](std::size_t) = delete;
 };
 
 #endif /* BACKUP_TYPE_HPP */

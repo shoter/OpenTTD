@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file string_osx.h Functions related to localized text support on OSX. */
@@ -12,7 +12,6 @@
 
 #include "../../gfx_layout.h"
 #include "../../string_base.h"
-#include <vector>
 
 /** String iterator using CoreText as a backend. */
 class OSXStringIterator : public StringIterator {
@@ -28,12 +27,12 @@ class OSXStringIterator : public StringIterator {
 	size_t cur_pos; ///< Current iteration position.
 
 public:
-	void SetString(const char *s) override;
+	void SetString(std::string_view s) override;
 	size_t SetCurPosition(size_t pos) override;
 	size_t Next(IterType what) override;
 	size_t Prev(IterType what) override;
 
-	static StringIterator *Create();
+	static std::unique_ptr<StringIterator> Create();
 };
 
 /**
@@ -50,10 +49,10 @@ public:
 	 * Get the actual ParagraphLayout for the given buffer.
 	 * @param buff The begin of the buffer.
 	 * @param buff_end The location after the last element in the buffer.
-	 * @param fontMapping THe mapping of the fonts.
+	 * @param font_mapping The mapping of the fonts.
 	 * @return The ParagraphLayout instance.
 	 */
-	static ParagraphLayouter *GetParagraphLayout(CharType *buff, CharType *buff_end, FontMap &fontMapping);
+	static std::unique_ptr<ParagraphLayouter> GetParagraphLayout(CharType *buff, CharType *buff_end, FontMap &font_mapping);
 
 	/**
 	 * Append a wide character to the internal buffer.
@@ -62,8 +61,9 @@ public:
 	 * @param c           The character to add.
 	 * @return The number of buffer spaces that were used.
 	 */
-	static size_t AppendToBuffer(CharType *buff, const CharType *buffer_last, WChar c)
+	static size_t AppendToBuffer(CharType *buff, const CharType *buffer_last, char32_t c)
 	{
+		assert(buff < buffer_last);
 		if (c >= 0x010000U) {
 			/* Character is encoded using surrogates in UTF-16. */
 			if (buff + 1 <= buffer_last) {
@@ -81,8 +81,10 @@ public:
 	}
 };
 
-void MacOSResetScriptCache(FontSize size);
-void MacOSSetCurrentLocaleName(const char *iso_code);
-int MacOSStringCompare(const char *s1, const char *s2);
+void MacOSSetCurrentLocaleName(std::string_view iso_code);
+int MacOSStringCompare(std::string_view s1, std::string_view s2);
+int MacOSStringContains(std::string_view str, std::string_view value, bool case_insensitive);
+
+void MacOSRegisterExternalFont(std::string_view file_path);
 
 #endif /* STRING_OSX_H */

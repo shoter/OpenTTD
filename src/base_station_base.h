@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file base_station_base.h Base classes/functions for base stations. */
@@ -11,80 +11,66 @@
 #define BASE_STATION_BASE_H
 
 #include "core/pool_type.hpp"
-#include "command_type.h"
 #include "viewport_type.h"
 #include "station_map.h"
+#include "timer/timer_game_calendar.h"
 
-typedef Pool<BaseStation, StationID, 32, 64000> StationPool;
+typedef Pool<BaseStation, StationID, 32> StationPool;
 extern StationPool _station_pool;
 
-struct StationSpecList {
-	const StationSpec *spec;
-	uint32 grfid;      ///< GRF ID of this custom station
-	uint8  localidx;   ///< Station ID within GRF of station
+template <typename T>
+struct SpecMapping {
+	const T *spec = nullptr; ///< Custom spec.
+	GrfID grfid{}; ///< GRF ID of this custom spec.
+	uint16_t localidx = 0; ///< Local ID within GRF of this custom spec.
 };
 
-
-/** StationRect - used to track station spread out rectangle - cheaper than scanning whole map */
-struct StationRect : public Rect {
-	enum StationRectMode
-	{
-		ADD_TEST = 0,
-		ADD_TRY,
-		ADD_FORCE
-	};
-
-	StationRect();
-	void MakeEmpty();
-	bool PtInExtendedRect(int x, int y, int distance = 0) const;
-	bool IsEmpty() const;
-	CommandCost BeforeAddTile(TileIndex tile, StationRectMode mode);
-	CommandCost BeforeAddRect(TileIndex tile, int w, int h, StationRectMode mode);
-	bool AfterRemoveTile(BaseStation *st, TileIndex tile);
-	bool AfterRemoveRect(BaseStation *st, TileArea ta);
-
-	static bool ScanForStationTiles(StationID st_id, int left_a, int top_a, int right_a, int bottom_a);
-
-	StationRect& operator = (const Rect &src);
+struct RoadStopTileData {
+	TileIndex tile = INVALID_TILE;
+	uint8_t random_bits = 0;
+	uint8_t animation_frame = 0;
 };
 
 /** Base class for all station-ish types */
 struct BaseStation : StationPool::PoolItem<&_station_pool> {
-	TileIndex xy;                   ///< Base tile of the station
-	TrackedViewportSign sign;       ///< NOSAVE: Dimensions of sign
-	byte delete_ctr;                ///< Delete counter. If greater than 0 then it is decremented until it reaches 0; the waypoint is then is deleted.
+	TileIndex xy = INVALID_TILE; ///< Base tile of the station
+	TrackedViewportSign sign{}; ///< NOSAVE: Dimensions of sign
+	uint8_t delete_ctr = 0; ///< Delete counter. If greater than 0 then it is decremented until it reaches 0; the waypoint is then is deleted.
 
-	std::string name;               ///< Custom name
-	StringID string_id;             ///< Default name (town area) of station
+	std::string name{}; ///< Custom name
+	StringID string_id = INVALID_STRING_ID; ///< Default name (town area) of station
 	mutable std::string cached_name; ///< NOSAVE: Cache of the resolved name of the station, if not using a custom name
 
-	Town *town;                     ///< The town this station is associated with
-	Owner owner;                    ///< The owner of this station
-	StationFacility facilities;     ///< The facilities that this station has
+	Town *town = nullptr; ///< The town this station is associated with
+	Owner owner = INVALID_OWNER; ///< The owner of this station
+	StationFacilities facilities{}; ///< The facilities that this station has
 
-	uint8 num_specs;                ///< Number of specs in the speclist
-	StationSpecList *speclist;      ///< List of station specs of this station
+	std::vector<SpecMapping<StationSpec>> speclist{}; ///< List of rail station specs of this station.
+	std::vector<SpecMapping<RoadStopSpec>> roadstop_speclist{}; ///< List of road stop specs of this station
 
-	Date build_date;                ///< Date of construction
+	TimerGameCalendar::Date build_date{}; ///< Date of construction
 
-	uint16 random_bits;             ///< Random bits assigned to this station
-	byte waiting_triggers;          ///< Waiting triggers (NewGRF) for this station
-	uint8 cached_anim_triggers;     ///< NOSAVE: Combined animation trigger bitmask, used to determine if trigger processing should happen.
-	CargoTypes cached_cargo_triggers; ///< NOSAVE: Combined cargo trigger bitmask
+	uint16_t random_bits = 0; ///< Random bits assigned to this station
+	std::unordered_map<TileIndex, StationRandomTriggers> tile_waiting_random_triggers;
+	StationRandomTriggers waiting_random_triggers; ///< Waiting triggers (NewGRF), shared by all station parts/tiles, road stops, ... essentially useless and broken by design.
+	StationAnimationTriggers cached_anim_triggers; ///< NOSAVE: Combined animation trigger bitmask, used to determine if trigger processing should happen.
+	StationAnimationTriggers cached_roadstop_anim_triggers; ///< NOSAVE: Combined animation trigger bitmask for road stops, used to determine if trigger processing should happen.
+	CargoTypes cached_cargo_triggers{}; ///< NOSAVE: Combined cargo trigger bitmask
+	CargoTypes cached_roadstop_cargo_triggers{}; ///< NOSAVE: Combined cargo trigger bitmask for road stops
 
-	TileArea train_station;         ///< Tile area the train 'station' part covers
-	StationRect rect;               ///< NOSAVE: Station spread out rectangle maintained by StationRect::xxx() functions
+	TileArea train_station{INVALID_TILE, 0, 0}; ///< Tile area the train 'station' part covers
+	TileArea spread{}; ///< NOSAVE: Station spread tile area.
+
+	std::vector<RoadStopTileData> custom_roadstop_tile_data{}; ///< List of custom road stop tile data
 
 	/**
 	 * Initialize the base station.
+	 * @param index The index of the station within the pool.
 	 * @param tile The location of the station sign
 	 */
-	BaseStation(TileIndex tile) :
-		xy(tile),
-		train_station(INVALID_TILE, 0, 0)
-	{
-	}
+	BaseStation(StationID index, TileIndex tile) : StationPool::PoolItem<&_station_pool>(index), xy(tile) {}
 
+	/** Ensure the destructor of the sub classes are called as well. */
 	virtual ~BaseStation();
 
 	/**
@@ -102,20 +88,24 @@ struct BaseStation : StationPool::PoolItem<&_station_pool> {
 	 * @param available will return false if ever the variable asked for does not exist
 	 * @return the value stored in the corresponding variable
 	 */
-	virtual uint32 GetNewGRFVariable(const struct ResolverObject &object, byte variable, byte parameter, bool *available) const = 0;
+	virtual uint32_t GetNewGRFVariable(const struct ResolverObject &object, uint8_t variable, uint8_t parameter, bool &available) const = 0;
 
 	/**
 	 * Update the coordinated of the sign (as shown in the viewport).
 	 */
 	virtual void UpdateVirtCoord() = 0;
 
-	inline const char *GetCachedName() const
+	inline const std::string &GetCachedName() const
 	{
-		if (!this->name.empty()) return this->name.c_str();
+		if (!this->name.empty()) return this->name;
 		if (this->cached_name.empty()) this->FillCachedName();
-		return this->cached_name.c_str();
+		return this->cached_name;
 	}
 
+	/**
+	 * Move this station's main coordinate somewhere else.
+	 * @param new_xy New tile location of the sign.
+	 */
 	virtual void MoveSign(TileIndex new_xy)
 	{
 		this->xy = new_xy;
@@ -124,11 +114,10 @@ struct BaseStation : StationPool::PoolItem<&_station_pool> {
 
 	/**
 	 * Get the tile area for a given station type.
-	 * @param ta tile area to fill.
 	 * @param type the type of the area
+	 * @return The tile area.
 	 */
-	virtual void GetTileArea(TileArea *ta, StationType type) const = 0;
-
+	virtual TileArea GetTileArea(StationType type) const = 0;
 
 	/**
 	 * Obtain the length of a platform
@@ -165,8 +154,32 @@ struct BaseStation : StationPool::PoolItem<&_station_pool> {
 	 */
 	inline bool IsInUse() const
 	{
-		return (this->facilities & ~FACIL_WAYPOINT) != 0;
+		return this->facilities.Any({StationFacility::Train, StationFacility::TruckStop, StationFacility::BusStop, StationFacility::Airport, StationFacility::Dock});
 	}
+
+	inline uint8_t GetRoadStopRandomBits(TileIndex tile) const
+	{
+		for (const RoadStopTileData &tile_data : this->custom_roadstop_tile_data) {
+			if (tile_data.tile == tile) return tile_data.random_bits;
+		}
+		return 0;
+	}
+
+	inline uint8_t GetRoadStopAnimationFrame(TileIndex tile) const
+	{
+		for (const RoadStopTileData &tile_data : this->custom_roadstop_tile_data) {
+			if (tile_data.tile == tile) return tile_data.animation_frame;
+		}
+		return 0;
+	}
+
+private:
+	bool SetRoadStopTileData(TileIndex tile, uint8_t data, bool animation);
+
+public:
+	inline void SetRoadStopRandomBits(TileIndex tile, uint8_t random_bits) { this->SetRoadStopTileData(tile, random_bits, false); }
+	inline bool SetRoadStopAnimationFrame(TileIndex tile, uint8_t frame) { return this->SetRoadStopTileData(tile, frame, true); }
+	void RemoveRoadStopTileData(TileIndex tile);
 
 	static void PostDestructor(size_t index);
 
@@ -180,14 +193,15 @@ private:
  */
 template <class T, bool Tis_waypoint>
 struct SpecializedStation : public BaseStation {
-	static const StationFacility EXPECTED_FACIL = Tis_waypoint ? FACIL_WAYPOINT : FACIL_NONE; ///< Specialized type
+	static constexpr StationFacilities EXPECTED_FACIL = Tis_waypoint ? StationFacility::Waypoint : StationFacilities{}; ///< Specialized type
 
 	/**
 	 * Set station type correctly
+	 * @param index The index within the station pool.
 	 * @param tile The base tile of the station.
 	 */
-	inline SpecializedStation<T, Tis_waypoint>(TileIndex tile) :
-			BaseStation(tile)
+	inline SpecializedStation(StationID index, TileIndex tile) :
+			BaseStation(index, tile)
 	{
 		this->facilities = EXPECTED_FACIL;
 	}
@@ -199,7 +213,7 @@ struct SpecializedStation : public BaseStation {
 	 */
 	static inline bool IsExpected(const BaseStation *st)
 	{
-		return (st->facilities & FACIL_WAYPOINT) == EXPECTED_FACIL;
+		return st->facilities.Test(StationFacility::Waypoint) == Tis_waypoint;
 	}
 
 	/**
@@ -207,25 +221,27 @@ struct SpecializedStation : public BaseStation {
 	 * @param index tested index
 	 * @return is this index valid index of T?
 	 */
-	static inline bool IsValidID(size_t index)
+	static inline bool IsValidID(auto index)
 	{
 		return BaseStation::IsValidID(index) && IsExpected(BaseStation::Get(index));
 	}
 
 	/**
 	 * Gets station with given index
-	 * @return pointer to station with given index casted to T *
+	 * @param index The pool index to look for.
+	 * @return pointer to station with given index cast to T *
 	 */
-	static inline T *Get(size_t index)
+	static inline T *Get(auto index)
 	{
 		return (T *)BaseStation::Get(index);
 	}
 
 	/**
 	 * Returns station if the index is a valid index for this station type
+	 * @param index The pool index to look for.
 	 * @return pointer to station with given index if it's a station of this type
 	 */
-	static inline T *GetIfValid(size_t index)
+	static inline T *GetIfValid(auto index)
 	{
 		return IsValidID(index) ? Get(index) : nullptr;
 	}
@@ -238,6 +254,29 @@ struct SpecializedStation : public BaseStation {
 	static inline T *GetByTile(TileIndex tile)
 	{
 		return GetIfValid(GetStationIndex(tile));
+	}
+
+	/**
+	 * Creates a new T-object in the station pool.
+	 * @param args The arguments to the constructor.
+	 * @return The created object.
+	 */
+	template <typename... Targs>
+	static inline T *Create(Targs &&... args)
+	{
+		return BaseStation::Create<T>(std::forward<Targs&&>(args)...);
+	}
+
+	/**
+	 * Creates a new T-object in the station pool.
+	 * @param index The index allocate the object at.
+	 * @param args The arguments to the constructor.
+	 * @return The created object.
+	 */
+	template <typename... Targs>
+	static inline T *CreateAtIndex(StationID index, Targs &&... args)
+	{
+		return BaseStation::CreateAtIndex<T>(index, std::forward<Targs&&>(args)...);
 	}
 
 	/**
@@ -269,5 +308,17 @@ struct SpecializedStation : public BaseStation {
 	 */
 	static Pool::IterateWrapper<T> Iterate(size_t from = 0) { return Pool::IterateWrapper<T>(from); }
 };
+
+/**
+ * Get spec mapping list for each supported custom spec type.
+ * @tparam T Spec type.
+ * @param bst Station of custom spec list.
+ * @return Speclist of custom spec type.
+ */
+template <class T> std::vector<SpecMapping<T>> &GetStationSpecList(BaseStation *bst);
+/** @copydoc GetStationSpecList */
+template <> inline std::vector<SpecMapping<StationSpec>> &GetStationSpecList<StationSpec>(BaseStation *bst) { return bst->speclist; }
+/** @copydoc GetStationSpecList */
+template <> inline std::vector<SpecMapping<RoadStopSpec>> &GetStationSpecList<RoadStopSpec>(BaseStation *bst) { return bst->roadstop_speclist; }
 
 #endif /* BASE_STATION_BASE_H */

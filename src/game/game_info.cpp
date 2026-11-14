@@ -2,10 +2,10 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
-/** @file game_info.cpp Implementation of GameInfo */
+/** @file game_info.cpp Implementation of GameInfo. */
 
 #include "../stdafx.h"
 
@@ -13,89 +13,80 @@
 #include "game_info.hpp"
 #include "game_scanner.hpp"
 #include "../debug.h"
-#include <set>
 
 #include "../safeguards.h"
 
 /**
  * Check if the API version provided by the Game is supported.
  * @param api_version The API version as provided by the Game.
+ * @return \c true if the given version is supported by this version of OpenTTD.
  */
-static bool CheckAPIVersion(const char *api_version)
+static bool CheckAPIVersion(const std::string &api_version)
 {
-	static const std::set<std::string> versions = {"1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11"};
-	return versions.find(api_version) != versions.end();
+	return std::ranges::find(GameInfo::ApiVersions, api_version) != std::end(GameInfo::ApiVersions);
 }
 
-#if defined(_WIN32)
-#undef GetClassName
-#endif /* _WIN32 */
-template <> const char *GetClassName<GameInfo, ST_GS>() { return "GSInfo"; }
+template <> SQInteger PushClassName<GameInfo, ScriptType::GS>(HSQUIRRELVM vm) { sq_pushstring(vm, "GSInfo"); return 1; }
 
-/* static */ void GameInfo::RegisterAPI(Squirrel *engine)
+/* static */ void GameInfo::RegisterAPI(Squirrel &engine)
 {
 	/* Create the GSInfo class, and add the RegisterGS function */
-	DefSQClass<GameInfo, ST_GS> SQGSInfo("GSInfo");
+	DefSQClass<GameInfo, ScriptType::GS> SQGSInfo("GSInfo");
 	SQGSInfo.PreRegister(engine);
-	SQGSInfo.AddConstructor<void (GameInfo::*)(), 1>(engine, "x");
+	SQGSInfo.AddConstructor<void (GameInfo::*)()>(engine, "x");
 	SQGSInfo.DefSQAdvancedMethod(engine, &GameInfo::AddSetting, "AddSetting");
 	SQGSInfo.DefSQAdvancedMethod(engine, &GameInfo::AddLabels, "AddLabels");
-	SQGSInfo.DefSQConst(engine, SCRIPTCONFIG_NONE, "CONFIG_NONE");
-	SQGSInfo.DefSQConst(engine, SCRIPTCONFIG_RANDOM, "CONFIG_RANDOM");
-	SQGSInfo.DefSQConst(engine, SCRIPTCONFIG_BOOLEAN, "CONFIG_BOOLEAN");
-	SQGSInfo.DefSQConst(engine, SCRIPTCONFIG_INGAME, "CONFIG_INGAME");
-	SQGSInfo.DefSQConst(engine, SCRIPTCONFIG_DEVELOPER, "CONFIG_DEVELOPER");
+	SQGSInfo.DefSQConst(engine, ScriptConfigFlags{}.base(), "CONFIG_NONE");
+	SQGSInfo.DefSQConst(engine, ScriptConfigFlags{}.base(), "CONFIG_RANDOM"); // Deprecated, mapped to NONE.
+	SQGSInfo.DefSQConst(engine, ScriptConfigFlags{ScriptConfigFlag::Boolean}.base(), "CONFIG_BOOLEAN");
+	SQGSInfo.DefSQConst(engine, ScriptConfigFlags{ScriptConfigFlag::InGame}.base(), "CONFIG_INGAME");
+	SQGSInfo.DefSQConst(engine, ScriptConfigFlags{ScriptConfigFlag::Developer}.base(), "CONFIG_DEVELOPER");
 
 	SQGSInfo.PostRegister(engine);
-	engine->AddMethod("RegisterGS", &GameInfo::Constructor, 2, "tx");
+	engine.AddMethod("RegisterGS", &GameInfo::Constructor, "tx");
 }
 
 /* static */ SQInteger GameInfo::Constructor(HSQUIRRELVM vm)
 {
 	/* Get the GameInfo */
 	SQUserPointer instance = nullptr;
-	if (SQ_FAILED(sq_getinstanceup(vm, 2, &instance, 0)) || instance == nullptr) return sq_throwerror(vm, "Pass an instance of a child class of GameInfo to RegisterGame");
+	if (SQ_FAILED(sq_getinstanceup(vm, 2, &instance, nullptr)) || instance == nullptr) return sq_throwerror(vm, "Pass an instance of a child class of GameInfo to RegisterGame");
 	GameInfo *info = (GameInfo *)instance;
 
-	SQInteger res = ScriptInfo::Constructor(vm, info);
+	SQInteger res = ScriptInfo::Constructor(vm, *info);
 	if (res != 0) return res;
 
-	if (info->engine->MethodExists(*info->SQ_instance, "MinVersionToLoad")) {
-		if (!info->engine->CallIntegerMethod(*info->SQ_instance, "MinVersionToLoad", &info->min_loadable_version, MAX_GET_OPS)) return SQ_ERROR;
+	if (info->engine->MethodExists(info->SQ_instance, "MinVersionToLoad")) {
+		if (!info->engine->CallIntegerMethod(info->SQ_instance, "MinVersionToLoad", &info->min_loadable_version, MAX_GET_OPS)) return SQ_ERROR;
+		if (info->min_loadable_version < 0) return SQ_ERROR;
 	} else {
 		info->min_loadable_version = info->GetVersion();
 	}
 	/* When there is an IsSelectable function, call it. */
-	if (info->engine->MethodExists(*info->SQ_instance, "IsDeveloperOnly")) {
-		if (!info->engine->CallBoolMethod(*info->SQ_instance, "IsDeveloperOnly", &info->is_developer_only, MAX_GET_OPS)) return SQ_ERROR;
+	if (info->engine->MethodExists(info->SQ_instance, "IsDeveloperOnly")) {
+		if (!info->engine->CallBoolMethod(info->SQ_instance, "IsDeveloperOnly", &info->is_developer_only, MAX_GET_OPS)) return SQ_ERROR;
 	} else {
 		info->is_developer_only = false;
 	}
-	/* Try to get the API version the AI is written for. */
+	/* Try to get the API version the Game Script is written for. */
 	if (!info->CheckMethod("GetAPIVersion")) return SQ_ERROR;
-	if (!info->engine->CallStringMethodStrdup(*info->SQ_instance, "GetAPIVersion", &info->api_version, MAX_GET_OPS)) return SQ_ERROR;
+	if (!info->engine->CallStringMethod(info->SQ_instance, "GetAPIVersion", &info->api_version, MAX_GET_OPS)) return SQ_ERROR;
 	if (!CheckAPIVersion(info->api_version)) {
-		DEBUG(script, 1, "Loading info.nut from (%s.%d): GetAPIVersion returned invalid version", info->GetName(), info->GetVersion());
+		sq_throwerror(vm, fmt::format("Loading info.nut from ({}.{}): GetAPIVersion returned invalid version", info->GetName(), info->GetVersion()));
 		return SQ_ERROR;
 	}
 
 	/* Remove the link to the real instance, else it might get deleted by RegisterGame() */
 	sq_setinstanceup(vm, 2, nullptr);
 	/* Register the Game to the base system */
-	info->GetScanner()->RegisterScript(info);
+	info->GetScanner()->RegisterScript(std::unique_ptr<GameInfo>{info});
 	return 0;
 }
 
 GameInfo::GameInfo() :
 	min_loadable_version(0),
-	is_developer_only(false),
-	api_version(nullptr)
+	is_developer_only(false)
 {
-}
-
-GameInfo::~GameInfo()
-{
-	free(this->api_version);
 }
 
 bool GameInfo::CanLoadFromVersion(int version) const
@@ -105,38 +96,32 @@ bool GameInfo::CanLoadFromVersion(int version) const
 }
 
 
-GameLibrary::~GameLibrary()
-{
-	free(this->category);
-}
-
-/* static */ void GameLibrary::RegisterAPI(Squirrel *engine)
+/* static */ void GameLibrary::RegisterAPI(Squirrel &engine)
 {
 	/* Create the GameLibrary class, and add the RegisterLibrary function */
-	engine->AddClassBegin("GSLibrary");
-	engine->AddClassEnd();
-	engine->AddMethod("RegisterLibrary", &GameLibrary::Constructor, 2, "tx");
+	engine.AddClassBegin("GSLibrary");
+	engine.AddClassEnd();
+	engine.AddMethod("RegisterLibrary", &GameLibrary::Constructor, "tx");
 }
 
 /* static */ SQInteger GameLibrary::Constructor(HSQUIRRELVM vm)
 {
 	/* Create a new library */
-	GameLibrary *library = new GameLibrary();
+	auto library = std::make_unique<GameLibrary>();
 
-	SQInteger res = ScriptInfo::Constructor(vm, library);
+	SQInteger res = ScriptInfo::Constructor(vm, *library);
 	if (res != 0) {
-		delete library;
 		return res;
 	}
 
 	/* Cache the category */
-	if (!library->CheckMethod("GetCategory") || !library->engine->CallStringMethodStrdup(*library->SQ_instance, "GetCategory", &library->category, MAX_GET_OPS)) {
-		delete library;
+	if (!library->CheckMethod("GetCategory") || !library->engine->CallStringMethod(library->SQ_instance, "GetCategory", &library->category, MAX_GET_OPS)) {
 		return SQ_ERROR;
 	}
 
 	/* Register the Library to the base system */
-	library->GetScanner()->RegisterScript(library);
+	ScriptScanner *scanner = library->GetScanner();
+	scanner->RegisterScript(std::move(library));
 
 	return 0;
 }

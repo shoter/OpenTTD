@@ -2,7 +2,7 @@
  * This file is part of OpenTTD.
  * OpenTTD is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2.
  * OpenTTD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <http://www.gnu.org/licenses/>.
+ * See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with OpenTTD. If not, see <https://www.gnu.org/licenses/old-licenses/gpl-2.0>.
  */
 
 /** @file road_func.h Functions related to roads. */
@@ -20,9 +20,9 @@
  * @param r the roadtype to check for validness
  * @return true if and only if valid
  */
-static inline bool IsValidRoadBits(RoadBits r)
+inline bool IsValidRoadBits(RoadBits r)
 {
-	return r < ROAD_END;
+	return r.Reset(ROAD_ALL).None();
 }
 
 /**
@@ -34,10 +34,10 @@ static inline bool IsValidRoadBits(RoadBits r)
  * @param r The given RoadBits value
  * @return the complement
  */
-static inline RoadBits ComplementRoadBits(RoadBits r)
+inline RoadBits ComplementRoadBits(RoadBits r)
 {
 	assert(IsValidRoadBits(r));
-	return (RoadBits)(ROAD_ALL ^ r);
+	return r.Flip(ROAD_ALL);
 }
 
 /**
@@ -48,28 +48,10 @@ static inline RoadBits ComplementRoadBits(RoadBits r)
  * @param r The given RoadBits value
  * @return the mirrored
  */
-static inline RoadBits MirrorRoadBits(RoadBits r)
+inline RoadBits MirrorRoadBits(RoadBits r)
 {
 	assert(IsValidRoadBits(r));
-	return (RoadBits)(GB(r, 0, 2) << 2 | GB(r, 2, 2));
-}
-
-/**
- * Calculate rotated RoadBits
- *
- * Move the Roadbits clockwise until they are in their final position.
- *
- * @param r The given RoadBits value
- * @param rot The given Rotation angle
- * @return the rotated
- */
-static inline RoadBits RotateRoadBits(RoadBits r, DiagDirDiff rot)
-{
-	assert(IsValidRoadBits(r));
-	for (; rot > (DiagDirDiff)0; rot--) {
-		r = (RoadBits)(GB(r, 0, 1) << 3 | GB(r, 1, 3));
-	}
-	return r;
+	return static_cast<RoadBits>(GB(r.base(), 0, 2) << 2 | GB(r.base(), 2, 2));
 }
 
 /**
@@ -78,7 +60,7 @@ static inline RoadBits RotateRoadBits(RoadBits r, DiagDirDiff rot)
  * @param r The given RoadBits
  * @return true if we've got a straight road
  */
-static inline bool IsStraightRoad(RoadBits r)
+inline bool IsStraightRoad(RoadBits r)
 {
 	assert(IsValidRoadBits(r));
 	return (r == ROAD_X || r == ROAD_Y);
@@ -93,10 +75,10 @@ static inline bool IsStraightRoad(RoadBits r)
  * @param d The DiagDirection
  * @return The result RoadBits which the selected road-part set
  */
-static inline RoadBits DiagDirToRoadBits(DiagDirection d)
+inline RoadBits DiagDirToRoadBits(DiagDirection d)
 {
 	assert(IsValidDiagDirection(d));
-	return (RoadBits)(ROAD_NW << (3 ^ d));
+	return static_cast<RoadBits>(RoadBits{RoadBit::NW}.base() << (3 ^ to_underlying(d)));
 }
 
 /**
@@ -108,10 +90,10 @@ static inline RoadBits DiagDirToRoadBits(DiagDirection d)
  * @param a The Axis
  * @return The result RoadBits which the selected road-part set
  */
-static inline RoadBits AxisToRoadBits(Axis a)
+inline RoadBits AxisToRoadBits(Axis a)
 {
 	assert(IsValidAxis(a));
-	return a == AXIS_X ? ROAD_X : ROAD_Y;
+	return a == Axis::X ? ROAD_X : ROAD_Y;
 }
 
 
@@ -122,41 +104,49 @@ static inline RoadBits AxisToRoadBits(Axis a)
  * @param total_num Total number of road bits of all road/tram-types.
  * @return Total cost.
  */
-static inline Money RoadMaintenanceCost(RoadType roadtype, uint32 num, uint32 total_num)
+inline Money RoadMaintenanceCost(RoadType roadtype, uint32_t num, uint32_t total_num)
 {
 	assert(roadtype < ROADTYPE_END);
-	return (_price[PR_INFRASTRUCTURE_ROAD] * GetRoadTypeInfo(roadtype)->maintenance_multiplier * num * (1 + IntSqrt(total_num))) >> 12;
+	return (_price[Price::InfrastructureRoad] * GetRoadTypeInfo(roadtype)->maintenance_multiplier * num * (1 + IntSqrt(total_num))) >> 12;
 }
 
 /**
  * Test if a road type has catenary
  * @param roadtype Road type to test
+ * @return \c true iff the road should have catenary.
  */
-static inline bool HasRoadCatenary(RoadType roadtype)
+inline bool HasRoadCatenary(RoadType roadtype)
 {
 	assert(roadtype < ROADTYPE_END);
-	return HasBit(GetRoadTypeInfo(roadtype)->flags, ROTF_CATENARY);
+	return GetRoadTypeInfo(roadtype)->flags.Test(RoadTypeFlag::Catenary);
 }
 
 /**
  * Test if we should draw road catenary
  * @param roadtype Road type to test
+ * @return \c true iff the road should have catenary and catenary is visible.
  */
-static inline bool HasRoadCatenaryDrawn(RoadType roadtype)
+inline bool HasRoadCatenaryDrawn(RoadType roadtype)
 {
-	return HasRoadCatenary(roadtype) && !IsInvisibilitySet(TO_CATENARY);
+	return HasRoadCatenary(roadtype) && !IsInvisibilitySet(TransparencyOption::Catenary);
 }
 
 bool HasRoadTypeAvail(CompanyID company, RoadType roadtype);
 bool ValParamRoadType(RoadType roadtype);
 RoadTypes GetCompanyRoadTypes(CompanyID company, bool introduces = true);
 RoadTypes GetRoadTypes(bool introduces);
-RoadTypes AddDateIntroducedRoadTypes(RoadTypes current, Date date);
+RoadTypes AddDateIntroducedRoadTypes(RoadTypes current, TimerGameCalendar::Date date);
 
-void UpdateLevelCrossing(TileIndex tile, bool sound = true);
+void UpdateLevelCrossing(TileIndex tile, bool sound = true, bool force_bar = false);
+void MarkDirtyAdjacentLevelCrossingTiles(TileIndex tile, Axis road_axis);
+void UpdateAdjacentLevelCrossingTilesOnLevelCrossingRemoval(TileIndex tile, Axis road_axis);
 void UpdateCompanyRoadInfrastructure(RoadType rt, Owner o, int count);
+bool UpdateNearestTownForRoadTiles(bool invalidate);
 
 struct TileInfo;
-void DrawRoadOverlays(const TileInfo *ti, PaletteID pal, const RoadTypeInfo *road_rti, const RoadTypeInfo *tram_rit, uint road_offset, uint tram_offset);
+enum class Roadside : uint8_t;
+void DrawRoadOverlays(const TileInfo *ti, PaletteID pal, const RoadTypeInfo *road_rti, const RoadTypeInfo *tram_rit, uint road_offset, uint tram_offset, bool draw_underlay = true);
+void DrawRoadGroundSprites(const TileInfo *ti, RoadBits road, RoadBits tram, const RoadTypeInfo *road_rti, const RoadTypeInfo *tram_rti, Roadside roadside, bool snow_or_desert);
+void DrawRoadDepotSprite(int x, int y, DiagDirection dir, RoadType rt);
 
 #endif /* ROAD_FUNC_H */
